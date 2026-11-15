@@ -1,0 +1,14 @@
+name: browser-repack
+# Development build: pinned Zen release + Lima overlay. Manual to save macOS minutes.
+on: workflow_dispatch
+jobs:
+  repack:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: false }
+      - run: browser/scripts/repack.sh
+        env: { GH_TOKEN: "${{ github.token }}" }
+      - run: ditto -c -k --keepParent build/Lima.app build/Lima-dev.zip
+      - uses: actions/upload-artifact@v4
+        with: { name: Lima-dev, path: build/Lima-dev.zip }

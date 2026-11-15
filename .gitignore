@@ -1,0 +1,6 @@
+.DS_Store
+/build/
+/browser/.cache/
+/browser/work/
+native/.build/
+*.xcuserstate

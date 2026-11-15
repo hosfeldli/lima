@@ -1,0 +1,18 @@
+{
+  "comment": "Pinned upstream inputs for Lima Browser. Update via scripts/bump-zen.sh, never by hand-editing one field.",
+  "zen": {
+    "tag": "1.24.2b",
+    "commit": "0057b295aee4a1ff00e0bd24e1150b7bc1a28503",
+    "firefoxVersion": "160.0",
+    "macosDmg": {
+      "asset": "zen.macos-universal.dmg",
+      "sha256": "04ee33c2e906b52f90f73384aa50e80a92530ae4b3414fb26a0a982e257f172c"
+    }
+  },
+  "lima": {
+    "bundleIdentifier": "dev.lima.browser",
+    "displayName": "Lima",
+    "profileName": "Lima Browser",
+    "remotingName": "lima"
+  }
+}
