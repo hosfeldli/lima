@@ -23,7 +23,7 @@ let package = Package(
         .target(name: "LimaAuthorization", dependencies: ["LimaProtocol"]),
         .target(name: "CLimaPTY"),
         .target(name: "LimaTerminal", dependencies: ["LimaProtocol", "CLimaPTY"]),
-        .target(name: "LimaAgentSupervisor", dependencies: ["LimaProtocol"]),
+        .target(name: "LimaAgentSupervisor", dependencies: ["LimaProtocol", "LimaStorage"]),
         .target(name: "LimaStorage"),
         .target(name: "LimaNotes", dependencies: ["LimaStorage"]),
         .executableTarget(
@@ -33,7 +33,7 @@ let package = Package(
         .testTarget(name: "LimaProtocolTests", dependencies: ["LimaProtocol"]),
         .testTarget(name: "LimaAuthorizationTests", dependencies: ["LimaAuthorization"]),
         .testTarget(name: "LimaTerminalTests", dependencies: ["LimaTerminal"]),
-        .testTarget(name: "LimaAgentSupervisorTests", dependencies: ["LimaAgentSupervisor"]),
+        .testTarget(name: "LimaAgentSupervisorTests", dependencies: ["LimaAgentSupervisor", "LimaStorage"]),
         .testTarget(name: "LimaStorageTests", dependencies: ["LimaStorage"]),
         .testTarget(name: "LimaNotesTests", dependencies: ["LimaNotes", "LimaStorage"])
     ],
