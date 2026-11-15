@@ -1,0 +1,711 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-15T14:01:51.632304+00:00",
+  "title": "Design System: Lima",
+  "extensions": {
+    "colorMeta": {
+      "paper": {
+        "role": "neutral",
+        "displayName": "Paper",
+        "tonalRamp": [
+          "#111111",
+          "#252525",
+          "#4a4a4a",
+          "#6e6e6e",
+          "#9a9a9a",
+          "#c9c9c9",
+          "#e0e0e0",
+          "#f2f2f2"
+        ]
+      },
+      "paper-dark": {
+        "role": "neutral",
+        "displayName": "Paper (dark)",
+        "tonalRamp": [
+          "#111111",
+          "#252525",
+          "#4a4a4a",
+          "#6e6e6e",
+          "#9a9a9a",
+          "#c9c9c9",
+          "#e0e0e0",
+          "#f2f2f2"
+        ]
+      },
+      "panel": {
+        "role": "neutral",
+        "displayName": "Panel",
+        "tonalRamp": [
+          "#111111",
+          "#252525",
+          "#4a4a4a",
+          "#6e6e6e",
+          "#9a9a9a",
+          "#c9c9c9",
+          "#e0e0e0",
+          "#f2f2f2"
+        ]
+      },
+      "panel-dark": {
+        "role": "neutral",
+        "displayName": "Panel (dark)",
+        "tonalRamp": [
+          "#111111",
+          "#252525",
+          "#4a4a4a",
+          "#6e6e6e",
+          "#9a9a9a",
+          "#c9c9c9",
+          "#e0e0e0",
+          "#f2f2f2"
+        ]
+      },
+      "panel-2": {
+        "role": "neutral",
+        "displayName": "Panel Deep",
+        "tonalRamp": [
+          "#111111",
+          "#252525",
+          "#4a4a4a",
+          "#6e6e6e",
+          "#9a9a9a",
+          "#c9c9c9",
+          "#e0e0e0",
+          "#f2f2f2"
+        ]
+      },
+      "panel-2-dark": {
+        "role": "neutral",
+        "displayName": "Panel Deep (dark)",
+        "tonalRamp": [
+          "#111111",
+          "#252525",
+          "#4a4a4a",
+          "#6e6e6e",
+          "#9a9a9a",
+          "#c9c9c9",
+          "#e0e0e0",
+          "#f2f2f2"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "tonalRamp": [
+          "#111111",
+          "#252525",
+          "#4a4a4a",
+          "#6e6e6e",
+          "#9a9a9a",
+          "#c9c9c9",
+          "#e0e0e0",
+          "#f2f2f2"
+        ]
+      },
+      "ink-dark": {
+        "role": "neutral",
+        "displayName": "Ink (dark)",
+        "tonalRamp": [
+          "#111111",
+          "#252525",
+          "#4a4a4a",
+          "#6e6e6e",
+          "#9a9a9a",
+          "#c9c9c9",
+          "#e0e0e0",
+          "#f2f2f2"
+        ]
+      },
+      "ink-2": {
+        "role": "neutral",
+        "displayName": "Ink Secondary",
+        "tonalRamp": [
+          "#111111",
+          "#252525",
+          "#4a4a4a",
+          "#6e6e6e",
+          "#9a9a9a",
+          "#c9c9c9",
+          "#e0e0e0",
+          "#f2f2f2"
+        ]
+      },
+      "ink-2-dark": {
+        "role": "neutral",
+        "displayName": "Ink Secondary (dark)",
+        "tonalRamp": [
+          "#111111",
+          "#252525",
+          "#4a4a4a",
+          "#6e6e6e",
+          "#9a9a9a",
+          "#c9c9c9",
+          "#e0e0e0",
+          "#f2f2f2"
+        ]
+      },
+      "ink-3": {
+        "role": "neutral",
+        "displayName": "Ink Muted",
+        "tonalRamp": [
+          "#111111",
+          "#252525",
+          "#4a4a4a",
+          "#6e6e6e",
+          "#9a9a9a",
+          "#c9c9c9",
+          "#e0e0e0",
+          "#f2f2f2"
+        ]
+      },
+      "ink-3-dark": {
+        "role": "neutral",
+        "displayName": "Ink Muted (dark)",
+        "tonalRamp": [
+          "#111111",
+          "#252525",
+          "#4a4a4a",
+          "#6e6e6e",
+          "#9a9a9a",
+          "#c9c9c9",
+          "#e0e0e0",
+          "#f2f2f2"
+        ]
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "tonalRamp": [
+          "#111111",
+          "#252525",
+          "#4a4a4a",
+          "#6e6e6e",
+          "#9a9a9a",
+          "#c9c9c9",
+          "#e0e0e0",
+          "#f2f2f2"
+        ]
+      },
+      "line-dark": {
+        "role": "neutral",
+        "displayName": "Hairline (dark)",
+        "tonalRamp": [
+          "#111111",
+          "#252525",
+          "#4a4a4a",
+          "#6e6e6e",
+          "#9a9a9a",
+          "#c9c9c9",
+          "#e0e0e0",
+          "#f2f2f2"
+        ]
+      },
+      "line-2": {
+        "role": "neutral",
+        "displayName": "Hairline Strong",
+        "tonalRamp": [
+          "#111111",
+          "#252525",
+          "#4a4a4a",
+          "#6e6e6e",
+          "#9a9a9a",
+          "#c9c9c9",
+          "#e0e0e0",
+          "#f2f2f2"
+        ]
+      },
+      "line-2-dark": {
+        "role": "neutral",
+        "displayName": "Hairline Strong (dark)",
+        "tonalRamp": [
+          "#111111",
+          "#252525",
+          "#4a4a4a",
+          "#6e6e6e",
+          "#9a9a9a",
+          "#c9c9c9",
+          "#e0e0e0",
+          "#f2f2f2"
+        ]
+      },
+      "red": {
+        "role": "primary",
+        "displayName": "Utility Red",
+        "tonalRamp": [
+          "#3d0004",
+          "#6b0008",
+          "#9a000d",
+          "#c4000f",
+          "#e60012",
+          "#ff5a66",
+          "#ff9aa2",
+          "#fdeced"
+        ]
+      },
+      "red-ink": {
+        "role": "primary",
+        "displayName": "Red Ink",
+        "tonalRamp": [
+          "#3d0004",
+          "#6b0008",
+          "#9a000d",
+          "#c4000f",
+          "#e60012",
+          "#ff5a66",
+          "#ff9aa2",
+          "#fdeced"
+        ]
+      },
+      "red-wash": {
+        "role": "primary",
+        "displayName": "Red Wash",
+        "tonalRamp": [
+          "#3d0004",
+          "#6b0008",
+          "#9a000d",
+          "#c4000f",
+          "#e60012",
+          "#ff5a66",
+          "#ff9aa2",
+          "#fdeced"
+        ]
+      },
+      "on-red": {
+        "role": "neutral",
+        "displayName": "On Red",
+        "tonalRamp": [
+          "#111111",
+          "#252525",
+          "#4a4a4a",
+          "#6e6e6e",
+          "#9a9a9a",
+          "#c9c9c9",
+          "#e0e0e0",
+          "#f2f2f2"
+        ]
+      },
+      "red-dark": {
+        "role": "primary",
+        "displayName": "Utility Red (dark)",
+        "tonalRamp": [
+          "#4a0a10",
+          "#7a0d17",
+          "#b3121f",
+          "#e01b2b",
+          "#ff2a3a",
+          "#ff5a66",
+          "#ff9aa2",
+          "#ffd6da"
+        ]
+      },
+      "red-ink-dark": {
+        "role": "primary",
+        "displayName": "Red Ink (dark)",
+        "tonalRamp": [
+          "#4a0a10",
+          "#7a0d17",
+          "#b3121f",
+          "#e01b2b",
+          "#ff2a3a",
+          "#ff5a66",
+          "#ff9aa2",
+          "#ffd6da"
+        ]
+      },
+      "red-wash-dark": {
+        "role": "primary",
+        "displayName": "Red Wash (dark)",
+        "tonalRamp": [
+          "#1a0709",
+          "#2c1417",
+          "#3a1418",
+          "#5a1a20",
+          "#8a1a26",
+          "#c41f2e",
+          "#ff2a3a",
+          "#ff9aa2"
+        ]
+      },
+      "select-dark": {
+        "role": "primary",
+        "displayName": "Selection (dark)",
+        "tonalRamp": [
+          "#1a0709",
+          "#2c1417",
+          "#3a1418",
+          "#5a1a20",
+          "#8a1a26",
+          "#c41f2e",
+          "#ff2a3a",
+          "#ff9aa2"
+        ]
+      },
+      "ok": {
+        "role": "neutral",
+        "displayName": "Status Green",
+        "tonalRamp": [
+          "#06301a",
+          "#0b4a27",
+          "#115f31",
+          "#157a3c",
+          "#2e9a57",
+          "#4cc27a",
+          "#8fdcab",
+          "#d9f3e2"
+        ]
+      },
+      "ok-dark": {
+        "role": "neutral",
+        "displayName": "Status Green (dark)",
+        "tonalRamp": [
+          "#06301a",
+          "#0b4a27",
+          "#115f31",
+          "#157a3c",
+          "#2e9a57",
+          "#4cc27a",
+          "#8fdcab",
+          "#d9f3e2"
+        ]
+      },
+      "warn": {
+        "role": "neutral",
+        "displayName": "Status Amber",
+        "tonalRamp": [
+          "#3a2500",
+          "#5a3a00",
+          "#7a4e00",
+          "#9a6200",
+          "#c27f10",
+          "#e3a83c",
+          "#f0cc85",
+          "#fbefd6"
+        ]
+      },
+      "warn-dark": {
+        "role": "neutral",
+        "displayName": "Status Amber (dark)",
+        "tonalRamp": [
+          "#3a2500",
+          "#5a3a00",
+          "#7a4e00",
+          "#9a6200",
+          "#c27f10",
+          "#e3a83c",
+          "#f0cc85",
+          "#fbefd6"
+        ]
+      },
+      "prism-rose": {
+        "role": "tertiary",
+        "displayName": "Prism Rose (agent activity only)",
+        "tonalRamp": [
+          "#5c1424",
+          "#8a2038",
+          "#c2365a",
+          "#ff6b8b",
+          "#ff8ea6",
+          "#ffb0c1",
+          "#ffd2dc",
+          "#fff0f3"
+        ]
+      },
+      "prism-amber": {
+        "role": "tertiary",
+        "displayName": "Prism Amber (agent activity only)",
+        "tonalRamp": [
+          "#5c3510",
+          "#8a521a",
+          "#c27a2c",
+          "#ffb86b",
+          "#ffc98d",
+          "#ffd9ae",
+          "#ffe9d0",
+          "#fff7ee"
+        ]
+      },
+      "prism-mint": {
+        "role": "tertiary",
+        "displayName": "Prism Mint (agent activity only)",
+        "tonalRamp": [
+          "#0f4a37",
+          "#186e53",
+          "#2ea47f",
+          "#7cf2c8",
+          "#9cf5d5",
+          "#bbf8e2",
+          "#daf9ee",
+          "#f1fdf8"
+        ]
+      },
+      "prism-sky": {
+        "role": "tertiary",
+        "displayName": "Prism Sky (agent activity only)",
+        "tonalRamp": [
+          "#0f2f5c",
+          "#18478a",
+          "#2d6ec2",
+          "#6bb6ff",
+          "#8dc7ff",
+          "#b0d8ff",
+          "#d2e9ff",
+          "#eef6ff"
+        ]
+      },
+      "prism-violet": {
+        "role": "tertiary",
+        "displayName": "Prism Violet (agent activity only)",
+        "tonalRamp": [
+          "#33195c",
+          "#4c268a",
+          "#7442c2",
+          "#b98bff",
+          "#c9a6ff",
+          "#d9c1ff",
+          "#e9dcff",
+          "#f6f0ff"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Note page title only."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "First-level headings in notes and markdown."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Second-level headings in notes and markdown."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Default for pages, chat, rows, inputs; header titles at 650."
+      },
+      "body-reading": {
+        "displayName": "Body Reading",
+        "purpose": "Note page body, the one long-form surface."
+      },
+      "body-sm": {
+        "displayName": "Body Small",
+        "purpose": "Buttons, Steps and Activity rows, notices, metadata."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Module tabs, badges, counts, search group heads."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "Code, terminal paths, command results."
+      }
+    },
+    "shadows": [
+      {
+        "name": "overlay",
+        "value": "0 6px 20px rgb(0 0 0 / .12)",
+        "purpose": "Toasts; dark mode alpha .5."
+      },
+      {
+        "name": "overlay-lg",
+        "value": "0 16px 48px rgb(0 0 0 / .2)",
+        "purpose": "Large page overlays; dark mode alpha .6."
+      },
+      {
+        "name": "search-panel",
+        "value": "0 18px 50px rgb(0 0 0 / 0.22), 0 2px 6px rgb(0 0 0 / 0.08)",
+        "purpose": "The ⌘T panel over an rgb(0 0 0 / .08) scrim."
+      },
+      {
+        "name": "selection-ring",
+        "value": "0 0 0 1px #e60012",
+        "purpose": "Selected canvas block or Studio thumbnail; not elevation."
+      }
+    ],
+    "motion": [
+      {
+        "name": "out",
+        "value": "cubic-bezier(.23, 1, .32, 1)",
+        "purpose": "Every user-triggered transition and reveal."
+      },
+      {
+        "name": "fast",
+        "value": "120ms",
+        "purpose": "Hover, press, twisty rotation."
+      },
+      {
+        "name": "base",
+        "value": "160ms",
+        "purpose": "Toast entrance and reveals."
+      },
+      {
+        "name": "press",
+        "value": "scale(.97)",
+        "purpose": "Button press; .94 on small chrome icon buttons."
+      },
+      {
+        "name": "instant",
+        "value": "0ms",
+        "purpose": "Keyboard-opened surfaces such as ⌘T."
+      },
+      {
+        "name": "prism-writing",
+        "value": "1.4s linear infinite conic rotation",
+        "purpose": "Rotating ✦ and live dot while an agent writes."
+      },
+      {
+        "name": "prism-ring",
+        "value": "2.6s linear infinite conic rotation",
+        "purpose": "Ring on the tab or terminal an agent is in."
+      },
+      {
+        "name": "prism-working",
+        "value": "3.5s linear infinite conic rotation",
+        "purpose": "Workspace folder mark while an agent works."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "prefers-reduced-motion: reduce → animation and transition none",
+        "purpose": "Disables all motion, prism included."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "compact",
+        "value": "760px"
+      }
+    ],
+    "prism": {
+      "linear": "linear-gradient(110deg, #ff6b8b 0%, #ffb86b 22%, #7cf2c8 46%, #6bb6ff 70%, #b98bff 92%)",
+      "conicStops": "#ff6b8b, #ffb86b, #7cf2c8, #6bb6ff, #b98bff, #ff6b8b",
+      "use": "Agent activity only."
+    }
+  },
+  "components": [
+    {
+      "name": "Button",
+      "kind": "button",
+      "refersTo": "button",
+      "description": "Default 28px control: hairline border, 2px corners, press scale.",
+      "html": "<button class=\"ds-btn\">Open file</button>",
+      "css": ".ds-btn{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border:1px solid var(--line-2,#c9c9c9);border-radius:2px;background:var(--paper,#fff);color:var(--ink,#111);font:550 12px/1 -apple-system,BlinkMacSystemFont,'Hiragino Sans',sans-serif;transition:background 120ms cubic-bezier(.23,1,.32,1),transform 120ms cubic-bezier(.23,1,.32,1)}.ds-btn:hover{background:var(--panel,#f2f2f2)}.ds-btn:active{transform:scale(.97)}.ds-btn:focus-visible{outline:2px solid var(--red,#e60012);outline-offset:1px}"
+    },
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one red action per area (Send, Save, Run).",
+      "html": "<button class=\"ds-btn-primary\">Send</button>",
+      "css": ".ds-btn-primary{display:inline-flex;align-items:center;height:28px;padding:0 12px;border:1px solid var(--red,#e60012);border-radius:2px;background:var(--red,#e60012);color:#fff;font:550 12px/1 -apple-system,BlinkMacSystemFont,'Hiragino Sans',sans-serif;transition:background 120ms cubic-bezier(.23,1,.32,1),transform 120ms cubic-bezier(.23,1,.32,1)}.ds-btn-primary:hover{background:var(--red-ink,#c4000f);border-color:var(--red-ink,#c4000f)}.ds-btn-primary:active{transform:scale(.97)}.ds-btn-primary:focus-visible{outline:2px solid var(--red,#e60012);outline-offset:1px}"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Hairline field; focus turns the border red, no glow.",
+      "html": "<input class=\"ds-input\" type=\"text\" placeholder=\"Message...\">",
+      "css": ".ds-input{height:28px;padding:5px 8px;border:1px solid var(--line-2,#c9c9c9);border-radius:2px;background:var(--paper,#fff);color:var(--ink,#111);font:13px/1.45 -apple-system,BlinkMacSystemFont,'Hiragino Sans',sans-serif;caret-color:var(--red,#e60012)}.ds-input::placeholder{color:var(--ink-3,#6e6e6e)}.ds-input:focus{outline:none;border-color:var(--red,#e60012)}"
+    },
+    {
+      "name": "Module with Red Tab",
+      "kind": "card",
+      "refersTo": "module-tab",
+      "description": "Signature: hairline module headed by a small red tab carrying count and live state.",
+      "html": "<section class=\"ds-mod\"><div class=\"ds-mod-head\"><span class=\"ds-tab\"><i class=\"ds-live\"></i>Chat · writing</span></div><div class=\"ds-mod-head\"><span class=\"ds-tab\">Steps <b class=\"ds-count\">4</b></span></div><ul class=\"ds-steps\"><li><time>08:29</time><span>Read example.com</span></li><li class=\"now\"><time>08:30</time><span>Wrote note</span></li></ul></section>",
+      "css": ".ds-mod{border:1px solid var(--line,#e0e0e0);background:var(--paper,#fff);padding:0 12px 12px;font:13px/1.45 -apple-system,BlinkMacSystemFont,'Hiragino Sans',sans-serif;color:var(--ink,#111);max-width:360px}.ds-mod-head{display:flex;margin:0 -12px 8px;border-bottom:1px solid var(--line,#e0e0e0)}.ds-tab{display:flex;align-items:center;gap:6px;height:22px;padding:0 8px;background:var(--red,#e60012);color:#fff;font:650 11px/1 -apple-system,sans-serif;letter-spacing:.01em}.ds-count{padding:0 4px;background:#fff;color:var(--red-ink,#c4000f);font-variant-numeric:tabular-nums}.ds-live{width:7px;height:7px;border-radius:50%;background:conic-gradient(#ff6b8b,#ffb86b,#7cf2c8,#6bb6ff,#b98bff,#ff6b8b);animation:ds-spin 1.4s linear infinite}@keyframes ds-spin{to{transform:rotate(360deg)}}@media (prefers-reduced-motion:reduce){.ds-live{animation:none}}.ds-steps{list-style:none;margin:0;padding:0;font-size:12px}.ds-steps li{display:grid;grid-template-columns:42px 1fr;gap:6px;padding:3px 0;border-bottom:1px solid var(--line,#e0e0e0)}.ds-steps time{color:var(--ink-3,#6e6e6e);font-variant-numeric:tabular-nums}.ds-steps li.now{color:var(--red-ink,#c4000f);font-weight:600}"
+    },
+    {
+      "name": "Badges",
+      "kind": "chip",
+      "refersTo": "badge",
+      "description": "Four kinds: filled red, outlined, grey, ink.",
+      "html": "<span class=\"ds-badge red\">attention</span> <span class=\"ds-badge out\">failed</span> <span class=\"ds-badge\">idle</span> <span class=\"ds-badge ink\">running</span>",
+      "css": ".ds-badge{display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:2px;font:600 11px/1 -apple-system,sans-serif;background:var(--panel-2,#e9e9e9);color:var(--ink-2,#4a4a4a)}.ds-badge.red{background:var(--red,#e60012);color:#fff}.ds-badge.out{background:transparent;color:var(--red-ink,#c4000f);box-shadow:inset 0 0 0 1px currentColor}.ds-badge.ink{background:var(--ink,#111);color:var(--paper,#fff)}"
+    },
+    {
+      "name": "Segmented Tabs",
+      "kind": "nav",
+      "refersTo": "segmented-active",
+      "description": "Hairline-divided segments; the pressed one is filled red.",
+      "html": "<div class=\"ds-seg\"><button aria-pressed=\"true\">Day</button><button>Week</button><button>Month</button></div>",
+      "css": ".ds-seg{display:inline-flex;height:28px;border:1px solid var(--line-2,#c9c9c9);border-radius:2px;overflow:hidden}.ds-seg button{border:0;height:26px;padding:0 10px;background:var(--paper,#fff);color:var(--ink,#111);font:550 12px/1 -apple-system,sans-serif}.ds-seg button+button{border-left:1px solid var(--line-2,#c9c9c9)}.ds-seg button:hover{background:var(--panel,#f2f2f2)}.ds-seg button[aria-pressed=true]{background:var(--red,#e60012);color:#fff}.ds-seg button:focus-visible{outline:2px solid var(--red,#e60012);outline-offset:-2px}"
+    },
+    {
+      "name": "Ruled List",
+      "kind": "custom",
+      "refersTo": "list-row",
+      "description": "30px hairline rows; hover Panel, selected Red Wash.",
+      "html": "<ul class=\"ds-list\"><li>src</li><li aria-selected=\"true\">README.md</li><li>package.json</li></ul>",
+      "css": ".ds-list{list-style:none;margin:0;padding:0;max-width:320px;font:13px/1.45 -apple-system,sans-serif;color:var(--ink,#111)}.ds-list li{display:flex;align-items:center;min-height:30px;padding:4px;border-bottom:1px solid var(--line,#e0e0e0)}.ds-list li:hover{background:var(--panel,#f2f2f2)}.ds-list li[aria-selected=true]{background:var(--red-wash,#fdeced)}"
+    },
+    {
+      "name": "Search Panel",
+      "kind": "custom",
+      "refersTo": "search-panel",
+      "description": "⌘T: one dense overlay module with red group tabs; appears instantly.",
+      "html": "<div class=\"ds-search\"><div class=\"ds-field\"><input placeholder=\"Search or ask\"><kbd>esc</kbd></div><span class=\"ds-group\">In Lima</span><div class=\"ds-row sel\"><b>Launch plan</b><span>Note</span><em>Open</em></div><div class=\"ds-row\"><b>Launch plan</b><span>Activity · note</span></div></div>",
+      "css": ".ds-search{width:min(520px,100%);border:1px solid var(--line-2,#c9c9c9);border-radius:4px;background:var(--paper,#fff);color:var(--ink,#111);font:13px/1.35 -apple-system,sans-serif;box-shadow:0 18px 50px rgb(0 0 0/.22),0 2px 6px rgb(0 0 0/.08)}.ds-field{display:flex;align-items:center;gap:8px;height:46px;padding:0 12px;border-bottom:1px solid var(--line,#e0e0e0)}.ds-field input{flex:1;border:0;outline:0;background:transparent;color:inherit;font:500 16px/1.2 -apple-system,sans-serif;caret-color:var(--red,#e60012)}.ds-field kbd{font:600 10.5px/1 -apple-system,sans-serif;padding:3px 5px;border:1px solid var(--line-2,#c9c9c9);border-radius:2px;color:var(--ink-2,#4a4a4a)}.ds-group{display:inline-flex;align-items:center;height:18px;margin:8px 0 2px;padding:0 7px;background:var(--red,#e60012);color:#fff;font:650 10.5px/1 -apple-system,sans-serif}.ds-row{display:flex;align-items:center;gap:8px;height:34px;padding:0 12px;border-bottom:1px solid var(--line,#e0e0e0)}.ds-row:last-child{border-bottom:0}.ds-row span{flex:1;font-size:11.5px;color:var(--ink-3,#6e6e6e)}.ds-row b{font-weight:500}.ds-row.sel{background:var(--red-wash,#fdeced)}.ds-row.sel b{font-weight:650}.ds-row em{font:650 10.5px/1 -apple-system,sans-serif;font-style:normal;color:#fff;background:var(--red,#e60012);padding:4px 7px;border-radius:2px}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Utility Portal",
+    "overview": "Lima is a working instrument packed the way contemporary Japanese portals pack a page: every work area is a white box ruled in 1px hairlines and headed by a small, solid utility-red tab. Modules butt edge to edge (shared hairlines, negative 1px margins) instead of floating as separate cards, so a single viewport carries the conversation, its timestamped steps, its helper agents and its files at once. Density is the point: 12 to 13px system sans, tight leading, tabular figures, 28px controls, 30px rows.\n\nColor does work, never mood. Red marks the primary action, the module tabs, the current selection and errors-as-state; everything else is ink on paper with grey hairlines. The one multicolour in the system, the prism, belongs to agent activity alone: a moving ring on the tab or terminal an agent is in, a rotating ✦ while it writes, a live dot inside a module tab. Light and dark follow macOS; dark inverts the ground and brightens the red so red text stays legible.\n\nThe world rejects the category default it replaced: grey airy chat columns, one blue accent, rounded floating cards, and the earlier glass-and-aurora \"Prism\" look.",
+    "keyCharacteristics": [
+      "Hairline-ruled modules headed by small red tabs; the tab is the heading, carries counts, and doubles as live state.",
+      "Two radii only (2px everywhere, 4px on the ⌘T overlay); flat at rest, shadows only on overlays.",
+      "System fonts only, one fixed 1.2 ramp (11 / 12 / 13 / 15.5 / 18.5 / 22px), tabular numerals on times and counts.",
+      "Red for action, selection and error; prism for agent activity; nothing else coloured.",
+      "Instant for keyboard, 120 to 160ms ease-out for user-triggered reveals, no decorative loops."
+    ],
+    "rules": [
+      {
+        "name": "The Red Does Work Rule",
+        "body": "Red appears only on a primary action, a module tab, the current selection or an error. If a red element is none of those, it is wrong.",
+        "section": "colors"
+      },
+      {
+        "name": "The Prism Is The Agent Rule",
+        "body": "The prism gradient appears only where an agent is acting: the ring on the tab or terminal it is in, the rotating ✦ while it writes, the live dot in a module tab or owner chip. It never decorates a header, a logo, an empty state or a button.",
+        "section": "colors"
+      },
+      {
+        "name": "The Brighter Red In The Dark Rule",
+        "body": "Dark mode uses the brighter red for every red role, because red text must stay legible on the dark ground; never reuse the light red there.",
+        "section": "colors"
+      },
+      {
+        "name": "The One Ramp Rule",
+        "body": "Sizes come from the 1.2 ramp (11, 12, 13, 15.5, 18.5, 22px). Hierarchy is weight and the red tab, not bigger type.",
+        "section": "typography"
+      },
+      {
+        "name": "The Tabular Clock Rule",
+        "body": "Times, counts and numeric columns always set `font-variant-numeric: tabular-nums`.",
+        "section": "typography"
+      },
+      {
+        "name": "The Overlays Only Rule",
+        "body": "A shadow means \"this floats over the page\". Modules, rows, buttons and inputs never cast one; selection uses a 1px red ring (`0 0 0 1px`), not elevation.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do head every work area with the red module tab, and put its count and live state in that tab.",
+      "Do rule modules and rows with 1px hairlines and let neighbouring modules share edges.",
+      "Do keep controls at 28px, rows at 30px, and type on the 11 / 12 / 13 / 15.5 / 18.5 / 22px ramp.",
+      "Do use the brighter dark-mode red for every red role in dark mode.",
+      "Do set times and counts in tabular figures.",
+      "Do make keyboard-opened surfaces instant and keep reveals at 120 to 160ms `cubic-bezier(.23,1,.32,1)`."
+    ],
+    "donts": [
+      "Don't use the prism for anything but agent activity: no prism headers, logos, buttons, borders or empty states.",
+      "Don't colour anything red that is not an action, a module tab, the current selection or an error.",
+      "Don't round beyond 2px (4px on the ⌘T overlay) or float modules as separate shadowed cards.",
+      "Don't put shadows on anything that does not float over the page.",
+      "Don't load remote fonts; the system stack is the type.",
+      "Don't add decorative loops, spinners or entrance animations on keyboard-opened surfaces.",
+      "Don't return to grey airy chat columns, a single blue accent, glass or aurora backgrounds."
+    ]
+  }
+}

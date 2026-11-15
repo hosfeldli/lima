@@ -64,12 +64,11 @@ class Panel {
     const doc = this.doc;
     this.input = el(doc, "input", { id: "lima-search-input", type: "text", placeholder: "Search the web, tabs, notes, apps — or ask Lima", "aria-label": "Lima Search",
       autocomplete: "off", spellcheck: "false" });
-    this.mark = el(doc, "button", { id: "lima-search-mark", title: "Ask Lima AI (⌘↩)", "aria-label": "Ask Lima AI", onclick: () => this.ask() });
+    this.mark = el(doc, "button", { id: "lima-search-mark", title: "Ask AI in a new chat (⌘↩)", "aria-label": "Ask AI", onclick: () => this.ask() });
     this.spinner = el(doc, "span", { id: "lima-search-spinner", hidden: true });
     this.results = el(doc, "div", { id: "lima-search-results", role: "listbox" });
     const hint = (keys, label) => el(doc, "span", { class: "lima-s-hint" }, el(doc, "kbd", { text: keys }), label);
     this.panel = el(doc, "div", { id: "lima-search", role: "dialog", "aria-label": "Lima Search" },
-      el(doc, "div", { id: "lima-search-eyebrow", text: "LIMA" }),
       el(doc, "div", { id: "lima-search-field" }, this.mark, this.input, this.spinner, el(doc, "kbd", { id: "lima-search-esc", text: "esc" })),
       this.results,
       el(doc, "div", { id: "lima-search-footer" }, hint("↑↓", "Navigate"), hint("↩", "Open"), hint("⌘↩", "Ask AI"), el(doc, "span", { class: "lima-s-flex" }), hint("esc", "Close")));
@@ -267,7 +266,7 @@ class Panel {
     for (const item of this.items) {
       if (item.group !== group) {
         group = item.group;
-        if (group !== "Top") nodes.push(el(doc, "div", { class: "lima-s-group", text: group === "Lima" && !this.input.value.trim() ? "Recent" : group }));
+        if (group !== "Top") nodes.push(el(doc, "div", { class: "lima-s-group", text: group === "Lima" ? (this.input.value.trim() ? "In Lima" : "Recent") : group === "Web" ? "Suggestions" : group }));
       }
       const selected = item.key === this.selectedKey;
       nodes.push(el(doc, "div", { class: "lima-s-row", role: "option", "aria-selected": String(selected), "data-key": item.key,
@@ -277,7 +276,7 @@ class Panel {
         el(doc, "span", { class: "lima-s-text" }, el(doc, "span", { class: "lima-s-title", text: item.title }), item.subtitle ? el(doc, "span", { class: "lima-s-sub", text: item.subtitle }) : null),
         selected ? el(doc, "span", { class: "lima-s-action", text: `↩ ${item.action}` }) : null));
     }
-    if (!nodes.length) nodes.push(el(doc, "div", { class: "lima-s-empty", text: "Type to search the web, your tabs and Lima. Click the Lima mark to ask AI." }));
+    if (!nodes.length) nodes.push(el(doc, "div", { class: "lima-s-empty", text: "Search the web, your tabs and Lima. Press ⌘↩ or click ✦ to ask AI instead." }));
     this.results.replaceChildren(...nodes);
     this.results.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
   }

@@ -87,9 +87,9 @@ export async function renderContext(app, reportId, { embedded = false, section =
   async function drawEvents() {
     try {
       const events = await call("context.recent", { limit: 150 });
-      const icons = { app: "▣", browser: "◍", terminal: "›", git: "⑂", agent: "✦", note: "✎", media: "♪", meeting: "◷", task: "✓", report: "▤" };
+      const icons = { app: "app", browser: "web", terminal: "terminal", git: "github", agent: "star", note: "note", media: "audio", meeting: "calendar", task: "check", report: "context" };
       eventsNode.replaceChildren(events.length ? el("ul", { class: "list" }, events.map(e => el("li", {},
-        el("span", { text: icons[e.kind] ?? "•", style: { width: "16px", textAlign: "center" } }),
+        icon(icons[e.kind] ?? "activity"),
         el("span", { class: "grow" }, e.title, e.detail ? el("span", { class: "muted", text: ` — ${e.detail}` }) : null),
         el("span", { class: "muted", text: relativeTime(e.timestamp) })))) : el("p", { class: "muted", text: "No activity recorded yet." }));
     } catch (error) { fail(eventsNode, error); }
@@ -135,8 +135,8 @@ function toggle(label, value, onChange) {
 export async function renderAudio(app) {
   setPage("Audio", "audio");
   const outputs = el("div"), nowPlaying = el("div");
-  const volume = el("input", { type: "range", min: 0, max: 100, step: 1, style: { width: "100%" }, "aria-label": "Volume" });
-  app.replaceChildren(bar("Audio"), el("div", { class: "prism-rule" }), page(card("Output", outputs, volume), card("Now playing", nowPlaying)));
+  const volume = el("input", { type: "range", min: 0, max: 100, step: 1, style: { width: "min(360px, 100%)", marginTop: "8px" }, "aria-label": "Volume" });
+  app.replaceChildren(bar("Audio"), el("div", { class: "prism-rule" }), page(el("div", { class: "pack" }, card("Output", outputs, volume), card("Now playing", nowPlaying))));
 
   const drawOutputs = () => call("audio.outputs").then(items => renderAudioOutputs(outputs, items)).catch(e => fail(outputs, e));
   call("audio.volume").then(v => { volume.value = Math.round(v * 100); });
@@ -146,8 +146,11 @@ export async function renderAudio(app) {
     const control = action => el("button", { onclick: () => call("media.control", { action }).catch(e => nowPlaying.append(el("p", { class: "error", text: errorText(e) }))) });
     nowPlaying.replaceChildren(
       item?.title ? el("p", {}, el("strong", { text: item.title }), el("span", { class: "muted", text: ` — ${item.artist} · ${item.player} (${item.state})` })) : el("p", { class: "muted", text: "Nothing playing in Spotify or Music." }),
-      el("div", { class: "row" }, Object.assign(control("previous"), { textContent: "⏮" }), Object.assign(control("playpause"), { textContent: "⏯" }),
-        Object.assign(control("next"), { textContent: "⏭" }), Object.assign(control("dj"), { textContent: "Spotify DJ" })));
+      el("div", { class: "row" },
+        Object.assign(control("previous"), { title: "Previous" }), Object.assign(control("playpause"), { title: "Play / pause" }),
+        Object.assign(control("next"), { title: "Next" }), Object.assign(control("dj"), { textContent: "Spotify DJ" })));
+    const glyphs = { Previous: "previous", "Play / pause": "play", Next: "next" };
+    for (const button of nowPlaying.querySelectorAll("button[title]")) { button.classList.add("icon-only"); button.append(icon(glyphs[button.title])); }
   }
   call("media.nowPlaying").then(drawNowPlaying).catch(() => drawNowPlaying(null));
   onEvent(m => { if (m.event === "media.nowPlaying") drawNowPlaying(m.data); });
@@ -169,14 +172,14 @@ export async function renderIntegrations(app) {
   setPage("Integrations & Settings", "integrations");
   const services = el("div"), mcp = el("div"), storage = el("div"), github = el("div");
   app.replaceChildren(bar("Integrations & Settings"), el("div", { class: "prism-rule" }),
-    page(card("Services", services, github), card("MCP server for external agents", mcp), card("Encrypted storage", storage),
+    page(card("Services", services, github), el("div", { class: "pack" }, card("MCP server for external agents", mcp), card("Encrypted storage", storage)),
       card("Search", el("button", { onclick: async () => { await call("search.resetLearning"); alert("Learned ranking reset."); } }, "Reset learned ranking"),
         " ", el("button", { onclick: async () => { const n = await call("search.rebuild", { source: "app" }); alert(`Index rebuilt (${n} items).`); } }, "Rebuild app index"))));
 
-  call("integrations.status").then(list => services.replaceChildren(el("ul", { class: "list" }, list.map(s => el("li", {},
+  call("integrations.status").then(list => (services.closest(".card").querySelector("h2").textContent = `Services · ${list.filter(x => x.state === "connected").length}/${list.length} connected`, services.replaceChildren(el("ul", { class: "list" }, list.map(s => el("li", {},
     el("strong", { text: s.name, style: { minWidth: "220px" } }), el("span", { class: "grow muted", text: s.detail }),
     el("span", { class: `badge ${s.state === "connected" ? "ok" : s.state === "needs_setup" ? "warn" : ""}`, text: s.state.replaceAll("_", " ") }),
-    s.id === "github" && s.state === "connected" ? el("button", { onclick: () => bridge.openTab("about:lima?tool=github.inbox") }, "Open inbox") : null))))).catch(e => fail(services, e));
+    s.id === "github" && s.state === "connected" ? el("button", { onclick: () => bridge.openTab("about:lima?tool=github.inbox") }, "Open inbox") : null)))))).catch(e => fail(services, e));
 
   async function drawMCP() {
     const scopes = new Set(await call("mcp.grants.get"));
@@ -199,7 +202,7 @@ export async function renderIntegrations(app) {
       s.legacyNotesMigration ? el("p", { class: "muted", text: `Lima 4.x notes imported and verified (${s.legacyNotesMigration}).` })
         : el("button", { onclick: async () => { const r = await call("notes.migrateLegacy"); alert(`Imported ${r.imported} of ${r.found} notes${r.verified ? " (verified)" : " — verification failed, originals untouched"}.`); drawStorage(); } }, "Import Lima 4.x notes"),
       s.legacyPlaintext.length ? el("div", { class: "notice warn" }, "Lima 4.x plaintext data still on disk (not deleted automatically): ", el("code", { text: s.legacyPlaintext.join(", ") })) : null,
-      el("h2", { text: "Recovery key", style: { marginTop: "14px" } }),
+      el("div", { class: "row-label", text: "Recovery key" }),
       el("p", { class: "muted", text: "Without a recovery key, losing this Mac's Keychain makes your Lima data unrecoverable." }),
       el("div", { class: "row" }, passphrase, el("button", { onclick: async () => {
         try { const r = await call("storage.exportRecoveryKey", { passphrase: passphrase.value }); passphrase.value = ""; alert(`Recovery key saved to ${r.path}. Keep it and the passphrase somewhere safe.`); }

@@ -22,6 +22,9 @@ export async function renderChat(app, chatId, initialPrompt) {
   mountChat(app, chatId);
 }
 
+/** The agent's own bookkeeping (tool lookup, todo lists) isn't a step. */
+const visibleTools = tools => tools.filter(tool => !/^(ToolSearch|TodoWrite)\b/.test(tool));
+
 /** "mcp__lima__workspace_open_tab: {json}" → "Opened example.com". */
 function toolLabel(raw) {
   const [name, ...rest] = raw.replace(/^mcp__lima__/, "").split(": ");
@@ -29,7 +32,7 @@ function toolLabel(raw) {
   // CLIs pass the arguments as (sometimes truncated) JSON: pick the telling field.
   const field = /"(url|command|title|name|path)"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(detail);
   if (field) {
-    const value = field[2];
+    const value = field[2].replace(/\\\//g, "/").replace(/\\"/g, '"');
     try { detail = /^https?:/.test(value) ? new URL(value).host + new URL(value).pathname.replace(/\/$/, "") : value; } catch { detail = value; }
   } else if (detail.startsWith("{")) detail = "";
   if (detail.length > 70) detail = `${detail.slice(0, 67)}…`;
@@ -47,19 +50,37 @@ async function mountChat(app, chatId) {
   const providerSelect = el("select", { "aria-label": "CLI" }, PROVIDERS.map(p => el("option", { value: p, text: p })));
   const modelSelect = el("select", { "aria-label": "Model" });
   const input = el("textarea", { placeholder: "Message…", rows: 1 });
-  const sendButton = el("button", { class: "send", title: "Send (↩)", onclick: send }, icon("send"));
-  const stopButton = el("button", { class: "send stop", title: "Stop", onclick: () => call("chat.cancel", { id: chatId }), hidden: true }, icon("stop"));
+  const sendButton = el("button", { class: "send", title: "Send (↩)", onclick: send }, "Send");
+  const stopButton = el("button", { class: "send stop", title: "Stop the reply", onclick: () => call("chat.cancel", { id: chatId }), hidden: true }, "Stop");
   const title = el("h1", { class: "chat-title" });
   const subtitle = el("div", { class: "chat-sub" });
+  const stateBadge = el("span", { class: "badge" });
   const draftKey = `draft.${chatId}`;
   input.value = prefs.get(draftKey, "");
 
+  // Modules: Chat (conversation + composer) | Steps · Agents · Files.
+  const chatTab = el("span", { class: "tab" }, "Chat");
+  const steps = el("ol", { class: "steps" });
+  const counted = (label, n) => [label, n ? el("span", { class: "count", text: String(n) }) : null].filter(Boolean);
+  const stepsTab = el("span", { class: "tab" }, "Steps");
+  const agentsTab = el("span", { class: "tab" }, "Agents");
+  const filesTab = el("span", { class: "tab" }, "Files");
+  const agents = el("ul", { class: "list" });
+  const files = el("ul", { class: "list" });
+  const side = el("aside", { class: "chat-side" },
+    el("section", { class: "mod" }, el("div", { class: "mod-head" }, stepsTab), steps),
+    el("section", { class: "mod", hidden: true }, el("div", { class: "mod-head" }, agentsTab), agents),
+    el("section", { class: "mod", hidden: true }, el("div", { class: "mod-head" }, filesTab,
+), files));
+  const body = el("div", { class: "chat-body solo" },
+    el("section", { class: "chat-main" }, el("div", { class: "mod-head" }, chatTab), messages,
+      el("div", { class: "composer" }, now,
+        el("div", { class: "composer-box" }, input,
+          el("div", { class: "composer-row" }, providerSelect, modelSelect, el("span", { class: "spacer" }), stopButton, sendButton)))),
+    side);
   app.replaceChildren(el("div", { class: "chat-page" },
-    el("header", { class: "chat-head" }, el("img", { class: "chat-star", src: STAR, alt: "" }), el("div", {}, title, subtitle)),
-    messages,
-    el("div", { class: "composer" }, now,
-      el("div", { class: "composer-box" }, input,
-        el("div", { class: "composer-row" }, providerSelect, modelSelect, el("span", { class: "spacer" }), stopButton, sendButton)))));
+    el("header", { class: "chat-head" }, el("img", { class: "chat-star", src: STAR, alt: "" }), title, stateBadge, subtitle),
+    body));
 
   const autosize = () => { input.style.height = "auto"; input.style.height = `${Math.min(220, input.scrollHeight)}px`; };
   input.addEventListener("input", () => { prefs.set(draftKey, input.value); autosize(); });
@@ -101,11 +122,18 @@ async function mountChat(app, chatId) {
     const name = workspace?.name ?? conversation.title;
     setPage(workspace ? "Chat" : conversation.title, STAR);
     title.textContent = name;
-    subtitle.textContent = workspace?.parentID ? `Helper agent · ${workspace.task ?? ""}` : workspace ? `Workspace agent · ${conversation.provider} · ${workspace.directory.replace(/^\/Users\/[^/]+/, "~")}` : conversation.provider;
+    const folder = workspace?.directory.split("/").filter(Boolean).pop();
+    subtitle.textContent = workspace?.parentID ? `Helper · ${workspace.task ?? ""}` : [conversation.provider, conversation.model && conversation.model !== "default" ? conversation.model : null, folder].filter(Boolean).join(" · ");
+    subtitle.title = workspace?.directory ?? "";
     providerSelect.value = conversation.provider;
     const running = conversation.messages.some(m => m.status === "streaming");
+    const failed = !running && conversation.messages.at(-1)?.status === "failed";
+    stateBadge.className = running ? "badge warn" : failed ? "badge bad" : "badge";
+    stateBadge.textContent = running ? "writing" : failed ? "failed" : "idle";
     stopButton.hidden = !running;
     sendButton.hidden = running;
+    chatTab.replaceChildren(...(running ? [el("i", { class: "live" }), "Chat · writing"] : ["Chat"]));
+    drawSteps();
     const atBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 60;
     messages.replaceChildren(...conversation.messages.map(messageNode));
     if (!conversation.messages.length) {
@@ -121,9 +149,10 @@ async function mountChat(app, chatId) {
         el("button", { class: "ghost edit", title: "Edit and resend", onclick: e => edit(message, e.currentTarget.parentElement) }, "Edit"));
     }
     const node = el("div", { class: "msg assistant" });
-    if (message.tools.length) {
-      const details = el("details", { class: "tools" }, el("summary", { text: `${message.tools.length} step${message.tools.length === 1 ? "" : "s"} · ${toolLabel(message.tools.at(-1))}` }),
-        ...message.tools.map(t => el("div", { text: toolLabel(t) })));
+    const shownTools = visibleTools(message.tools);
+    if (shownTools.length) {
+      const details = el("details", { class: "tools" }, el("summary", { text: `${shownTools.length} step${shownTools.length === 1 ? "" : "s"} · ${toolLabel(shownTools.at(-1))}` }),
+        ...shownTools.map(t => el("div", { text: toolLabel(t) })));
       node.append(details);
     }
     const body = markdown(message.text);
@@ -152,6 +181,40 @@ async function mountChat(app, chatId) {
     area.focus();
   }
 
+  // Steps: every tool call, timestamped by its reply; nothing disappears.
+  function drawSteps() {
+    const rows = [];
+    for (const message of conversation.messages) {
+      if (message.role !== "assistant") continue;
+      const time = new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+      visibleTools(message.tools).forEach((tool, i, tools) => {
+        const current = message.status === "streaming" && i === tools.length - 1;
+        rows.push(el("li", { class: current ? "now" : message.status === "failed" ? "failed" : "" }, el("time", { text: time }), el("span", { text: toolLabel(tool), title: tool })));
+      });
+    }
+    stepsTab.replaceChildren(...counted("Steps", rows.length));
+    steps.replaceChildren(...(rows.length ? rows.slice(-40) : [el("li", { class: "muted" }, el("time", { text: "" }), el("span", { text: "Tool calls appear here as the agent works." }))]));
+    steps.lastElementChild?.scrollIntoView?.({ block: "nearest" });
+  }
+
+  async function drawWorkspaceModules() {
+    if (!workspace) return;
+    body.classList.remove("solo");
+    const [all, chats] = await Promise.all([call("workspace.list").catch(() => []), call("chat.list").catch(() => [])]);
+    const running = new Set(chats.filter(c => c.running).map(c => c.id));
+    const helpers = all.filter(w => w.parentID === workspace.id);
+    agents.parentElement.hidden = !helpers.length;
+    agentsTab.replaceChildren(...counted("Agents", helpers.length));
+    agents.replaceChildren(...helpers.map(h => el("li", { class: "clickable", onclick: () => bridge.openTab(`about:lima?chat=${encodeURIComponent(h.conversationID)}`) },
+      el("span", { class: "grow", text: h.name, title: h.task ?? "" }),
+      el("span", { class: running.has(h.conversationID) ? "badge warn" : "badge", text: running.has(h.conversationID) ? "working" : "idle" }))));
+    const entries = await call("fs.list", { path: workspace.directory }).catch(() => []);
+    files.parentElement.hidden = false;
+    filesTab.replaceChildren(...counted("Files", entries.length));
+    files.replaceChildren(...(entries.length ? entries.slice(0, 30).map(f => el("li", {}, icon(f.directory ? "folder" : "file"), el("span", { class: "grow", text: f.name })))
+      : [el("li", { class: "muted", text: "Empty folder" })]));
+  }
+
   function paintNow(state) {
     const text = !state || state.surface === "idle" ? "" : state.surface === "chat" ? "Writing…"
       : state.surface === "terminal" ? "Working in the terminal" : `Reading ${state.url?.startsWith("about:lima?note=") ? "a note" : (() => { try { return new URL(state.url).host; } catch { return "a tab"; } })()}`;
@@ -169,7 +232,11 @@ async function mountChat(app, chatId) {
     } else if (message.event === "workspace.activity" && data.id === workspace?.id) {
       paintNow(data);
     } else if (message.event === "workspace.updated" && data.id === workspace?.id) {
-      workspace = data; draw();
+      workspace = data; draw(); drawWorkspaceModules();
+    } else if (workspace && ["workspace.created", "workspace.deleted"].includes(message.event)) {
+      drawWorkspaceModules();
+    } else if (workspace && message.event === "terminal.command") {
+      drawWorkspaceModules();
     }
   });
 
@@ -184,6 +251,7 @@ async function mountChat(app, chatId) {
     call("workspace.activity").then(all => paintNow(all[conversation.workspaceID])).catch(() => {});
   }
   draw();
+  drawWorkspaceModules();
   loadModels();
   autosize();
   input.focus();

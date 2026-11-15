@@ -265,12 +265,12 @@ class Workspaces {
     const children = [...folder.groupContainer.children].filter(node => !node.hasAttribute?.("zen-empty-tab") && (node.isZenFolder || node.localName === "tab"));
     const firstFolder = children.find(node => node.isZenFolder);
     if (!firstFolder) return;
-    const core = children.filter(node => node.localName === "tab" && rank(node) < 3).sort((a, b) => rank(a) - rank(b));
-    for (const tab of core) {
-      const index = children.indexOf(tab);
-      if (index > children.indexOf(firstFolder)) {
-        try { win.gBrowser.moveTabBefore(tab, firstFolder); } catch (error) { log(`reorder: ${error}`); }
-      }
+    const core = children.filter(node => node.localName === "tab" && rank(node) < 3);
+    const sorted = [...core].sort((a, b) => rank(a) - rank(b));
+    const inOrder = sorted.every((tab, i) => tab === core[i]) && core.every(tab => children.indexOf(tab) < children.indexOf(firstFolder));
+    if (inOrder) return;
+    for (const tab of sorted) {
+      try { win.gBrowser.moveTabBefore(tab, firstFolder); } catch (error) { log(`reorder: ${error}`); }
     }
   }
 

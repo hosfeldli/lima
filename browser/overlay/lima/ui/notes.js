@@ -11,6 +11,9 @@ function attachmentURL(id) {
 
 // MARK: Index
 
+/** Excerpt without Markdown syntax. */
+const plain = text => String(text).split(/\n+/).map(line => line.replace(/[#*_`>~]|\[( |x)\]|^\s*[-+]\s/g, "").trim()).filter(Boolean).join(" · ");
+
 export async function renderIndex(app) {
   setPage("Notes", "note");
   const body = el("div", { class: "page narrow" });
@@ -55,14 +58,14 @@ export async function renderIndex(app) {
           },
             el("img", { src: "resource://lima-ui/icons/note.svg", width: 16, height: 16, alt: "" }),
             el("span", { class: "grow" }, el("strong", { text: entry.title || "Untitled" }), " ",
-              el("span", { class: "muted", text: summary ? summary.excerpt.slice(0, 90) : "(content unavailable)" })),
+              el("span", { class: "muted", text: summary ? plain(summary.excerpt).slice(0, 90) : "(content unavailable)" })),
             summary?.kind === "canvas" ? el("span", { class: "badge", text: "canvas" }) : null,
             summary ? el("span", { class: "muted", text: relativeTime(summary.modifiedAt) }) : null,
-            el("button", { class: "ghost danger", title: "Move to trash", onclick: async e => {
+            el("button", { class: "ghost danger icon-only", title: "Move to trash", "aria-label": "Move to trash", onclick: async e => {
               e.stopPropagation();
               await bridge.browser("trashNote", { noteId: entry.id });
               load();
-            } }, "×")));
+            } }, icon("trash"))));
         }
         if (!rows.length) list.append(el("li", { class: "muted", text: "No notes. Drag a note here." }));
         content.push(el("section", {
@@ -72,7 +75,7 @@ export async function renderIndex(app) {
             const id = e.dataTransfer.getData("text/lima-note");
             if (id) { await bridge.browser("moveNote", { noteId: id, folderGuid: folder.guid }); load(); }
           },
-        }, el("h3", {}, folder.title, folder.guid === tree.defaultGuid ? el("span", { class: "badge", text: "default" }) : null), list));
+        }, el("h3", {}, folder.title, el("span", { class: "count", text: String(rows.length) })), list));
       }
       const trashed = notes.filter(n => n.trashed);
       if (trashed.length) {
@@ -84,7 +87,7 @@ export async function renderIndex(app) {
               if (confirm(`Permanently delete “${n.title}”? This cannot be undone.`)) { await call("notes.purge", { id: n.id }); load(); }
             } }, "Delete forever"))))));
       }
-      content.push(el("p", { class: "muted", text: "Notes are bookmarks: organize them in Zen's bookmarks like any page. Titles are stored in your browser profile; note content stays encrypted by Lima." }));
+      content.push(el("p", { class: "muted", style: { marginTop: "12px", fontSize: "12px" }, text: "Sections here are the Notebook folder in the sidebar; drag pages between sections there. Content stays encrypted by Lima." }));
       body.replaceChildren(...content);
     } catch (error) {
       body.replaceChildren(el("p", { class: "error", text: errorText(error) }));
@@ -190,12 +193,12 @@ async function renderClassic(app, note) {
     typeof iconOrText === "string" && iconOrText.length < 3 ? el("span", { text: iconOrText }) : iconOrText);
   const exec = (command, value) => () => document.execCommand(command, false, value);
   const toolbar = el("div", { class: "page-tools", role: "toolbar" },
-    tool("H1", "Heading", exec("formatBlock", "h1")), tool("H2", "Subheading", exec("formatBlock", "h2")), tool("¶", "Text", exec("formatBlock", "p")),
+    tool("H1", "Heading", exec("formatBlock", "h1")), tool("H2", "Subheading", exec("formatBlock", "h2")), tool(icon("paragraph"), "Text", exec("formatBlock", "p")),
     el("i", { class: "sep" }),
     tool("B", "Bold (⌘B)", exec("bold")), tool("I", "Italic (⌘I)", exec("italic")), tool("S", "Strikethrough", exec("strikeThrough")),
     tool("{}", "Code", () => wrapCode()),
     el("i", { class: "sep" }),
-    tool("•", "Bulleted list", exec("insertUnorderedList")), tool("1.", "Numbered list", exec("insertOrderedList")), tool("☐", "To-do", () => insertTodo()),
+    tool(icon("list"), "Bulleted list", exec("insertUnorderedList")), tool("1.", "Numbered list", exec("insertOrderedList")), tool(icon("checkbox"), "To-do", () => insertTodo()),
     el("i", { class: "sep" }),
     tool(icon("mic"), "Dictate (⌃⌥D)", () => bridge.browser("dictate", { noteId: note.id })),
     el("span", { class: "spacer" }), status,

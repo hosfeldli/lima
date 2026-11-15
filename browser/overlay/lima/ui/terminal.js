@@ -43,7 +43,7 @@ function mountTerminal(app, info, scrollback) {
   const tree = el("div", { class: "tree", role: "tree" });
   const rootLabel = el("span", { class: "explorer-root" });
   const explorer = el("aside", { class: "explorer" },
-    el("div", { class: "explorer-head" }, el("span", { text: "Explorer" }), rootLabel,
+    el("div", { class: "explorer-head" }, el("span", { text: "Files" }), rootLabel,
       el("button", { class: "ghost icon-only", title: "Refresh", onclick: () => refreshTree() }, icon("redo"))),
     tree);
   const preview = el("section", { class: "file-preview", hidden: true });
@@ -57,9 +57,9 @@ function mountTerminal(app, info, scrollback) {
   app.replaceChildren(el("div", { class: "orca" },
     explorer,
     el("main", { class: "term-main" },
-      el("header", { class: "term-bar" }, toggleTree, path, stateBadge, ownerBadge, el("span", { class: "spacer" }),
+      el("header", { class: "term-bar" }, el("span", { class: "tab" }, "Terminal"), toggleTree, path, stateBadge, ownerBadge, el("span", { class: "spacer" }),
         el("button", { class: "ghost", onclick: toggleHistory }, "History"),
-        el("button", { class: "ghost danger", title: "End this shell", onclick: closeSession }, icon("close"))),
+        el("button", { class: "ghost danger", title: "End this shell", onclick: closeSession }, "End shell")),
       leaseBar, historyList,
       el("div", { class: "term-split" }, host, preview))));
 
@@ -72,8 +72,8 @@ function mountTerminal(app, info, scrollback) {
   const term = new window.Terminal({
     cursorBlink: true, fontFamily: "SF Mono, Menlo, monospace", fontSize: 13, lineHeight: 1.15, scrollback: 10000, allowProposedApi: false,
     theme: matchMedia("(prefers-color-scheme: light)").matches
-      ? { background: "#fbfbfd", foreground: "#1d1f27", cursor: "#4f6df5", selectionBackground: "#c9d4ff" }
-      : { background: "#16171c", foreground: "#e6e8ef", cursor: "#8aa6ff", selectionBackground: "#3a4a7a" },
+      ? { background: "#ffffff", foreground: "#111111", cursor: "#e60012", cursorAccent: "#ffffff", selectionBackground: "#f9c9cd", red: "#c4000f", brightRed: "#e60012" }
+      : { background: "#141414", foreground: "#f2f2f2", cursor: "#ff2a3a", cursorAccent: "#141414", selectionBackground: "#5a1d22", red: "#ff5a66", brightRed: "#ff2a3a" },
   });
   const fit = new window.FitAddon.FitAddon();
   term.loadAddon(fit);
@@ -155,12 +155,13 @@ function mountTerminal(app, info, scrollback) {
   function update(next) {
     info = next;
     const label = { idle: "idle", running: "running", waitingForInput: "waiting for input", exited: `exited ${info.exitCode ?? ""}`, uncertain: "", disconnected: "disconnected" }[info.state] ?? info.state;
+    const agentHasKeyboard = info.owner.startsWith("agent:");
     stateBadge.textContent = label;
-    stateBadge.hidden = !label;
+    stateBadge.hidden = !label || agentHasKeyboard;
     stateBadge.dataset.state = info.state;
     const agent = info.owner.startsWith("agent:") ? info.owner.slice(6) : null;
     ownerBadge.hidden = !agent;
-    ownerBadge.textContent = agent ? "agent typing" : "";
+    ownerBadge.replaceChildren(...(agent ? [el("i", { class: "live" }), "agent typing"] : []));
     path.textContent = home(info.cwd);
     if (root !== info.cwd) {
       root = info.cwd;

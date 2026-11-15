@@ -12,6 +12,8 @@ const card = (title, ...children) => el("section", { class: "card" }, title ? el
 export async function renderActivity(app, tab = "commands", reportId = null) {
   setPage("Activity", "activity", 150);
   const list = el("div", { class: "timeline" });
+  const listTab = el("span", { class: "tab" }, "Commands");
+  const listModule = el("section", { class: "mod" }, el("div", { class: "mod-head" }, listTab), list);
   const body = el("div");
   const filter = el("select", { "aria-label": "Origin" }, ["all", "browser", "mcp", "chat", "automation"].map(o => el("option", { value: o, text: o === "all" ? "All surfaces" : o })));
   const tabs = el("div", { class: "segmented", role: "tablist" });
@@ -19,7 +21,7 @@ export async function renderActivity(app, tab = "commands", reportId = null) {
     tab = name;
     for (const b of tabs.children) b.setAttribute("aria-pressed", String(b.dataset.tab === name));
     filter.hidden = name !== "commands";
-    if (name === "commands") body.replaceChildren(list);
+    if (name === "commands") body.replaceChildren(listModule);
     else renderContext(body, name === "reports" ? reportId : null, { embedded: true, section: name });
   };
   for (const [name, label] of [["commands", "Commands"], ["activity", "Activity"], ["reports", "Reports"]]) {
@@ -32,19 +34,19 @@ export async function renderActivity(app, tab = "commands", reportId = null) {
 
   function eventNode(run) {
     const def = defs.get(run.capability);
-    return el("div", { class: `event${run.ok === false ? " failed" : ""}`, style: { "--hue": hueFor(def?.category) } },
-      el("span", { class: "chip", style: { width: "28px", height: "28px", borderRadius: "9px", display: "grid", placeItems: "center", color: "white", flex: "none",
-        background: `linear-gradient(135deg, hsl(${hueFor(def?.category)} 82% 62%), hsl(${hueFor(def?.category) + 38} 82% 56%))` } }, icon(run.icon)),
-      el("span", { class: "grow" }, el("strong", { text: run.title }), run.input ? el("span", { class: "muted", text: ` · ${run.input}` }) : null,
-        run.error ? el("div", { class: "error", style: { fontSize: "12px" }, text: run.error }) : null),
-      el("span", { class: "badge", text: run.origin }),
-      el("span", { class: "muted", style: { fontSize: "12px", minWidth: "54px", textAlign: "right" }, text: run.durationMs !== undefined ? `${Math.round(run.durationMs)} ms` : "…" }),
-      el("span", { class: "muted", style: { fontSize: "12px", minWidth: "64px", textAlign: "right" }, text: relativeTime(run.startedAt) }));
+    return el("div", { class: `event${run.ok === false ? " failed" : ""}` },
+      el("span", { class: "ico" }, icon(run.icon)),
+      el("span", { class: "grow" }, el("strong", { text: run.title }), run.input ? el("span", { class: "muted", text: ` ${run.input}` }) : null,
+        run.error ? el("div", { class: "error", text: run.error }) : null),
+      el("span", { class: run.origin === "browser" ? "badge" : "badge ink", text: run.origin }),
+      el("span", { class: "num", text: run.durationMs !== undefined ? `${Math.round(run.durationMs)} ms` : "…" }),
+      el("span", { class: "num", text: relativeTime(run.startedAt) }));
   }
 
   function draw() {
     const shown = runs.filter(r => filter.value === "all" || r.origin === filter.value);
-    list.replaceChildren(...(shown.length ? shown.map(eventNode) : [empty("activity", "No commands have run yet. Try ⌘K.")]));
+    listTab.replaceChildren("Commands", shown.length ? el("span", { class: "count", text: String(shown.length) }) : "");
+    list.replaceChildren(...(shown.length ? shown.map(eventNode) : [empty("activity", "No commands have run yet. Run one from ⌘T.")]));
   }
   filter.addEventListener("change", draw);
   onCapabilityRun(run => { runs = [run, ...runs].slice(0, 300); if (tab === "commands") draw(); });

@@ -16,7 +16,7 @@ export async function renderStudio(app) {
   const status = el("span", { class: "muted" });
   const ocrText = el("pre", { style: { whiteSpace: "pre-wrap", fontFamily: "var(--mono)", fontSize: "12px" }, hidden: true });
   const toolButton = (id, label) => el("button", { "data-tool": id, onclick: () => { tool = id; markTool(); } }, label);
-  const tools = el("div", { class: "row" }, toolButton("rect", "▭ Box"), toolButton("arrow", "↗ Arrow"), toolButton("redact", "▇ Redact"));
+  const tools = el("div", { class: "segmented", role: "group", "aria-label": "Markup tool" }, toolButton("rect", "Box"), toolButton("arrow", "Arrow"), toolButton("redact", "Redact"));
 
   app.replaceChildren(
     bar("Screenshot Studio",
@@ -27,11 +27,11 @@ export async function renderStudio(app) {
       el("button", { onclick: runOCR }, "Recognize Text"),
       el("button", { onclick: savePNG }, "Save PNG"),
       el("button", { onclick: saveToNote }, "Save to Note")),
-    el("div", { class: "studio" }, tray, el("div", { class: "stage" }, canvas, ocrText))
+    el("div", { class: "studio" }, tray, el("div", { class: "stage" }, el("span", { class: "tab" }, "Canvas"), canvas, ocrText))
   );
 
   function markTool() {
-    for (const b of tools.querySelectorAll("button")) b.classList.toggle("primary", b.dataset.tool === tool);
+    for (const b of tools.querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.tool === tool));
   }
   markTool();
 
@@ -48,11 +48,12 @@ export async function renderStudio(app) {
 
   async function loadTray(selectId) {
     const items = await call("capture.list");
-    tray.replaceChildren(...items.map(item => el("img", {
+    tray.replaceChildren(el("span", { class: "tab" }, "Captures", items.length ? el("span", { class: "count", text: String(items.length) }) : ""), ...items.map(item => el("img", {
       src: `data:image/png;base64,${item.pngBase64}`, alt: "Capture", class: item.id === (selectId ?? current?.id) ? "active" : "",
       onclick: () => select(item),
     })));
-    if (!items.length) tray.append(el("p", { class: "muted", text: "No captures yet." }));
+    canvas.hidden = !items.length;
+    if (!items.length) tray.append(el("p", { class: "muted", text: "No captures yet. Capture Region, Window or Display to start; captures stay here until you close Lima." }));
     const target = items.find(i => i.id === selectId) ?? (current ? items.find(i => i.id === current.id) : items[0]);
     if (target) select(target);
   }
