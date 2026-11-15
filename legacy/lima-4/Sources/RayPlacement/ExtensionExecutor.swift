@@ -1,0 +1,482 @@
+import AppKit
+import Darwin
+import Foundation
+import RayPlacementCore
+import RayPlacementWriting
+
+@MainActor
+final class ExtensionExecutor {
+    struct FormResult {
+        let headline: String
+        let detail: String
+        let output: String
+        let succeeded: Bool
+    }
+
+    private var activeProcesses: [UUID: Process] = [:]
+    private var cancelledProcesses = Set<UUID>()
+    private var timedOutProcesses = Set<UUID>()
+    private var timeoutWorkItems: [UUID: DispatchWorkItem] = [:]
+    private var usageTasks: [UUID: UUID] = [:]
+    private var registryTasks: [UUID: UUID] = [:]
+    private var performanceMeasurements: [UUID: UUID] = [:]
+
+    func cancelAll() {
+        Array(activeProcesses.keys).forEach { cancelProcess($0) }
+    }
+
+    private func cancelProcess(_ identifier: UUID, finishRegistryTask: Bool = true) {
+        guard let process = activeProcesses[identifier] else { return }
+        cancelledProcesses.insert(identifier)
+        timeoutWorkItems.removeValue(forKey: identifier)?.cancel()
+        if process.isRunning { process.terminate() }
+        if let usage = usageTasks.removeValue(forKey: identifier) {
+            UsageMonitor.shared.finish(usage, succeeded: false, detail: "Cancelled by user")
+        }
+        if let measurementID = performanceMeasurements.removeValue(forKey: identifier) {
+            PerformanceMonitor.shared.end(measurementID, succeeded: false)
+        }
+        if finishRegistryTask, let task = registryTasks.removeValue(forKey: identifier) {
+            TaskRegistry.shared.finish(task, state: .cancelled, detail: "Stopped by user")
+        }
+    }
+
+    private final class AsyncResult {
+        var resume: ((Result<ExtensionExecutionOutput, Error>) -> Void)?
+        func resolve(_ result: Result<ExtensionExecutionOutput, Error>) {
+            let callback = resume; resume = nil; callback?(result)
+        }
+    }
+
+    /// Async bridge used by workflows. The callback API remains the launcher
+    /// surface, while this bridge does not advance until the underlying action
+    /// has actually completed.
+    func executeAsync(
+        _ loaded: LoadedExtensionCommand,
+        clipboard: ClipboardHistoryService
+    ) async throws -> ExtensionExecutionOutput {
+        let invocationID = UUID()
+        let result = AsyncResult()
+        return try await withTaskCancellationHandler(operation: {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                result.resume = { continuation.resume(with: $0) }
+                execute(loaded, clipboard: clipboard, reportCancellation: true, invocationID: invocationID) { outcome in
+                    result.resolve(outcome)
+                }
+            }
+        }, onCancel: {
+            Task { @MainActor [weak self] in
+                self?.cancelProcess(invocationID)
+                result.resolve(.failure(ExecutionError.cancelled))
+            }
+        })
+    }
+
+    func execute(
+        _ loaded: LoadedExtensionCommand,
+        clipboard: ClipboardHistoryService,
+        reportCancellation: Bool = false,
+        invocationID: UUID = UUID(),
+        completion: @escaping (Result<ExtensionExecutionOutput, Error>) -> Void
+    ) {
+        guard SettingsStore.shared.isCommandEnabled(loaded), !ExtensionPackageManager.shared.isLogicallyRemoved(loaded.extensionID) else {
+            completion(.failure(ExecutionError.invalidAction("This extension is disabled or removed. Enable it in the Extension Library before running it."))); return
+        }
+        let action = loaded.command.action
+        if let chain = action.chain, !chain.isEmpty {
+            do {
+                try ExtensionAction.validateNativeChain(chain)
+            } catch {
+                completion(.failure(ExecutionError.invalidAction("Action chains may contain at most eight approved native actions.")))
+                return
+            }
+            completion(.success(.nativeChain(for: loaded, actions: chain)))
+            return
+        }
+        switch action.type {
+        case .url:
+            guard let url = URL(string: action.value) else {
+                completion(.failure(ExecutionError.invalidURL(action.value)))
+                return
+            }
+            if NSWorkspace.shared.open(url) {
+                ContextShelfIntegration.addURL(url, sourceApplication: NSRunningApplication.current.localizedName)
+                completion(.success(.text(for: loaded, value: nil)))
+            } else {
+                completion(.failure(ExecutionError.cannotOpen(url.absoluteString)))
+            }
+
+        case .file:
+            let url: URL
+            do {
+                url = try ExtensionSecurityPolicy.resolvePath(action.value, relativeTo: loaded.directory, capabilities: loaded.capabilities, executable: false)
+            } catch {
+                completion(.failure(ExecutionError.securityViolation(error.localizedDescription)))
+                return
+            }
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                completion(.failure(ExecutionError.missingFile(url.path)))
+                return
+            }
+            if NSWorkspace.shared.open(url) {
+                ContextShelfIntegration.addFile(url, sourceApplication: NSRunningApplication.current.localizedName)
+                completion(.success(.text(for: loaded, value: nil)))
+            } else {
+                completion(.failure(ExecutionError.cannotOpen(url.path)))
+            }
+
+        case .application:
+            // A path-based application action is retained for user extensions;
+            // operation-based actions are public native host requests.
+            if let operation = action.operation, !operation.isEmpty {
+                completion(.success(.native(for: loaded, action: action)))
+                return
+            }
+            let url: URL
+            do {
+                url = try ExtensionSecurityPolicy.resolvePath(action.value, relativeTo: loaded.directory, capabilities: loaded.capabilities, executable: false)
+            } catch {
+                completion(.failure(ExecutionError.securityViolation(error.localizedDescription)))
+                return
+            }
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                completion(.failure(ExecutionError.missingFile(url.path)))
+                return
+            }
+            if NSWorkspace.shared.open(url) {
+                completion(.success(.text(for: loaded, value: nil)))
+            } else {
+                completion(.failure(ExecutionError.cannotOpen(url.path)))
+            }
+
+        case .clipboard:
+            switch action.operation ?? "copy" {
+            case "copy":
+                clipboard.copy(action.value)
+                completion(.success(.text(for: loaded, value: nil)))
+            case "paste":
+                clipboard.copy(action.value)
+                completion(.success(.native(for: loaded, action: action)))
+            case "pastePlainText":
+                do {
+                    let text = try PlainTextPasteboardService.rewriteAsPlainText()
+                    clipboard.copy(text)
+                    completion(.success(.native(for: loaded, action: ExtensionAction(type: .clipboard, value: text, operation: "pastePlainText"))))
+                } catch {
+                    completion(.failure(error))
+                }
+            default:
+                completion(.failure(ExecutionError.invalidAction("Unknown clipboard operation.")))
+            }
+
+        case .form, .picker, .generator, .system, .window, .workspace:
+            completion(.success(.native(for: loaded, action: action)))
+
+        case .nativeCapability:
+            guard let operation = NativeCapabilityOperation(rawValue: action.operation ?? ""),
+                  NativeCapabilityRouter.supportedOperations.contains(operation) else {
+                completion(.failure(NativeCapabilityRouter.RoutingError.unavailable))
+                return
+            }
+            let fields = action.parameters ?? [:]
+            let summary = fields.keys.sorted().map { "\($0): \(fields[$0] ?? "")" }.joined(separator: " · ")
+            guard LimaConfirmationService.confirm(
+                title: "Allow \(loaded.extensionName) Once?",
+                detail: "This extension requests \(operation.rawValue). \(summary.isEmpty ? "No arguments." : summary) Review this exact call before allowing it.",
+                confirmTitle: "Allow Once", deliberate: true
+            ) else {
+                completion(.failure(NativeCapabilityAuthorizationError.approvalRequired))
+                return
+            }
+            let call = NativeCapabilityCall(
+                origin: .extensionCommand(extensionID: loaded.extensionID,
+                                          manifestHash: loaded.manifestHash,
+                                          commandID: loaded.command.id),
+                operation: operation,
+                arguments: .object(fields.mapValues(JSONValue.string))
+            )
+            Task { @MainActor in
+                do {
+                    let approvalID = try await NativeCapabilityRouter.shared.recordReviewedCall(call)
+                    let result = try await NativeCapabilityRouter.shared.execute(
+                        call, approvalID: approvalID
+                    )
+                    let data = try JSONEncoder().encode(result)
+                    completion(.success(.text(for: loaded, value: String(decoding: data, as: UTF8.self))))
+                } catch {
+                    completion(.failure(error))
+                }
+            }
+
+        case .shell:
+            run(action, relativeTo: loaded.directory, capabilities: loaded.capabilities, reportCancellation: reportCancellation, identifier: invocationID) { result in
+                completion(result.map { ExtensionExecutionOutput.text(for: loaded, value: $0) })
+            }
+        }
+    }
+
+    func executeForm(
+        _ loaded: LoadedExtensionCommand,
+        values: [String: String],
+        completion: @escaping (Result<FormResult, Error>) -> Void
+    ) {
+        guard SettingsStore.shared.isCommandEnabled(loaded), !ExtensionPackageManager.shared.isLogicallyRemoved(loaded.extensionID) else {
+            completion(.failure(ExecutionError.invalidAction("This extension is disabled or removed."))); return
+        }
+        guard let definition = loaded.command.action.form else {
+            completion(.failure(ExecutionError.invalidForm("The form definition is missing.")))
+            return
+        }
+        for field in definition.fields where field.required == true && isVisible(field, values: values) {
+            if values[field.id, default: ""].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                completion(.failure(ExecutionError.invalidForm("\(field.label) is required.")))
+                return
+            }
+        }
+        switch definition.execution.type {
+        case .shell:
+            guard let executable = definition.execution.executable, !executable.isEmpty else {
+                completion(.failure(ExecutionError.invalidForm("The executable is missing.")))
+                return
+            }
+            let action = ExtensionAction(
+                type: .shell,
+                value: ExtensionTemplate.render(executable, values: values),
+                arguments: definition.execution.arguments?.map { ExtensionTemplate.render($0, values: values) },
+                workingDirectory: definition.execution.workingDirectory.map { ExtensionTemplate.render($0, values: values) }
+            )
+            run(action, relativeTo: loaded.directory, capabilities: loaded.capabilities, reportCancellation: false, requestedTimeoutSeconds: definition.execution.timeoutSeconds) { result in
+                switch result {
+                case .success(let executionResult):
+                    let output = executionResult
+                    completion(.success(FormResult(
+                        headline: "Command completed",
+                        detail: "Exit status 0",
+                        output: output ?? "No output",
+                        succeeded: true
+                    )))
+                case .failure(let error): completion(.failure(error))
+                }
+            }
+        }
+    }
+
+    private func isVisible(_ field: ExtensionFormField, values: [String: String]) -> Bool {
+        guard let condition = field.visibleWhen else { return true }
+        let value = values[condition.field, default: ""]
+        if let equals = condition.equals, value != equals { return false }
+        if let notEquals = condition.notEquals, value == notEquals { return false }
+        return true
+    }
+
+    private func run(
+        _ action: ExtensionAction,
+        relativeTo directory: URL,
+        capabilities: Set<ExtensionManifest.Capability>,
+        reportCancellation: Bool = false,
+        identifier: UUID = UUID(),
+        requestedTimeoutSeconds: Int? = nil,
+        completion: @escaping (Result<String?, Error>) -> Void
+    ) {
+        let executable: URL
+        do {
+            executable = try ExtensionSecurityPolicy.resolvePath(action.value, relativeTo: directory, capabilities: capabilities, executable: true)
+        } catch {
+            completion(.failure(ExecutionError.securityViolation(error.localizedDescription)))
+            return
+        }
+        guard FileManager.default.isExecutableFile(atPath: executable.path) else {
+            completion(.failure(ExecutionError.notExecutable(executable.path)))
+            return
+        }
+
+        let task = Process()
+        let performance = SettingsStore.shared.runtimeExtensionPerformance
+        let timeoutInterval = requestedTimeoutSeconds.map { Double(min(300, max(1, $0))) } ?? performance.extensionTimeout
+        task.executableURL = executable
+        task.arguments = action.arguments ?? []
+        task.qualityOfService = performance.qualityOfService
+        task.environment = [
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin",
+            "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
+            "LANG": "en_US.UTF-8",
+            "OMP_NUM_THREADS": String(performance.threadLimit),
+            "OMP_THREAD_LIMIT": String(performance.threadLimit),
+            "MKL_NUM_THREADS": String(performance.threadLimit),
+            "VECLIB_MAXIMUM_THREADS": String(performance.threadLimit),
+            "TOKENIZERS_PARALLELISM": "false",
+            "LIMA_PERFORMANCE_SCALE": performance.rawValue,
+            "LIMA_THREAD_LIMIT": String(performance.threadLimit),
+            "LIMA_TIMEOUT_SECONDS": String(Int(timeoutInterval)),
+            // Compatibility for extensions installed before the Lima rename.
+            "RAYPLACEMENT_PERFORMANCE_SCALE": performance.rawValue,
+            "RAYPLACEMENT_THREAD_LIMIT": String(performance.threadLimit),
+            "RAYPLACEMENT_TIMEOUT_SECONDS": String(Int(timeoutInterval))
+        ]
+        if capabilities.contains(.contextShelf) {
+            task.environment?.merge(ContextShelfExtensionContext.environment()) { _, new in new }
+        }
+        if let workingDirectory = action.workingDirectory {
+            do {
+                task.currentDirectoryURL = try ExtensionSecurityPolicy.resolvePath(workingDirectory, relativeTo: directory, capabilities: capabilities, executable: false)
+            } catch {
+                completion(.failure(ExecutionError.securityViolation(error.localizedDescription)))
+                return
+            }
+        } else {
+            task.currentDirectoryURL = directory
+        }
+        // Merge the streams and continuously drain them so a chatty extension cannot
+        // deadlock on a full stderr or stdout pipe.
+        let output = Pipe()
+        task.standardOutput = output
+        task.standardError = output
+
+        let measurementID = PerformanceMonitor.shared.begin(.extensionExecution)
+        do {
+            try task.run()
+            activeProcesses[identifier] = task
+            performanceMeasurements[identifier] = measurementID
+            usageTasks[identifier] = UsageMonitor.shared.begin(
+                category: .extensionCommand,
+                operation: executable.lastPathComponent,
+                performance: performance
+            )
+            registryTasks[identifier] = TaskRegistry.shared.begin(
+                kind: .extensionTask,
+                title: "Extension is working",
+                detail: executable.lastPathComponent,
+                isCancellable: true,
+                onCancel: { [weak self] in self?.cancelProcess(identifier, finishRegistryTask: false) }
+            )
+        } catch {
+            PerformanceMonitor.shared.end(measurementID, succeeded: false)
+            completion(.failure(error))
+            return
+        }
+
+        if timeoutInterval > 0 {
+            let timeout = DispatchWorkItem { [weak self] in
+                DispatchQueue.main.async {
+                    guard let self,
+                          let running = self.activeProcesses[identifier],
+                          running.isRunning else { return }
+                    self.timedOutProcesses.insert(identifier)
+                    running.terminate()
+                }
+            }
+            timeoutWorkItems[identifier] = timeout
+            DispatchQueue.global(qos: .utility).asyncAfter(
+                deadline: .now() + timeoutInterval,
+                execute: timeout
+            )
+        }
+
+        let executionQueue = DispatchQueue.global(qos: performance.dispatchQoS)
+        executionQueue.async {
+            do {
+                let handle = output.fileHandleForReading
+                let limit = 1_000_000
+                var captured = Data()
+                var truncated = false
+                while let chunk = try handle.read(upToCount: 65_536), !chunk.isEmpty {
+                    let remaining = limit - captured.count
+                    if remaining > 0 {
+                        captured.append(chunk.prefix(remaining))
+                    }
+                    if chunk.count > remaining { truncated = true }
+                }
+                task.waitUntilExit()
+                var outputText = String(decoding: captured, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                if truncated { outputText += "\n\n[Output truncated after 1 MB]" }
+                DispatchQueue.main.async {
+                    self.activeProcesses.removeValue(forKey: identifier)
+                    self.timeoutWorkItems.removeValue(forKey: identifier)?.cancel()
+                    if self.cancelledProcesses.remove(identifier) != nil {
+                        self.timedOutProcesses.remove(identifier)
+                        self.registryTasks.removeValue(forKey: identifier)
+                        if reportCancellation { completion(.failure(ExecutionError.cancelled)) }
+                        return
+                    }
+                    if self.timedOutProcesses.remove(identifier) != nil {
+                        if let usage = self.usageTasks.removeValue(forKey: identifier) {
+                            UsageMonitor.shared.finish(usage, succeeded: false, outputCharacters: outputText.count, detail: "Timed out")
+                        }
+                                                self.finishRegistryTask(identifier, state: .failed, detail: "Timed out")
+                        completion(.failure(ExecutionError.timedOut(Int(timeoutInterval)))
+)
+                    } else if task.terminationStatus == 0 {
+                        if let usage = self.usageTasks.removeValue(forKey: identifier) {
+                            UsageMonitor.shared.finish(usage, succeeded: true, outputCharacters: outputText.count)
+                        }
+                        self.finishRegistryTask(identifier)
+                        completion(.success(outputText.isEmpty ? nil : outputText))
+                    } else {
+                        if let usage = self.usageTasks.removeValue(forKey: identifier) {
+                            UsageMonitor.shared.finish(usage, succeeded: false, outputCharacters: outputText.count, detail: "Exit \(task.terminationStatus)")
+                        }
+                        self.finishRegistryTask(identifier, state: .failed, detail: "Exited with status \(task.terminationStatus)")
+                        completion(.failure(ExecutionError.processFailed(task.terminationStatus, outputText)))
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.activeProcesses.removeValue(forKey: identifier)
+                    self.timeoutWorkItems.removeValue(forKey: identifier)?.cancel()
+                    if self.cancelledProcesses.remove(identifier) == nil {
+                        self.timedOutProcesses.remove(identifier)
+                        if let usage = self.usageTasks.removeValue(forKey: identifier) {
+                            UsageMonitor.shared.finish(usage, succeeded: false, detail: error.localizedDescription)
+                        }
+                        self.finishRegistryTask(identifier, state: .failed, detail: "Could not read command output")
+                        completion(.failure(error))
+                    } else {
+                        self.timedOutProcesses.remove(identifier)
+                        if reportCancellation { completion(.failure(ExecutionError.cancelled)) }
+                    }
+                }
+            }
+        }
+    }
+
+    private func finishRegistryTask(
+        _ identifier: UUID,
+        state: LimaTaskState = .completed,
+        detail: String? = nil
+    ) {
+        guard let task = registryTasks.removeValue(forKey: identifier) else { return }
+        if let measurementID = performanceMeasurements.removeValue(forKey: identifier) {
+            PerformanceMonitor.shared.end(measurementID, succeeded: state == .completed)
+        }
+        TaskRegistry.shared.finish(task, state: state, detail: detail)
+    }
+
+    enum ExecutionError: LocalizedError {
+        case invalidURL(String)
+        case missingFile(String)
+        case notExecutable(String)
+        case cannotOpen(String)
+        case processFailed(Int32, String)
+        case timedOut(Int)
+        case invalidForm(String)
+        case cancelled
+        case securityViolation(String)
+        case invalidAction(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidURL(let value): return "Invalid URL: \(value)"
+            case .missingFile(let path): return "File not found: \(path)"
+            case .notExecutable(let path): return "The extension script is not executable: \(path)"
+            case .cannotOpen(let value): return "macOS could not open: \(value)"
+            case .processFailed(let code, let message): return message.isEmpty ? "The command exited with status \(code)." : message
+            case .timedOut(let seconds): return "The extension exceeded its \(seconds)-second performance limit and was stopped."
+            case .invalidForm(let message): return message
+            case .cancelled: return "The workflow command was cancelled."
+            case .securityViolation(let message): return "Extension security policy rejected this action: \(message)"
+            case .invalidAction(let message): return message
+            }
+        }
+    }
+}

@@ -1,0 +1,127 @@
+name: Build and stage Lima release
+run-name: Lima ${{ inputs.release_tag }} public release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing immutable tag to build and stage (for example v3.14.3)
+        required: true
+        type: string
+      publish:
+        description: Promote the verified draft to a public GitHub release after all hosted checks pass
+        required: true
+        default: false
+        type: boolean
+
+permissions: {}
+
+jobs:
+  build-and-stage:
+    name: Build, archive, and stage
+    runs-on: macos-15
+    environment: release
+    permissions:
+      contents: write
+      actions: write
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RAYPLACEMENT_REQUIRE_STABLE_SIGNING: "1"
+      RAYPLACEMENT_SIGNING_MODE: self-signed-local
+      LIMA_RELEASE_EXPECTED_REF: refs/remotes/origin/ci-immutable-release
+    steps:
+      - name: Checkout immutable release
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.release_tag }}
+          # Harper remains in Git LFS during the staged GCS migration.
+          fetch-depth: 0
+          fetch-tags: true
+          lfs: true
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_RELEASE_SERVICE_ACCOUNT }}
+
+      - name: Configure Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Prepare verified build assets
+        shell: zsh {0}
+        env:
+          LIMA_BUILD_ASSET_BUCKET: ${{ vars.GCP_BUILD_ASSET_BUCKET }}
+        run: |
+          set -euo pipefail
+          ./scripts/prepare_build_assets.sh
+
+      - name: Prepare ephemeral signing identity
+        shell: zsh {0}
+        env:
+          LIMA_RELEASE_SIGNING_DIRECTORY: ${{ runner.temp }}/lima-signing
+          LIMA_GCP_SIGNING_P12_SECRET: lima-signing-p12
+          LIMA_GCP_SIGNING_P12_PASSWORD_SECRET: lima-signing-p12-password
+          LIMA_GCP_SPARKLE_PRIVATE_KEY_SECRET: lima-sparkle-private-key
+        run: |
+          set -euo pipefail
+          ./scripts/ci_prepare_signing.sh
+
+      - name: Verify immutable source and signing policy
+        shell: zsh {0}
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          ./scripts/check_release_consistency.sh
+          # The checkout is an annotated tag. Supply a temporary remote-style
+          # commit ref so the CI gate compares the immutable commit itself.
+          git update-ref refs/remotes/origin/ci-immutable-release "$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD)" = "$(git rev-list -n1 "$RELEASE_TAG")"
+          ./scripts/release_assert_tag_identity.sh --tag "$RELEASE_TAG"
+          ./scripts/release_preflight.sh --tag "$RELEASE_TAG"
+
+      - name: Build and verify immutable release artifacts
+        shell: zsh {0}
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          LIMA_RELEASE_SKIP_PREFLIGHT: "1"
+        run: |
+          set -euo pipefail
+          ./scripts/release_build.sh --tag "$RELEASE_TAG"
+
+      - name: Archive verified release artifacts privately
+        shell: zsh {0}
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          LIMA_RELEASE_ARCHIVE_BUCKET: ${{ vars.GCP_RELEASE_ARCHIVE_BUCKET }}
+        run: |
+          set -euo pipefail
+          ./scripts/archive_release_to_gcs.sh --tag "$RELEASE_TAG"
+
+      - name: Stage and verify the GitHub draft
+        shell: zsh {0}
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          ./scripts/release_stage.sh --tag "$RELEASE_TAG"
+          ./scripts/release_verify.sh --tag "$RELEASE_TAG" --remote-only
+
+      - name: Publish verified GitHub release
+        if: ${{ inputs.publish }}
+        shell: zsh {0}
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          ./scripts/release_publish.sh --tag "$RELEASE_TAG" --yes
+
+      - name: Remove ephemeral signing material
+        if: ${{ always() }}
+        shell: zsh {0}
+        run: |
+          set -euo pipefail
+          ./scripts/ci_cleanup_signing.sh

@@ -1,0 +1,478 @@
+import Foundation
+import RayPlacementCore
+
+@MainActor
+final class ExtensionLoader {
+    private let rootOverride: URL?
+    private let developmentOverride: [URL]?
+    init(root: URL? = nil, developmentFolders: [URL]? = nil) {
+        rootOverride = root; developmentOverride = developmentFolders
+    }
+    private var root: URL { rootOverride ?? ApplicationPaths.extensions }
+    private var developmentFolders: [URL] { developmentOverride ?? ExtensionDevelopmentFolders.shared.folders }
+    private func sources() -> [(URL, URL)] {
+        let files = FileManager.default
+        let entries = (try? files.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+        var result: [(URL, URL)] = []
+        for entry in entries {
+            let isDirectory = (try? entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            if isDirectory { result.append((entry.appendingPathComponent("manifest.json"), entry)) }
+            else if entry.pathExtension.lowercased() == "json" { result.append((entry, entry.deletingLastPathComponent())) }
+        }
+        result += developmentFolders.map { ($0.appendingPathComponent("manifest.json"), $0) }
+        return result.sorted { $0.0.path < $1.0.path }
+    }
+
+    private static var inspectionCache: [String: (String, ExtensionInspection)] = [:]
+    private func inspect(_ file: URL, directory: URL, fresh: Bool) -> ExtensionInspection {
+        let values = try? file.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        let stamp = "\(values?.fileSize ?? -1):\(values?.contentModificationDate?.timeIntervalSince1970 ?? 0)"
+        if !fresh, let cached = Self.inspectionCache[file.path], cached.0 == stamp { return cached.1 }
+        let result = ExtensionDeveloperKit.inspect(directory, manifestFile: file)
+        if Self.inspectionCache.count >= 128 { Self.inspectionCache.removeAll(keepingCapacity: true) }
+        Self.inspectionCache[file.path] = (stamp, result)
+        return result
+    }
+
+    func prepareFolder() {
+        do {
+            try ApplicationPaths.prepare()
+            installBundledExtensionsIfNeeded()
+            let readme = ApplicationPaths.extensions.appendingPathComponent("README.txt")
+            if !FileManager.default.fileExists(atPath: readme.path) {
+                try Self.extensionReadme.write(to: readme, atomically: true, encoding: .utf8)
+            }
+        } catch {
+            // The Settings screen reports load failures; launch should remain usable.
+        }
+    }
+
+    private func installBundledExtensionsIfNeeded() {
+        let fileManager = FileManager.default
+        guard let bundledRoot = bundledExtensionsRoot(fileManager: fileManager),
+              let bundledItems = try? fileManager.contentsOfDirectory(
+                at: bundledRoot,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+              ) else { return }
+
+        for source in bundledItems {
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: source.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue,
+                  fileManager.fileExists(atPath: source.appendingPathComponent("manifest.json").path) else { continue }
+            let destination = ApplicationPaths.extensions.appendingPathComponent(source.lastPathComponent, isDirectory: true)
+            do {
+                if !fileManager.fileExists(atPath: destination.path) {
+                    try fileManager.copyItem(at: source, to: destination)
+                } else if try bundledPackNeedsUpdate(source: source, destination: destination) {
+                    try Self.replaceBundledPack(source: source, destination: destination)
+                }
+            } catch {
+                // A damaged or locked pack must not prevent the remaining packs
+                // from loading. The issue appears when manifests are decoded.
+            }
+        }
+        // Older releases left a one-time installation marker. It is no longer
+        // used because each bundled pack is version-checked on every launch.
+        try? fileManager.removeItem(at: ApplicationPaths.extensions.appendingPathComponent(".lima-bundled-extensions"))
+    }
+
+    private func bundledPackNeedsUpdate(source: URL, destination: URL) throws -> Bool {
+        let decoder = JSONDecoder()
+        let sourceManifest = try decoder.decode(ExtensionManifest.self, from: Data(contentsOf: source.appendingPathComponent("manifest.json")))
+        let destinationManifest = try decoder.decode(ExtensionManifest.self, from: Data(contentsOf: destination.appendingPathComponent("manifest.json")))
+        let destinationIsBundled = destinationManifest.bundled
+            || destinationManifest.provenance == .bundled
+            || destinationManifest.trust == .bundled
+            || destinationManifest.trust == .builtIn
+        return ExtensionBundleUpdatePolicy.shouldUpdate(
+            shippedVersion: sourceManifest.version,
+            installedVersion: destinationManifest.version,
+            destinationIsBundled: destinationIsBundled
+        )
+    }
+
+    /// Stage the shipped pack before touching the installed copy, then move
+    /// the old directory aside for rollback. Repair keeps that old copy as its
+    /// user-visible backup; automatic updates remove the temporary rollback
+    /// only after the replacement is installed.
+    static func replaceBundledPack(
+        source: URL, destination: URL, backup: URL? = nil,
+        activate: ((URL, URL) throws -> Void)? = nil
+    ) throws {
+        let fileManager = FileManager.default
+        let parent = destination.deletingLastPathComponent()
+        let temporary = parent.appendingPathComponent(
+            ".\(destination.lastPathComponent).update-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let rollback = backup ?? parent.appendingPathComponent(
+            ".\(destination.lastPathComponent).previous-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        do {
+            try fileManager.copyItem(at: source, to: temporary)
+        } catch {
+            try? fileManager.removeItem(at: temporary)
+            throw error
+        }
+        var movedPrevious = false
+        var activationStarted = false
+        do {
+            if fileManager.fileExists(atPath: destination.path) {
+                if backup != nil {
+                    try fileManager.createDirectory(
+                        at: rollback.deletingLastPathComponent(),
+                        withIntermediateDirectories: true
+                    )
+                }
+                try fileManager.moveItem(at: destination, to: rollback)
+                movedPrevious = true
+            }
+            activationStarted = true
+            if let activate {
+                try activate(temporary, destination)
+            } else {
+                try fileManager.moveItem(at: temporary, to: destination)
+            }
+            guard fileManager.fileExists(atPath: destination.path) else {
+                throw CocoaError(.fileNoSuchFile)
+            }
+            if movedPrevious && backup == nil {
+                try? fileManager.removeItem(at: rollback)
+            }
+        } catch {
+            let replacementError = error
+            try? fileManager.removeItem(at: temporary)
+            if activationStarted {
+                do {
+                    // A failed activation may leave a partial new pack. Remove
+                    // it before restoring the previous installed directory.
+                    if fileManager.fileExists(atPath: destination.path) {
+                        try fileManager.removeItem(at: destination)
+                    }
+                    if movedPrevious {
+                        try fileManager.moveItem(at: rollback, to: destination)
+                    }
+                } catch {
+                    let recoveryPath = movedPrevious ? rollback.path : destination.path
+                    throw NSError(
+                        domain: "Lima.ExtensionLoader", code: 1,
+                        userInfo: [NSLocalizedDescriptionKey:
+                            "Extension replacement failed and cleanup could not complete. Inspect \(recoveryPath)."]
+                    )
+                }
+            }
+            throw replacementError
+        }
+    }
+
+    struct RepairReport {
+        let repairedCount: Int
+        let backupURL: URL?
+        let errors: [String]
+
+        var summary: String {
+            if repairedCount == 0 && errors.isEmpty { return "Bundled extensions are already current" }
+            let backup = backupURL.map { " Backup: \($0.lastPathComponent)." } ?? ""
+            if errors.isEmpty { return "Repaired \(repairedCount) bundled extension\(repairedCount == 1 ? "" : "s").\(backup)" }
+            return "Repaired \(repairedCount) extension\(repairedCount == 1 ? "" : "s") with \(errors.count) issue\(errors.count == 1 ? "" : "s")."
+        }
+    }
+
+    /// A package's declarative v3 metadata. It is intentionally separate from
+    /// `LoadedExtensionCommand`: reading this catalog never prepares folders,
+    /// registers packages, runs commands, installs content, or changes approval.
+    struct ContributionCatalogEntry: Identifiable {
+        let extensionID: String
+        let extensionName: String
+        let capabilities: Set<ExtensionManifest.Capability>
+        let tools: [ExtensionToolDefinition]
+        let skills: [ExtensionSkillDefinition]
+        let agents: [ExtensionAgentDefinition]
+
+        var id: String { extensionID }
+    }
+
+    /// Reinstalls the copies shipped inside Lima without touching unrelated
+    /// user extensions. Existing bundled copies are moved to a timestamped
+    /// backup first, so repairing an extension is reversible instead of a
+    /// destructive overwrite.
+    func repairBundledExtensions() -> RepairReport {
+        let fileManager = FileManager.default
+        do { try ApplicationPaths.prepare() } catch {
+            return RepairReport(repairedCount: 0, backupURL: nil, errors: [error.localizedDescription])
+        }
+        guard let bundledRoot = bundledExtensionsRoot(fileManager: fileManager),
+              let bundledItems = try? fileManager.contentsOfDirectory(
+                at: bundledRoot,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+              ) else {
+            return RepairReport(repairedCount: 0, backupURL: nil, errors: ["Lima's bundled extensions are unavailable."])
+        }
+
+        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let backupRoot = ApplicationPaths.extensions.appendingPathComponent(
+            ".repair-backups/\(stamp)-\(UUID().uuidString)", isDirectory: true
+        )
+        var backupURL: URL?
+        var repairedCount = 0
+        var errors: [String] = []
+
+        for source in bundledItems {
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: source.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue,
+                  fileManager.fileExists(atPath: source.appendingPathComponent("manifest.json").path) else { continue }
+            let destination = ApplicationPaths.extensions.appendingPathComponent(source.lastPathComponent, isDirectory: true)
+            do {
+                let hadInstalledCopy = fileManager.fileExists(atPath: destination.path)
+                let backup = hadInstalledCopy
+                    ? backupRoot.appendingPathComponent(source.lastPathComponent, isDirectory: true)
+                    : nil
+                try Self.replaceBundledPack(
+                    source: source, destination: destination, backup: backup
+                )
+                if hadInstalledCopy { backupURL = backupRoot }
+                repairedCount += 1
+            } catch {
+                errors.append("\(source.lastPathComponent): \(error.localizedDescription)")
+            }
+        }
+
+        try? fileManager.removeItem(at: ApplicationPaths.extensions.appendingPathComponent(".lima-bundled-extensions"))
+        installBundledExtensionsIfNeeded()
+        return RepairReport(repairedCount: repairedCount, backupURL: backupURL, errors: errors)
+    }
+
+    private func bundledExtensionsRoot(fileManager: FileManager) -> URL? {
+        let candidates = [
+            Bundle.main.resourceURL?.appendingPathComponent("BundledExtensions", isDirectory: true),
+            URL(fileURLWithPath: fileManager.currentDirectoryPath).appendingPathComponent("Extensions", isDirectory: true),
+            URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Extensions", isDirectory: true)
+        ].compactMap { $0 }
+        return candidates.first { fileManager.fileExists(atPath: $0.path) }
+    }
+
+    /// Read schema-v3 contribution metadata from packages that would be eligible
+    /// to load. This intentionally avoids `prepareFolder()` and package
+    /// registration so callers such as AI catalog inspection remain read-only.
+    func contributionCatalog(fresh: Bool = false) -> [ContributionCatalogEntry] {
+        let manifestFiles = sources().map { $0.0 }
+
+        let approvals = ExtensionApprovalStore.records()
+        var catalog: [ContributionCatalogEntry] = []
+        var seenIDs = Set<String>()
+        for file in manifestFiles {
+            let inspection = inspect(file, directory: file.deletingLastPathComponent(), fresh: fresh)
+            guard inspection.isValid, let manifest = inspection.manifest else { continue }
+
+            let isBundled = manifest.bundled
+                || manifest.provenance == .bundled
+                || manifest.trust == .bundled
+                || manifest.trust == .builtIn
+            guard !ExtensionPackageManager.shared.isLogicallyRemoved(manifest.id),
+                  SettingsStore.shared.isManifestEnabled(manifest),
+                  !(isBundled && developmentFolders.contains(file.deletingLastPathComponent())) else { continue }
+            if !isBundled {
+                let hash = inspection.manifestHash
+                guard let approval = approvals[manifest.id],
+                      approval.manifestHash == hash,
+                      approval.capabilities.isSuperset(of: manifest.capabilities) else { continue }
+            }
+            guard seenIDs.insert(manifest.id).inserted else { continue }
+            let contributions = manifest.contributions
+            guard !contributions.tools.isEmpty || !contributions.skills.isEmpty || !contributions.agents.isEmpty else { continue }
+            catalog.append(
+                ContributionCatalogEntry(
+                    extensionID: manifest.id,
+                    extensionName: manifest.name,
+                    capabilities: manifest.capabilities,
+                    tools: contributions.tools,
+                    skills: contributions.skills,
+                    agents: contributions.agents
+                )
+            )
+        }
+        return catalog
+    }
+
+    /// The default loader prepares and registers extension packages for the launcher.
+    /// AI catalog inspection passes both flags as false so it only reads existing
+    /// manifests and cannot create, update, approve, or otherwise alter a pack.
+    func load(prepare: Bool = true, registerPackages: Bool = true) -> (commands: [LoadedExtensionCommand], issues: [ExtensionIssue]) {
+        if prepare { prepareFolder() }
+        let manifestFiles = sources()
+
+        var loaded: [LoadedExtensionCommand] = []
+        var issues: [ExtensionIssue] = []
+        var seenExtensionIDs = Set<String>()
+        var seenCommandIDs = Set<String>()
+
+        for (file, directory) in manifestFiles {
+            do {
+                let inspection = inspect(file, directory: directory, fresh: true)
+                guard inspection.isValid, let manifest = inspection.manifest, let manifestHash = inspection.manifestHash else {
+                    for diagnostic in inspection.diagnostics where diagnostic.severity == .error {
+                        issues.append(ExtensionIssue(file: file.path, message: "\(diagnostic.path): \(diagnostic.message) \(diagnostic.fix)"))
+                    }
+                    continue
+                }
+                if (manifest.bundled || manifest.provenance == .bundled || manifest.trust == .bundled || manifest.trust == .builtIn), ExtensionPackageManager.shared.isLogicallyRemoved(manifest.id) {
+                    continue
+                }
+                guard (1...3).contains(manifest.schemaVersion) else {
+                    issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Unsupported schema version \(manifest.schemaVersion)."))
+                    continue
+                }
+                guard !manifest.id.isEmpty, !manifest.name.isEmpty, manifest.id.range(of: "^[A-Za-z0-9._-]+$", options: .regularExpression) != nil else {
+                    issues.append(ExtensionIssue(file: file.lastPathComponent, message: "The extension id and name are required."))
+                    continue
+                }
+                if developmentFolders.contains(directory), manifest.bundled || manifest.provenance == .bundled || manifest.trust == .bundled || manifest.trust == .builtIn {
+                    issues.append(ExtensionIssue(file: file.path, message: "Development folders cannot claim bundled trust."))
+                    continue
+                }
+                let isBundled = manifest.bundled || manifest.provenance == .bundled || manifest.trust == .bundled || manifest.trust == .builtIn
+                if registerPackages {
+                    ExtensionPackageManager.shared.register(id: manifest.id, name: manifest.name, version: manifest.version, provenance: isBundled ? .bundled : (developmentFolders.contains(directory) ? .localDeveloper : .userInstalled), state: SettingsStore.shared.isManifestEnabled(manifest) ? .installed : .disabled, manifestHash: manifestHash)
+                }
+                if isBundled {
+                    // Bundled packs are shipped and verified with Lima; they do not
+                    // require the interactive approval flow used by user extensions.
+                } else if let approval = ExtensionApprovalStore.record(for: manifest.id) {
+                    guard approval.manifestHash == manifestHash,
+                          approval.capabilities.isSuperset(of: manifest.capabilities) else {
+                        issues.append(ExtensionIssue(
+                            file: file.lastPathComponent,
+                            message: "This extension changed its manifest or requested additional capabilities. Re-approval is required.",
+                            extensionID: manifest.id,
+                            manifestHash: manifestHash,
+                            capabilities: manifest.capabilities
+                        ))
+                        continue
+                    }
+                } else {
+                    issues.append(ExtensionIssue(
+                        file: file.lastPathComponent,
+                        message: "This extension has not been approved. Review its requested capabilities before loading it.",
+                        extensionID: manifest.id,
+                        manifestHash: manifestHash,
+                        capabilities: manifest.capabilities
+                    ))
+                    continue
+                }
+                guard seenExtensionIDs.insert(manifest.id).inserted else {
+                    issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Duplicate extension id: \(manifest.id)"))
+                    continue
+                }
+                for command in manifest.commands {
+                    guard !command.id.isEmpty, !command.title.isEmpty else {
+                        issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Every command needs a nonempty id and title."))
+                        continue
+                    }
+                    let compositeID = "\(manifest.id).\(command.id)"
+                    guard seenCommandIDs.insert(compositeID).inserted else {
+                        issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Duplicate command id: \(command.id)"))
+                        continue
+                    }
+                    if command.action.type == .nativeCapability,
+                       NativeCapabilityOperation(rawValue: command.action.operation ?? "") == nil {
+                        issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Command \(command.id) names an unsupported native capability operation."))
+                        continue
+                    }
+                    var required = requiredCapabilities(for: command.action)
+                    if command.action.type == .shell, command.action.value.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") {
+                        required.insert(.externalExecution)
+                    }
+                    if command.action.type == .form, command.action.form?.execution.type == .shell, command.action.form?.execution.executable?.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") == true {
+                        required.insert(.externalExecution)
+                    }
+                    guard required.isSubset(of: manifest.capabilities) else {
+                        let missing = required.subtracting(manifest.capabilities).map(\.rawValue).sorted().joined(separator: ", ")
+                        issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Command \(command.id) requires undeclared capabilities: \(missing)."))
+                        continue
+                    }
+                    if let surface = command.surface {
+                        switch surface.kind {
+                        case .form where command.action.type != .form:
+                            issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Command \(command.id) declares a form surface but its action is not a form."))
+                            continue
+                        case .generator where command.action.type != .generator:
+                            issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Command \(command.id) declares a generator surface but its action is not a generator."))
+                            continue
+                        case .picker, .textTool, .liveOutput:
+                            // Descriptor-driven surfaces are valid API v3 metadata.
+                            // The host may choose the appropriate renderer at execution time.
+                            break
+                        default:
+                            break
+                        }
+                    }
+                    if command.action.type == .form || command.action.type == .generator {
+                        guard (command.presentation ?? (command.runInBackground == true ? .background : manifest.presentation)) != .background else {
+                            issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Interactive command \(command.id) cannot use background presentation because it requires input."))
+                            continue
+                        }
+                        if command.action.type == .form {
+                            guard let form = command.action.form, !form.fields.isEmpty else {
+                                issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Form command \(command.id) needs a form definition and at least one field."))
+                                continue
+                            }
+                            let fieldIDs = form.fields.map(\.id)
+                            guard Set(fieldIDs).count == fieldIDs.count,
+                                  fieldIDs.allSatisfy({ !$0.isEmpty }) else {
+                                issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Form command \(command.id) has an empty or duplicate field id."))
+                                continue
+                            }
+                        }
+                    }
+                    do {
+                        if command.action.type == .shell {
+                            _ = try ExtensionSecurityPolicy.resolvePath(command.action.value, relativeTo: directory, capabilities: manifest.capabilities, executable: true)
+                        }
+                        if command.action.type == .file || command.action.type == .application {
+                            _ = try ExtensionSecurityPolicy.resolvePath(command.action.value, relativeTo: directory, capabilities: manifest.capabilities, executable: false)
+                        }
+                    } catch {
+                        issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Command \(command.id) has an unsafe path: \(error.localizedDescription)."))
+                        continue
+                    }
+                    loaded.append(LoadedExtensionCommand(
+                        extensionID: manifest.id,
+                        extensionName: manifest.name,
+                        directory: directory,
+                        command: command,
+                        manifestHash: manifestHash,
+                        capabilities: manifest.capabilities,
+                        trust: manifest.trust,
+                        pack: manifest.pack,
+                        category: manifest.category,
+                        bundled: manifest.bundled,
+                        version: manifest.version,
+                        presentation: command.presentation ?? (command.runInBackground == true ? .background : manifest.presentation)
+                    ))
+                }
+            }
+        }
+
+        return (loaded, issues)
+    }
+
+    private func requiredCapabilities(for action: ExtensionAction) -> Set<ExtensionManifest.Capability> {
+        action.inferredCapabilities
+    }
+
+    static let extensionReadme = """
+    LIMA EXTENSIONS
+
+    Add a folder here with a manifest.json file. Commands can use Lima's approved
+    local capabilities such as application, window, system, clipboard, picker,
+    workspace, file, URL, form, and shell actions. Reload Extensions after editing.
+    Scripts run locally with your user account's permissions.
+
+    See the project's Examples folder for a complete manifest and script.
+    """
+}

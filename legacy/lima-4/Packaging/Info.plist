@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Lima</string>
+	<key>CFBundleExecutable</key>
+	<string>Lima</string>
+	<key>CFBundleIconFile</key>
+	<string>RayPlacement</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.liam.lima</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Lima</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>4.2.0</string>
+	<key>CFBundleVersion</key>
+	<string>4002000</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSUIElement</key>
+	<false/>
+	<key>LimaSparkleAppcastURL</key>
+	<string>https://github.com/hosfeldli/ray-placement/releases/latest/download/appcast.xml</string>
+	<key>LimaUpdateMetadataURL</key>
+	<string>https://github.com/hosfeldli/ray-placement/releases/latest/download/latest.json</string>
+	<key>LimaUpdatePolicyVersion</key>
+	<integer>1</integer>
+	<key>NSAccessibilityUsageDescription</key>
+	<string>Lima uses Accessibility only when you ask it to read and replace selected text, resize windows, lock the screen, or paste into another app.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Lima uses Apple Events for music controls you press and, when you explicitly set up Mail access, to discover Apple Mail accounts you choose. Lima does not read Mail at launch.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Lima reads and changes calendar events only when you review an exact Calendar tool call in AI Chat.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Lima accesses your calendar only when you review a Calendar tool call in AI Chat.</string>
+	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
+	<string>Lima creates calendar events only when you review an exact Calendar tool call in AI Chat.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Lima accesses Contacts only after you review an exact Contacts tool call in AI Chat and macOS grants access.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Built for personal use.</string>
+	<key>NSLocationUsageDescription</key>
+	<string>Lima requests your current location only when you review the Location tool call in AI Chat.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Lima requests your current location only when you review the Location tool call in AI Chat. Lima does not keep a location history.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Lima records audio only after you press Dictate. Recordings stay on this Mac unless you explicitly choose OpenAI Cloud Transcription.</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Lima reads and changes Apple Reminders only when you review an exact Reminders tool call in AI Chat.</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>Lima accesses Apple Reminders only when you review a Reminders tool call in AI Chat.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Lima uses on-device speech recognition to transcribe short recorded segments into a separate local dictation conversation.</string>
+	<key>SUFeedURL</key>
+	<string>https://github.com/hosfeldli/ray-placement/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>fyOhQjqcI/f18TiRvtKyCSD5PM8RHUZtitjnZKLs+08=</string>
+</dict>
+</plist>

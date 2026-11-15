@@ -1,0 +1,11 @@
+.DS_Store
+.build/
+__pycache__/
+*.pyc
+build/
+dist/
+Downloads/
+Packaging/RayPlacement.iconset/
+Packaging/Vendor/Whisper/model/ggml-small.en*.bin
+# Keep ephemeral OIDC credentials out of source control.
+gha-creds-*.json

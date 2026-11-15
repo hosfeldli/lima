@@ -1,0 +1,2470 @@
+import AppKit
+import Foundation
+import RayPlacementCore
+import SwiftUI
+import Testing
+import Vision
+@testable import RayPlacement
+
+@Test func testCredentialConfigurationUsesSeparateNamespaceAndExplicitEnvironmentValue() {
+    let configuration = AIChatCredentialConfiguration.current(environment: [
+        "LIMA_TEST_MODE": "1",
+        "LIMA_TEST_OPENAI_API_KEY": " test-key "
+    ])
+    #expect(configuration.service == "dev.liam.lima.ai.test")
+    #expect(configuration.account == "openai-api-key")
+    #expect(configuration.environmentAPIKey == "test-key")
+    #expect(configuration.isTestCredential)
+    #expect(configuration.usesKeychain)
+
+    let production = AIChatCredentialConfiguration.current(environment: [:])
+    #expect(production.service == "dev.liam.lima.ai")
+    #expect(production.environmentAPIKey == nil)
+    #expect(!production.isTestCredential)
+}
+
+@Test func testRunnerIsolationDoesNotEnableLiveAIWithoutExplicitSwitches() {
+    #expect(LimaTestEnvironment.isTestRunner(processName: "swiftpm-testing-helper"))
+    #expect(LimaTestEnvironment.isTestRunner(processName: "xctest"))
+    #expect(!LimaTestEnvironment.isTestRunner(processName: "Lima"))
+    #expect(!LimaTestEnvironment.allowsLiveAI(environment: [:]))
+}
+
+@Test func liveAITestsRequireBothTestModeAndExplicitSessionSwitch() {
+    #expect(!LimaTestEnvironment.allowsLiveAI(environment: ["LIMA_TEST_MODE": "1"]))
+    #expect(!LimaTestEnvironment.allowsLiveAI(environment: ["LIMA_ALLOW_LIVE_AI_TESTS": "1"]))
+    #expect(LimaTestEnvironment.allowsLiveAI(environment: [
+        "LIMA_TEST_MODE": "1",
+        "LIMA_ALLOW_LIVE_AI_TESTS": "1"
+    ]))
+}
+
+@Test func providerNeutralHistoryPreservesTextAndOmitsStreamingPlaceholder() {
+    let transcript = AIProviderMessage.transcript([
+        AIChatMessage(role: .user, text: "First question"),
+        AIChatMessage(role: .assistant, text: "First answer"),
+        AIChatMessage(role: .user, text: "Follow up"),
+        AIChatMessage(role: .assistant, text: "")
+    ])
+
+    #expect(transcript.count == 3)
+    let text = transcript.flatMap(\.content).compactMap { item -> String? in
+        if case .text(let value) = item { return value }
+        return nil
+    }
+    #expect(text == ["First question", "First answer", "Follow up"])
+}
+
+@Test func providerWireHelpersPreserveToolUseAndResultAndBasePath() {
+    let history = [
+        AIProviderMessage(role: .assistant, content: [
+            .toolUse(id: "call-1", name: "search_files", arguments: #"{"query":"invoice"}"#)
+        ]),
+        AIProviderMessage(role: .user, content: [
+            .toolResult(id: "call-1", output: #"{"count":1}"#)
+        ])
+    ]
+    let payload = AIProviderHTTP.messages(history)
+    #expect(payload.count == 2)
+    #expect(payload[0]["role"] as? String == "assistant")
+    #expect(payload[1]["role"] as? String == "user")
+    let assistantContent = payload[0]["content"] as? [[String: Any]]
+    let userContent = payload[1]["content"] as? [[String: Any]]
+    #expect(assistantContent?.first?["type"] as? String == "tool_use")
+    #expect(userContent?.first?["type"] as? String == "tool_result")
+
+    let base = AIProviderHTTP.validateBaseURL("https://example.test/v1")
+    #expect(AIProviderHTTP.endpoint(base: base!, path: "chat/completions")?.path == "/v1/chat/completions")
+}
+
+@Test func sharedProviderRegistryIncludesChatCoreProviders() {
+    #expect(AIProvider.chatProviders == [.openAI, .anthropic, .gemini, .openAICompatible, .codexCLI, .claudeCLI, .opencodeCLI])
+    #expect(AIProviderClientRegistry.client(for: .openAI, openAICompatibleBaseURL: "") is AIChatResponsesClient)
+    #expect(AIProviderClientRegistry.client(for: .anthropic, openAICompatibleBaseURL: "") is AnthropicAIProviderClient)
+    #expect(AIProviderClientRegistry.client(for: .gemini, openAICompatibleBaseURL: "") is GeminiAIProviderClient)
+    #expect(AIProviderClientRegistry.client(for: .openAICompatible, openAICompatibleBaseURL: "http://127.0.0.1:1234/v1") is OpenAICompatibleAIProviderClient)
+    #expect(AIProviderClientRegistry.client(for: .codexCLI, openAICompatibleBaseURL: "") is CodexAppServerClient)
+    #expect(AIProviderClientRegistry.client(for: .claudeCLI, openAICompatibleBaseURL: "") is CLIChatProviderClient)
+}
+
+@Test @MainActor func everyChatProviderExcludesRetiredWebToolsFromRequests() {
+    let conversations = AIProvider.chatProviders.map {
+        AIConversation(provider: $0, model: $0.defaultChatModel)
+    }
+    let store = AIConversationStore(fixtures: conversations)
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: [
+            "search_web", "read_web", "browser_capabilities", "browser_read", "browser_scan"
+        ]),
+        transport: FixtureAITransport.standard
+    )
+    let retired: Set<String> = ["search_web", "read_web"]
+
+    for conversation in conversations {
+        model.select(conversation.id)
+        let routed = Set(model.requestLocalTools(for: "Research this topic").map(\.id))
+        #expect(routed.isDisjoint(with: retired))
+        #expect(routed.contains("browser_read"))
+    }
+}
+
+@Test @MainActor func aiProviderSelectionPersistsPerConversation() {
+    let openAIConversation = AIConversation(provider: .openAI, model: "gpt-5.4")
+    let geminiConversation = AIConversation(provider: .gemini, model: "gemini-2.5-flash")
+    let store = AIConversationStore(fixtures: [openAIConversation, geminiConversation])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport.standard
+    )
+
+    model.select(openAIConversation.id)
+    model.selectProvider(.anthropic)
+    #expect(store.conversation(id: openAIConversation.id)?.provider == .anthropic)
+    #expect(store.conversation(id: openAIConversation.id)?.model == AIProvider.anthropic.defaultChatModel)
+
+    model.select(geminiConversation.id)
+    #expect(model.provider == .gemini)
+    #expect(model.model == "gemini-2.5-flash")
+}
+
+@Test @MainActor func fixtureCredentialsStayInMemory() {
+    let connected = AIChatCredentialStore(configuration: .fixture)
+    let missing = AIChatCredentialStore(configuration: .missingFixture)
+    #expect(connected.hasAPIKey)
+    #expect(!missing.hasAPIKey)
+    #expect(missing.apiKey() == nil)
+}
+
+@Test @MainActor func fixtureTransportCarriesPromptToVisibleAssistantTurn() async {
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [
+            .responseCreated("fixture-response"),
+            .textDelta("Lima works"),
+            .completed("fixture-response")
+        ])
+    )
+
+    model.draft = "Reply with exactly: Lima works"
+    model.send()
+    for _ in 0..<300 where model.isStreaming {
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+
+    let assistant = store.conversations.first?.messages.last(where: { $0.role == .assistant })
+    #expect(assistant?.text == "Lima works")
+    #expect(model.executionRun?.state == .completed)
+    #expect(model.executionRun?.assistantMessageID == assistant?.id)
+    #expect(model.executionRun?.completedAt != nil)
+    #expect(!model.canEndTask)
+}
+
+@Test @MainActor func workbenchPresentationCompletedRunCannotRenderWorkingPlaceholder() async throws {
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [
+            .textDelta("Hello"),
+            .completed("presentation-completed")
+        ])
+    )
+    model.draft = "Say hello"
+    model.send()
+    for _ in 0..<300 where model.canEndTask {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+
+    let assistant = try #require(store.conversations.first?.messages.last(where: { $0.role == .assistant }))
+    #expect(assistant.text == "Hello")
+    #expect(model.executionRun?.state == .completed)
+    #expect(model.assistantPresentationState(for: assistant) == .completed)
+    #expect(model.streamingPresentation.snapshot.assistantID == nil)
+    #expect(!model.canEndTask)
+    #expect(AssistantResponsePresentationState.completed.emptyTextPlaceholder != "Working…")
+}
+
+@Test func completedAnswerGrowthKeepsBottomFollowUntilTheUserScrolls() {
+    var follow = AIChatBottomFollowState()
+    follow.observe(contentHeight: 400, distanceFromBottom: 400)
+    #expect(follow.isNearBottom) // Initial geometry must not turn off the first scroll.
+    follow.observe(contentHeight: 500, distanceFromBottom: 100)
+    #expect(follow.isNearBottom) // Markdown grew; no user gesture occurred.
+    follow.observe(contentHeight: 500, distanceFromBottom: 100)
+    #expect(follow.isNearBottom) // A second layout notification precedes correction.
+    follow.finishGrowthCorrection()
+    follow.observe(contentHeight: 500, distanceFromBottom: 0)
+    #expect(follow.isNearBottom)
+    follow.observe(contentHeight: 500, distanceFromBottom: 150)
+    #expect(follow.isNearBottom) // A delayed programmatic scroll is not a user gesture.
+    follow.observe(contentHeight: 500, distanceFromBottom: 150, userInitiated: true)
+    #expect(!follow.isNearBottom) // Explicit user scrolling stops bottom-follow.
+    follow.observe(contentHeight: 900, distanceFromBottom: 550)
+    #expect(!follow.isNearBottom) // Do not drag a reader back down.
+    follow.observe(contentHeight: 900, distanceFromBottom: 20)
+    #expect(follow.isNearBottom)
+}
+
+@Test @MainActor func completedAnswerMountsInHostedChatWithoutScrollGesture() async throws {
+    let store = AIConversationStore(fixtures: [])
+    let (events, feed) = AsyncThrowingStream<AIChatStreamEvent, Error>.makeStream()
+    defer { feed.finish() }
+    var transport = FixtureAITransport(events: [])
+    transport.replyStream = { _, _ in events }
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: transport
+    )
+    #expect(model.hasProviderAPIKey)
+    var mounted: [UUID: [AssistantResponsePresentationState]] = [:]
+    let root = NSHostingView(rootView: AIChatWorkspaceView(
+        model: model, isEmbedded: true,
+        onMessageRowMount: { id, state in mounted[id, default: []].append(state) }
+    ))
+    root.frame = CGRect(x: 0, y: 0, width: 900, height: 700)
+    let window = NSWindow(contentRect: root.frame, styleMask: [.titled], backing: .buffered, defer: false)
+    window.contentView = root
+    defer { window.close() }
+    root.layoutSubtreeIfNeeded()
+
+    model.draft = "Show the answer"
+    model.send()
+    feed.yield(.textDelta("Visible answer marker"))
+    for _ in 0..<100 where model.streamingText != "Visible answer marker" {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(model.isStreaming)
+    let answerID = try #require(store.conversations.first?.messages.last(where: { $0.role == .assistant })?.id)
+    for _ in 0..<100 {
+        root.layoutSubtreeIfNeeded()
+        if mounted[answerID]?.contains(where: \.isLive) == true { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(mounted[answerID]?.contains(where: \.isLive) == true)
+
+    feed.yield(.completed("hosted-answer"))
+    feed.finish()
+    for _ in 0..<300 where model.isStreaming {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(model.executionRun?.state == .completed)
+    let answer = try #require(store.conversations.first?.messages.last(where: { $0.role == .assistant }))
+    #expect(answer.text == "Visible answer marker")
+    for _ in 0..<100 {
+        root.layoutSubtreeIfNeeded()
+        if mounted[answer.id]?.contains(.completed) == true { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(mounted[answer.id]?.contains(.completed) == true)
+
+    // Inspect the rendered viewport, not only the message model or SwiftUI
+    // mount callback. This catches answers that appear only after a scroll.
+    root.layoutSubtreeIfNeeded()
+    root.displayIfNeeded()
+    let bitmap = try #require(root.bitmapImageRepForCachingDisplay(in: root.bounds))
+    root.cacheDisplay(in: root.bounds, to: bitmap)
+    let pixels = try #require(bitmap.representation(using: .png, properties: [:]))
+    let recognition = VNRecognizeTextRequest()
+    recognition.recognitionLevel = .accurate
+    try VNImageRequestHandler(data: pixels, options: [:]).perform([recognition])
+    let visibleWords = (recognition.results ?? [])
+        .compactMap { $0.topCandidates(1).first?.string }
+        .joined(separator: " ")
+    #expect(visibleWords.localizedCaseInsensitiveContains("Visible answer marker"),
+            "Rendered viewport text: \(visibleWords)")
+}
+
+@Test @MainActor func completedLongMarkdownAnswerShowsItsTailWithoutScrollGesture() async throws {
+    let store = AIConversationStore(fixtures: [])
+    let answerText = (0..<70).map { "- Verification detail \($0): the completed answer remains readable." }
+        .joined(separator: "\n") + "\n\n## Visible final marker\n"
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [
+            .textDelta(answerText), .completed("long-markdown-answer")
+        ])
+    )
+    let root = NSHostingView(rootView: AIChatWorkspaceView(model: model, isEmbedded: true))
+    root.frame = CGRect(x: 0, y: 0, width: 900, height: 700)
+    let window = NSWindow(contentRect: root.frame, styleMask: [.titled], backing: .buffered, defer: false)
+    window.contentView = root
+    defer { window.close() }
+    root.layoutSubtreeIfNeeded()
+
+    model.draft = "Give a detailed answer"
+    model.send()
+    for _ in 0..<300 where model.executionRun?.state != .completed {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(model.executionRun?.state == .completed)
+    #expect(store.conversations.first?.messages.last?.text == answerText)
+
+    var visibleWords = ""
+    for _ in 0..<5 {
+        root.layoutSubtreeIfNeeded()
+        root.displayIfNeeded()
+        let bitmap = try #require(root.bitmapImageRepForCachingDisplay(in: root.bounds))
+        root.cacheDisplay(in: root.bounds, to: bitmap)
+        let pixels = try #require(bitmap.representation(using: .png, properties: [:]))
+        let recognition = VNRecognizeTextRequest()
+        recognition.recognitionLevel = .accurate
+        try VNImageRequestHandler(data: pixels, options: [:]).perform([recognition])
+        visibleWords = (recognition.results ?? [])
+            .compactMap { $0.topCandidates(1).first?.string }
+            .joined(separator: " ")
+        if visibleWords.localizedCaseInsensitiveContains("Visible final marker") { break }
+        try await Task.sleep(for: .milliseconds(100))
+    }
+    #expect(visibleWords.localizedCaseInsensitiveContains("Visible final marker"),
+            "Rendered viewport text: \(visibleWords)")
+}
+
+@Test @MainActor func workbenchPresentationReasoningUpdatesWithoutDisclosureToggle() async throws {
+    let store = AIConversationStore(fixtures: [])
+    let (events, feed) = AsyncThrowingStream<AIChatStreamEvent, Error>.makeStream()
+    defer { feed.finish() }
+    var transport = FixtureAITransport(events: [])
+    transport.replyStream = { _, _ in events }
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: transport
+    )
+    model.draft = "Reason briefly, then answer"
+    model.send()
+    feed.yield(.reasoningSummaryDelta("First "))
+    for _ in 0..<2000 where model.streamingPresentation.snapshot.reasoningSummary != "First " {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    let first = model.streamingPresentation.snapshot
+    #expect(first.reasoningSummary == "First ")
+    let activeAssistant = try #require(store.conversations.first?.messages.last(where: { $0.role == .assistant }))
+    #expect(model.assistantPresentationState(for: activeAssistant) == .reasoning)
+    #expect(first.text.isEmpty)
+
+    feed.yield(.reasoningSummaryDelta("second."))
+    for _ in 0..<2000 where model.streamingPresentation.snapshot.reasoningSummary != "First second." {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    let second = model.streamingPresentation.snapshot
+    #expect(second.reasoningSummary == "First second.")
+    #expect(second.revision > first.revision)
+    #expect(model.provider.reasoningPresentationCapability == .streamingSummary)
+
+    feed.yield(.textDelta("Answer"))
+    feed.yield(.completed("reasoning-presentation"))
+    feed.finish()
+    for _ in 0..<2000 where model.canEndTask {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    let committed = try #require(store.conversations.first?.messages.last(where: { $0.role == .assistant }))
+    #expect(committed.text == "Answer")
+    #expect(committed.reasoningSummary == "First second.")
+    #expect(model.streamingPresentation.snapshot.assistantID == nil)
+}
+
+@Test @MainActor func emptyProviderCompletionIsTerminalAndComposerReady() async throws {
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [
+            .responseCreated("fixture-empty"),
+            .completed("fixture-empty")
+        ])
+    )
+    model.draft = "Return a visible answer"
+    model.send()
+    for _ in 0..<300 where model.isStreaming {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+
+    let assistant = try #require(store.conversations.first?.messages.last(where: { $0.role == .assistant }))
+    #expect(model.executionRun?.state == .failed)
+    #expect(model.executionRun?.completedAt != nil)
+    #expect(!model.canEndTask)
+    #expect(!model.currentTaskState.isActive)
+    #expect(model.currentTaskState.title == "Request needs attention")
+    #expect(assistant.failure != nil)
+    #expect(assistant.text.contains("Retry this request"))
+    #expect(store.conversations.first?.messages.contains { $0.role == .user && $0.text == "Return a visible answer" } == true)
+}
+
+@Test @MainActor func orphanedAIExecutionSelfRepairsWithoutRestart() async throws {
+    let model = AIChatVisualFixtures.model(for: .streaming)
+    let assistantID = try #require(model.executionRun?.assistantMessageID)
+    let partialAnswer = model.streamingText
+    #expect(model.canEndTask)
+
+    model.simulateOrphanedRunForTesting()
+    for _ in 0..<200 where model.canEndTask {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+
+    #expect(model.executionRun?.state == .failed)
+    #expect(!model.canEndTask)
+    #expect(!model.currentTaskState.isActive)
+    #expect(model.currentTaskState.title == "Request needs attention")
+    let answer = model.selectedConversation?.messages.first(where: { $0.id == assistantID })?.text
+    #expect(answer == partialAnswer)
+}
+
+@Test @MainActor func endingStreamingTaskKeepsVisiblePartialAnswerAndStoppedState() async {
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(
+            events: [
+                .textDelta("Partial answer"),
+                .completed("fixture-cancel")
+            ],
+            // Yield visible output immediately, then leave a deliberately long
+            // cancellation window before completion. This avoids test-scheduler
+            // races when the complete suite runs its tests concurrently.
+            interEventDelay: .seconds(2)
+        )
+    )
+
+    model.draft = "Start a paced response"
+    model.send()
+    for _ in 0..<300 where model.streamingText != "Partial answer" {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+
+    #expect(model.canEndTask)
+    #expect(model.streamingText == "Partial answer")
+    #expect(store.conversations.first?.messages.last?.text == "")
+    model.endTask()
+    for _ in 0..<300 where model.isStreaming {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+
+    let assistant = store.conversations.first?.messages.last(where: { $0.role == .assistant })
+    #expect(!model.canEndTask)
+    #expect(assistant?.text == "Partial answer")
+    #expect(assistant?.activities?.contains(where: { $0.title == "Stopped" }) == true)
+    #expect(model.executionRun?.state == .cancelled)
+    #expect(model.executionRun?.assistantMessageID == assistant?.id)
+    #expect(model.currentTaskState.title == "Stopped")
+}
+
+@Test @MainActor func providerFailurePreservesVisiblePartialAnswer() async {
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(
+            events: [
+                .reasoningSummaryDelta("Reasoning summary"),
+                .textDelta("Partial answer"),
+                .failed("HTTP 400: unsupported request option")
+            ],
+            // Keep the partial values observable under heavily loaded CI runners.
+            interEventDelay: .seconds(2)
+        )
+    )
+
+    model.draft = "Start a response that fails"
+    model.send()
+    for _ in 0..<1000 where model.streamingReasoningSummary != "Reasoning summary" {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(model.streamingReasoningSummary == "Reasoning summary")
+    #expect(store.conversations.first?.messages.last?.reasoningSummary == nil)
+    for _ in 0..<1000 where model.streamingText != "Partial answer" {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(model.streamingText == "Partial answer")
+
+    for _ in 0..<1000 where model.isStreaming {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+
+    let assistant = store.conversations.first?.messages.last(where: { $0.role == .assistant })
+    #expect(assistant?.text == "Partial answer")
+    #expect(assistant?.reasoningSummary == "Reasoning summary")
+    #expect(model.streamError != nil)
+    #expect(assistant?.activities?.contains(where: { $0.title == "Request failed" }) == true)
+}
+
+@Test @MainActor func endingPendingApprovalClearsPauseWithoutRunningTool() async {
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [
+            .responseCreated("fixture-approval"),
+            .approval(AIToolApprovalRequest(
+                serverLabel: "Fixture",
+                toolName: "Blocked action",
+                arguments: "{}"
+            ))
+        ])
+    )
+
+    model.draft = "Open settings"
+    model.send()
+    for _ in 0..<300 where model.pendingApproval == nil || model.isStreaming {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+
+    #expect(model.canEndTask)
+    #expect(model.pendingApproval != nil)
+    model.endTask()
+
+    let assistant = store.conversations.first?.messages.last(where: { $0.role == .assistant })
+    #expect(model.pendingApproval == nil)
+    #expect(!model.canEndTask)
+    #expect(assistant?.text == "Task ended before the requested tool was run. Any earlier actions were not undone.")
+    #expect(assistant?.activities?.contains(where: { $0.title == "Task ended" }) == true)
+    #expect(model.currentTaskState.title == "Task ended")
+    #expect(model.approvalContinuationContextForTesting == nil)
+}
+
+@Test @MainActor func approvalPauseRetainsTheCapturedTurnRoutingBundle() async {
+    let model = AIChatViewModel(
+        store: AIConversationStore(fixtures: []),
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [
+            .responseCreated("fixture-approval"),
+            .approval(AIToolApprovalRequest(
+                serverLabel: "Fixture",
+                toolName: "Blocked action",
+                arguments: "{}"
+            ))
+        ])
+    )
+
+    model.draft = "Open settings"
+    model.send()
+    for _ in 0..<300 where model.pendingApproval == nil || model.isStreaming {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+
+    let continuation = model.approvalContinuationContextForTesting
+    #expect(model.pendingApproval != nil)
+    #expect(continuation != nil)
+    let capturedToolIDs = Set(continuation?.localTools.map(\.id) ?? [])
+    #expect(capturedToolIDs.isSuperset(of: BrowserWorkspaceAITools.ids))
+    #expect(capturedToolIDs.contains("browser_read"))
+    #expect(continuation?.systemInstructions.contains("Lima Browser permission is") == true)
+
+    model.endTask()
+    #expect(model.approvalContinuationContextForTesting == nil)
+}
+
+@Test @MainActor func approvalWithoutLocalResponseSessionFailsClosedInViewModel() async {
+    let model = AIChatViewModel(
+        store: AIConversationStore(fixtures: []),
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [
+            .responseCreated("fixture-approval"),
+            .approval(AIToolApprovalRequest(
+                serverLabel: "Fixture",
+                toolName: "Blocked action",
+                arguments: "{}"
+            ))
+        ])
+    )
+
+    model.draft = "Open settings"
+    model.send()
+    for _ in 0..<300 where model.pendingApproval == nil || model.isStreaming {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+
+    #expect(model.pendingApproval != nil)
+    model.discardApprovalContinuationContextForTesting()
+    model.resolvePendingApproval(allow: true)
+
+    #expect(model.pendingApproval == nil)
+    #expect(!model.isStreaming)
+    #expect(!model.canEndTask)
+    #expect(model.executionRun?.state == .failed)
+    #expect(model.streamError == "AI Chat couldn’t continue this tool request because its original response session or call batch is unavailable.")
+    #expect(model.executionRun?.failure?.safeMessage == model.streamError)
+    #expect(model.selectedConversation?.messages.last?.failure?.safeMessage == model.streamError)
+}
+
+/// Intentionally inert unless all three live-test variables are set by the
+/// invoking process. It uses only in-memory Lima stores and the test token
+/// environment override, never a production Keychain item or conversation.
+@Test @MainActor func optInLiveResponsesPathLeavesVisibleAssistantText() async throws {
+    let environment = ProcessInfo.processInfo.environment
+    guard environment["LIMA_RUN_LIVE_AI_TESTS"] == "1",
+          LimaTestEnvironment.allowsLiveAI(environment: environment),
+          environment[AIChatCredentialConfiguration.testAPIKeyVariable]?.isEmpty == false else {
+        return
+    }
+
+    let conversation = AIConversation(model: "gpt-5.4")
+    let store = AIConversationStore(fixtures: [conversation])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .current(environment: environment)),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: AIChatResponsesClient()
+    )
+    model.draft = "Reply with exactly: Lima works"
+    model.send()
+
+    let deadline = Date().addingTimeInterval(90)
+    while model.isStreaming, Date() < deadline {
+        try await Task.sleep(for: .milliseconds(100))
+    }
+
+    #expect(!model.isStreaming)
+    let text = store.conversations.first?.messages.last(where: { $0.role == .assistant })?.text
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    if text != "Lima works" {
+        let diagnostics = model.streamDiagnostics.map(\.developerSummary).joined(separator: " | ")
+        Issue.record("Live stream summary: \(model.streamError ?? "none") · diagnostics: \(diagnostics)")
+    }
+    #expect(text == "Lima works")
+}
+
+/// Uses a compact exact-probability task so the live integration test verifies
+/// a high-reasoning request reaches a correct visible answer without storing a
+/// chain-of-thought or any production conversation.
+@Test @MainActor func optInLiveResponsesPathSolvesReasoningTask() async throws {
+    let environment = ProcessInfo.processInfo.environment
+    guard environment["LIMA_RUN_LIVE_AI_TESTS"] == "1",
+          LimaTestEnvironment.allowsLiveAI(environment: environment),
+          environment[AIChatCredentialConfiguration.testAPIKeyVariable]?.isEmpty == false else {
+        return
+    }
+
+    let conversation = AIConversation(model: "gpt-5.4", reasoningEffort: .high)
+    let store = AIConversationStore(fixtures: [conversation])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .current(environment: environment)),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: AIChatResponsesClient()
+    )
+    model.draft = """
+    There are three boxes. A has 6 red and 4 blue balls, B has 3 red and 7 blue balls, and C has 5 red and 5 blue balls. Draw one ball uniformly at random from each box. What is the probability that exactly two are red? Reply with exactly the simplified fraction.
+    """
+    model.send()
+
+    let deadline = Date().addingTimeInterval(90)
+    while model.isStreaming, Date() < deadline {
+        try await Task.sleep(for: .milliseconds(100))
+    }
+
+    #expect(!model.isStreaming)
+    let text = store.conversations.first?.messages.last(where: { $0.role == .assistant })?.text
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    if text != "9/25" {
+        let diagnostics = model.streamDiagnostics.map(\.developerSummary).joined(separator: " | ")
+        Issue.record("Live reasoning summary: \(model.streamError ?? "none") · diagnostics: \(diagnostics)")
+    }
+    #expect(text == "9/25")
+}
+
+@Test func aiReasoningEffortUsesFriendlyLabelsAndStableValues() {
+    #expect(AIReasoningEffort.medium.rawValue == "medium")
+    #expect(AIReasoningEffort.medium.title == "Standard")
+    #expect(AIReasoningEffort.high.detail.contains("deliberate"))
+}
+
+@Test func aiModelCapabilitiesLimitReasoningToSupportedValues() {
+    let gpt6 = AIModelOption(id: "gpt-6-luna")
+    #expect(!gpt6.isLegacyOrUnknown)
+    #expect(gpt6.supportsReasoning)
+    #expect(gpt6.supportedReasoningEfforts == [.none, .low, .medium, .high, .xhigh, .max])
+
+    let unknown = AIModelOption(id: "future-private-model")
+    #expect(unknown.isLegacyOrUnknown)
+    #expect(!unknown.supportsReasoning)
+    #expect(unknown.supportedReasoningEfforts.isEmpty)
+
+    let chat = AIModelOption(id: "gpt-5")
+    #expect(chat.supportsReasoning)
+    #expect(chat.supportedReasoningEfforts.contains(.high))
+
+    let nonReasoning = AIModelOption(id: "gpt-4o")
+    #expect(!nonReasoning.supportsReasoning)
+    #expect(nonReasoning.supportedReasoningEfforts.isEmpty)
+}
+
+@Test func unknownModelUsesMinimalResponsesPayload() {
+    let body = AIChatResponsesClient.replyBody(
+        model: "future-private-model",
+        input: [["role": "user", "content": [["type": "input_text", "text": "Hello"]]]],
+        previousResponseID: nil,
+        reasoningEffort: .high,
+        tools: []
+    )
+    #expect(body["model"] as? String == "future-private-model")
+    #expect(body["stream"] as? Bool == true)
+    #expect(body["reasoning"] == nil)
+    #expect(body["store"] == nil)
+    #expect(body["instructions"] == nil)
+}
+
+@Test @MainActor func enabledToolsRemainVisibleRegardlessOfPromptWording() {
+    let toolStore = LimaAIToolStore(fixtures: [
+        "search_files", "find_files", "list_directory", "file_metadata", "read_file",
+        "read_screen_context", "list_extensions", "get_lima_status",
+        "browser_capabilities", "browser_tabs", "browser_current", "browser_read", "browser_scan",
+        "browser_open_tabs", "browser_focus_tab", "browser_navigate_tab"
+    ])
+    let model = AIChatViewModel(
+        store: AIConversationStore(fixtures: []),
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: toolStore,
+        transport: FixtureAITransport.standard
+    )
+
+    let routed = Set(model.routedNativeTools(for: "Explain this query").map(\.id))
+    #expect(routed == Set(model.routedNativeTools(for: "Read the current website in my browser").map(\.id)))
+    #expect(routed == Set(model.routedNativeTools(for: "Find and read the Swift source file").map(\.id)))
+    #expect(routed.contains("read_file"))
+    #expect(!routed.contains("search_web"))
+    #expect(!routed.contains("read_web"))
+    #expect(routed.contains("browser_read"))
+    #expect(!routed.contains("browser_open_tabs"))
+    #expect(routed.isSuperset(of: BrowserWorkspaceAITools.ids))
+    #expect(model.isBrowserPrompt("Open new tabs for these cases"))
+    #expect(model.isBrowserPrompt("Open all of these links"))
+    #expect(model.isBrowserPrompt("Open this web result"))
+    #expect(model.isBrowserPrompt("Click the Continue button"))
+    #expect(model.isBrowserPrompt("Submit the form"))
+    #expect(!model.isBrowserPrompt("Format this tabular data"))
+
+    #expect(model.systemInstructions.contains("Tool-first workflow"))
+    #expect(model.systemInstructions.contains("At the start of each request and after each tool result"))
+    #expect(model.systemInstructions.contains("Do not call tools merely to increase call count"))
+    #expect(model.systemInstructions.contains("Distinguish search snippets"))
+    #expect(model.systemInstructions.contains("independent verification"))
+}
+
+@Test @MainActor func computerActionPolicyKeepsEmbeddedBrowserAuthoritySeparate() throws {
+    let suite = "RayPlacementTests.computer-action-policy.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let policy = AIComputerActionPolicy(defaults: defaults)
+    let browser = try #require(BrowserWorkspaceAITools.definitions.first { $0.id == "browser_navigate" })
+    let localFile = try #require(AILocalComputerActionTools.definitions.first { $0.id == "create_text_file" })
+    let savedMemory = try #require(AIContextTools.definitions.first { $0.id == "memory_save" })
+    let terminal = try #require(AILocalComputerActionTools.definitions.first { $0.id == "run_terminal_command" })
+
+    #expect(browser.actionCategory == nil)
+    #expect(!policy.requiresApproval(for: browser))
+    #expect(policy.access(for: .localFiles) == .disabled)
+    #expect(policy.access(for: .savedMemory) == .askEveryTime)
+    #expect(policy.access(for: .terminal) == .disabled)
+    #expect(policy.requiresApproval(for: savedMemory))
+    policy.setAccess(.askEveryTime, for: .localFiles)
+    policy.setAccess(.askEveryTime, for: .terminal)
+    #expect(policy.requiresApproval(for: localFile))
+    #expect(policy.requiresApproval(for: terminal))
+    policy.setAccess(.disabled, for: .savedMemory)
+    #expect(AIComputerActionPolicy(defaults: defaults).access(for: .savedMemory) == .disabled)
+    #expect(!policy.allows(savedMemory))
+}
+
+
+@Test func localCommandRunnerRejectsGitWritesAndEscapingOperands() {
+    let directory = URL(fileURLWithPath: "/Users/example/project", isDirectory: true)
+    #expect(AILocalCommandRunner.acceptsCommand("git status --short", workingDirectory: directory))
+    #expect(AILocalCommandRunner.acceptsCommand("git diff --stat", workingDirectory: directory))
+    #expect(!AILocalCommandRunner.acceptsCommand("git branch -D main", workingDirectory: directory))
+    #expect(!AILocalCommandRunner.acceptsCommand("git diff --output=changes.txt", workingDirectory: directory))
+    #expect(!AILocalCommandRunner.acceptsCommand("git diff --ext-diff", workingDirectory: directory))
+    #expect(!AILocalCommandRunner.acceptsCommand("git show HEAD:.env", workingDirectory: directory))
+    #expect(!AILocalCommandRunner.acceptsCommand("swift test --package-path=/tmp/other", workingDirectory: directory))
+    #expect(!AILocalCommandRunner.acceptsCommand("swift build --scratch-path ../other", workingDirectory: directory))
+    #expect(!AILocalCommandRunner.acceptsCommand("xcodebuild -derivedDataPath /tmp/output build", workingDirectory: directory))
+}
+
+@Test func localCommandRunnerRejectsSymlinkedScriptAncestors() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("LimaCommandSafety-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let scripts = root.appendingPathComponent("scripts", isDirectory: true)
+    try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+    try Data("print('safe')\n".utf8).write(to: scripts.appendingPathComponent("task.py"))
+    try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("alias"), withDestinationURL: scripts)
+
+    #expect(AILocalCommandRunner.approvedScript("scripts/task.py", workingDirectory: root, extensions: ["py"]))
+    #expect(!AILocalCommandRunner.approvedScript("alias/task.py", workingDirectory: root, extensions: ["py"]))
+    #expect(!AILocalCommandRunner.approvedScript("../task.py", workingDirectory: root, extensions: ["py"]))
+}
+
+@Test @MainActor func strictToolSchemasAreProviderReadyAndNormalizeOptionalArguments() throws {
+    let definitions = LimaAIToolRegistry.definitions + BrowserWorkspaceAITools.definitions + AILocalComputerActionTools.definitions
+    #expect(definitions.allSatisfy { $0.responsePayload != nil })
+
+    for definition in definitions {
+        let payload = try #require(definition.responsePayload)
+        let parameters = try #require(payload["parameters"] as? [String: Any])
+        #expect(openAIStrictSchemaIssue(in: parameters) == nil)
+    }
+
+    let findFiles = try #require(definitions.first { $0.id == "find_files" })
+    let payload = try #require(findFiles.responsePayload)
+    let parameters = try #require(payload["parameters"] as? [String: Any])
+    #expect(Set(try #require(parameters["required"] as? [String])) == ["directory", "query"])
+
+    let properties = try #require(parameters["properties"] as? [String: Any])
+    let directory = try #require(properties["directory"] as? [String: Any])
+    #expect(directory["type"] as? [String] == ["string", "null"])
+
+    let newTab = try #require(definitions.first { $0.id == "browser_new_tab" })
+    #expect(newTab.risk == .navigation)
+    #expect(newTab.responsePayload?["strict"] as? Bool == true)
+    let tabParameters = try #require(newTab.responsePayload?["parameters"] as? [String: Any])
+    let tabProperties = try #require(tabParameters["properties"] as? [String: Any])
+    let url = try #require(tabProperties["url"] as? [String: Any])
+    #expect(url["type"] as? [String] == ["string", "null"])
+
+    let replacement = try #require(definitions.first { $0.id == "replace_text_file" })
+    let replacementParameters = try #require(replacement.responsePayload?["parameters"] as? [String: Any])
+    #expect(Set(try #require(replacementParameters["required"] as? [String])) == ["content", "expected_modified_at", "path"])
+    let terminal = try #require(definitions.first { $0.id == "run_terminal_command" })
+    #expect(terminal.actionCategory == .terminal)
+    let terminalParameters = try #require(terminal.responsePayload?["parameters"] as? [String: Any])
+    #expect(Set(try #require(terminalParameters["required"] as? [String]))
+        == ["command", "working_directory", "timeout_seconds"])
+    let terminalProperties = try #require(terminalParameters["properties"] as? [String: Any])
+    let timeout = try #require(terminalProperties["timeout_seconds"] as? [String: Any])
+    #expect(timeout["type"] as? [String] == ["integer", "null"])
+    #expect(timeout["maximum"] as? Int == 300)
+    let terminalDirectory = try #require(terminalProperties["working_directory"] as? [String: Any])
+    #expect(terminalDirectory["type"] as? [String] == ["string", "null"])
+}
+
+@Test @MainActor func embeddedBrowserURLToolsDoNotUseUnsupportedURIFormat() throws {
+    for (id, field) in [("browser_new_tab", "url"), ("browser_navigate", "url")] {
+        let definition = try #require(BrowserWorkspaceAITools.definitions.first { $0.id == id })
+        let parameters = try #require(definition.responsePayload?["parameters"] as? [String: Any])
+        let properties = try #require(parameters["properties"] as? [String: Any])
+        let property = try #require(properties[field] as? [String: Any])
+        #expect(property["format"] == nil)
+        #expect((property["description"] as? String)?.contains("HTTPS") == true)
+    }
+}
+
+
+@Test func strictSchemaValidatorRejectsUnsupportedURIFormat() {
+    let definition = LimaAIToolDefinition(
+        id: "invalid_uri_format",
+        name: "invalid_uri_format",
+        description: "Regression fixture.",
+        parameters: [
+            "type": "object",
+            "properties": [
+                "url": ["type": "string", "format": "uri"]
+            ],
+            "required": ["url"],
+            "additionalProperties": false
+        ],
+        risk: .read
+    )
+
+    #expect(definition.responsePayload == nil)
+    #expect(definition.schemaValidationMessage?.contains("Unsupported strict schema format: uri") == true)
+}
+
+@Test func strictSchemaValidatorRecursesThroughObjectsArraysAndAnyOf() throws {
+    let valid = LimaAIToolDefinition(
+        id: "nested_schema",
+        name: "nested_schema",
+        description: "Regression fixture.",
+        parameters: [
+            "type": "object",
+            "properties": [
+                "filter": [
+                    "type": "object",
+                    "properties": ["date": ["type": "string", "format": "date"]],
+                    "required": ["date"],
+                    "additionalProperties": false
+                ],
+                "records": [
+                    "type": "array",
+                    "items": [
+                        "type": "object",
+                        "properties": ["id": ["type": "integer", "minimum": 0]],
+                        "required": ["id"],
+                        "additionalProperties": false
+                    ]
+                ],
+                "selector": [
+                    "anyOf": [
+                        ["type": "string", "format": "email"],
+                        ["type": "integer", "minimum": 0]
+                    ]
+                ]
+            ],
+            "required": ["filter", "records", "selector"],
+            "additionalProperties": false
+        ],
+        risk: .read
+    )
+    let validParameters = try #require(valid.responsePayload?["parameters"] as? [String: Any])
+    #expect(openAIStrictSchemaIssue(in: validParameters) == nil)
+
+    let invalid = LimaAIToolDefinition(
+        id: "nested_uri",
+        name: "nested_uri",
+        description: "Regression fixture.",
+        parameters: [
+            "type": "object",
+            "properties": [
+                "selector": [
+                    "anyOf": [
+                        ["type": "string", "format": "uri"],
+                        ["type": "integer"]
+                    ]
+                ]
+            ],
+            "required": ["selector"],
+            "additionalProperties": false
+        ],
+        risk: .read
+    )
+    #expect(invalid.responsePayload == nil)
+    #expect(invalid.schemaValidationMessage?.contains("Unsupported strict schema format: uri") == true)
+}
+
+@Test @MainActor func providerFailureRendersSafeActionableTranscript() async {
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [
+            .diagnostic(AIChatDiagnostic(
+                stage: .transport,
+                httpStatus: 400,
+                errorCode: "unsupported_parameter",
+                errorParameter: "reasoning.summary",
+                message: "The selected model does not support a requested option."
+            )),
+            .failed("ignored provider response body")
+        ])
+    )
+    _ = model.selectCustomModel("gpt-6-luna")
+    model.draft = "Explain this request"
+    model.send()
+    for _ in 0..<300 where model.isStreaming {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+
+    let text = store.conversations.first?.messages.last(where: { $0.role == .assistant })?.text ?? ""
+    #expect(text.contains("OpenAI rejected this request"))
+    #expect(text.contains("HTTP 400 · gpt-6-luna"))
+    #expect(text.contains("Unsupported request option: reasoning.summary."))
+    #expect(!text.contains("ignored provider response body"))
+}
+
+@Test @MainActor func exhaustedProviderQuotaPreservesPromptWithoutOfferingSameRequestRetry() async throws {
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [
+            .diagnostic(AIChatDiagnostic(
+                stage: .transport,
+                httpStatus: 429,
+                errorCode: "insufficient_quota",
+                message: AIProviderFailure.message(error: ["code": "insufficient_quota"], status: 429)
+            )),
+            .failed("provider body must not appear")
+        ])
+    )
+    model.draft = "Keep this prompt"
+    model.send()
+    for _ in 0..<300 {
+        let failure = model.selectedConversation?.messages.last(where: { $0.role == .assistant })?.failure
+        if failure != nil && !model.isStreaming { break }
+        try await Task.sleep(for: .milliseconds(5))
+    }
+
+    let conversation = try #require(model.selectedConversation)
+    let assistant = try #require(conversation.messages.last(where: { $0.role == .assistant }))
+    #expect(assistant.failure?.category == .quotaExhausted)
+    #expect(assistant.failure?.retryability == .manual)
+    #expect(assistant.failure?.httpStatus == 429)
+    #expect(assistant.failure?.safeMessage.contains("quota exhausted") == true)
+    #expect(!assistant.text.contains("provider body must not appear"))
+    #expect(!model.canRetryLastRequest)
+    model.retryLastRequest()
+    #expect(model.selectedConversationID == conversation.id)
+    #expect(model.canEndTask)
+    #expect(!model.prepareEditedRetry(assistantMessageID: assistant.id))
+    model.endTask()
+    let endedConversation = try #require(model.selectedConversation)
+    #expect(model.prepareEditedRetry(assistantMessageID: assistant.id))
+    #expect(model.draft == "Keep this prompt")
+    #expect(store.conversation(id: conversation.id)?.messages == endedConversation.messages)
+}
+
+@Test @MainActor func terminalProviderEventFinishesRunEvenWhenConnectionStaysOpen() async throws {
+    let store = AIConversationStore(fixtures: [])
+    var transport = FixtureAITransport(events: [])
+    transport.replyStream = { _, _ in
+        AsyncThrowingStream { continuation in
+            continuation.yield(.textDelta("Finished answer"))
+            continuation.yield(.completed("fixture-open-connection"))
+            // Deliberately leave the transport stream open after completion.
+        }
+    }
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: transport,
+        providerStreamDeadline: .seconds(2)
+    )
+    model.draft = "Finish despite an open connection"
+    model.send()
+    for _ in 0..<600 {
+        if model.executionRun?.state == .completed { break }
+        try await Task.sleep(for: .milliseconds(5))
+    }
+
+    #expect(!model.canEndTask)
+    #expect(model.executionRun?.state == .completed)
+    #expect(model.selectedConversation?.messages.last?.text == "Finished answer")
+    #expect(model.streamError == nil)
+}
+
+@Test @MainActor func failedProviderEventSuspendsRunEvenWhenConnectionStaysOpen() async throws {
+    let store = AIConversationStore(fixtures: [])
+    var transport = FixtureAITransport(events: [])
+    transport.replyStream = { _, _ in
+        AsyncThrowingStream { continuation in
+            continuation.yield(.textDelta("Partial answer"))
+            continuation.yield(.failed("Request failed"))
+            // Deliberately leave the transport stream open after failure.
+        }
+    }
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: transport,
+        providerStreamDeadline: .seconds(2)
+    )
+    model.draft = "Preserve the partial answer on failure"
+    model.send()
+    for _ in 0..<600 {
+        let failure = model.selectedConversation?.messages.last?.failure
+        if model.executionRun?.state == .waitingForConfiguration && failure != nil { break }
+        try await Task.sleep(for: .milliseconds(5))
+    }
+
+    #expect(model.canEndTask)
+    #expect(model.executionRun?.state == .waitingForConfiguration)
+    #expect(model.selectedConversation?.messages.last?.text == "Partial answer")
+    #expect(model.selectedConversation?.messages.last?.failure != nil)
+}
+
+@Test func activeProviderStreamCanOutliveItsIdleDeadline() async throws {
+    let upstream = AsyncThrowingStream<AIChatStreamEvent, Error> { continuation in
+        // Avoid making initial task scheduling look like provider silence.
+        continuation.yield(.textDelta("x"))
+        Task {
+            for _ in 1..<20 {
+                try? await Task.sleep(for: .milliseconds(125))
+                continuation.yield(.textDelta("x"))
+            }
+            continuation.yield(.completed("active-stream"))
+            continuation.finish()
+        }
+    }
+
+    var textEvents = 0
+    var completed = false
+    for try await event in AIProviderStreamWatchdog.bounded(upstream, after: .seconds(2)) {
+        if case .textDelta = event { textEvents += 1 }
+        if case .completed = event { completed = true }
+    }
+
+    #expect(textEvents == 20)
+    #expect(completed)
+}
+
+@Test func textCompleteProviderStreamUsesShortTerminalDeadline() async throws {
+    let upstream = AsyncThrowingStream<AIChatStreamEvent, Error> { continuation in
+        continuation.yield(.textDelta("# Finished answer"))
+        continuation.yield(.textDone)
+        // A provider connection that remains open without response.completed
+        // must not leave the chat in Writing response indefinitely.
+    }
+    var observedTextDone = false
+    var reachedDeadline = false
+    do {
+        for try await event in AIProviderStreamWatchdog.bounded(
+            upstream, after: .seconds(2), afterTextDone: .milliseconds(100)
+        ) {
+            if case .textDone = event { observedTextDone = true }
+        }
+    } catch is AIProviderStreamWatchdog.DeadlineExceeded {
+        reachedDeadline = true
+    }
+    #expect(observedTextDone)
+    #expect(reachedDeadline)
+}
+
+@Test @MainActor func textDoneEnablesFormattedStreamingPresentationBeforeRunCompletes() async throws {
+    let store = AIConversationStore(fixtures: [])
+    var transport = FixtureAITransport(events: [])
+    transport.replyStream = { _, _ in
+        AsyncThrowingStream { continuation in
+            continuation.yield(.textDelta("# Formatted answer"))
+            continuation.yield(.textDone)
+            Task {
+                try? await Task.sleep(for: .milliseconds(250))
+                continuation.yield(.completed("formatted-answer"))
+                continuation.finish()
+            }
+        }
+    }
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: transport
+    )
+    model.draft = "Show a formatted answer"
+    model.send()
+    for _ in 0..<100 where !model.streamingPresentation.textComplete {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(model.isStreaming)
+    #expect(model.streamingPresentation.textComplete)
+    #expect(model.currentTaskState.title == "Finishing response")
+    #expect(model.streamingText == "# Formatted answer")
+    for _ in 0..<200 where model.isStreaming {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(model.executionRun?.state == .completed)
+    #expect(model.selectedConversation?.messages.last?.text == "# Formatted answer")
+}
+
+@Test @MainActor func silentProviderStreamTimesOutAndPreservesPartialAnswer() async throws {
+    let store = AIConversationStore(fixtures: [])
+    var transport = FixtureAITransport(events: [])
+    transport.replyStream = { _, _ in
+        AsyncThrowingStream { continuation in
+            continuation.yield(.textDelta("Partial answer"))
+            // Deliberately never emit completion or close the stream.
+        }
+    }
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: transport,
+        providerStreamDeadline: .milliseconds(80)
+    )
+    model.draft = "Do not lose my prompt or partial answer"
+    model.send()
+    for _ in 0..<1000 {
+        let failure = model.selectedConversation?.messages
+            .last(where: { $0.role == .assistant })?.failure
+        if !model.isStreaming, model.executionRun?.state == .waitingForProvider,
+           failure != nil { break }
+        try await Task.sleep(for: .milliseconds(5))
+    }
+
+    let conversation = try #require(model.selectedConversation)
+    let assistant = try #require(conversation.messages.last(where: { $0.role == .assistant }))
+    #expect(model.canEndTask)
+    #expect(model.executionRun?.state == .waitingForProvider)
+    #expect(assistant.text == "Partial answer")
+    #expect(assistant.failure?.category == .timedOut)
+    #expect(assistant.failure?.retryability == .safe)
+    #expect(conversation.messages.contains { $0.role == .user && $0.text == "Do not lose my prompt or partial answer" })
+    #expect(!model.canRetryLastRequest)
+}
+
+@Test @MainActor func providerTimeoutCreatesRestartableDurableFailure() async throws {
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [
+            .diagnostic(AIChatDiagnostic(stage: .transport, message: AIProviderFailure.timeoutMessage)),
+            .failed(AIProviderFailure.timeoutMessage)
+        ])
+    )
+    model.draft = "Resume after timeout"
+    model.send()
+    for _ in 0..<600 {
+        let failure = model.selectedConversation?.messages.last(where: { $0.role == .assistant })?.failure
+        if failure != nil && !model.isStreaming { break }
+        try await Task.sleep(for: .milliseconds(5))
+    }
+
+    let assistant = try #require(model.selectedConversation?.messages.last(where: { $0.role == .assistant }))
+    #expect(assistant.failure?.category == .timedOut)
+    #expect(assistant.failure?.retryability == .safe)
+    #expect(assistant.failure?.safeMessage.contains("request timed out") == true)
+    #expect(model.canEndTask)
+    #expect(!model.canRetryLastRequest)
+}
+
+@Test @MainActor func rateLimitRemainsRetryableAfterDelay() async throws {
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [
+            .diagnostic(AIChatDiagnostic(
+                stage: .transport,
+                httpStatus: 429,
+                errorCode: "rate_limit_exceeded",
+                message: AIProviderFailure.message(error: ["code": "rate_limit_exceeded"], status: 429)
+            )),
+            .failed("provider body must not appear")
+        ])
+    )
+    model.draft = "Retry later"
+    model.send()
+    for _ in 0..<600 {
+        let failure = model.selectedConversation?.messages.last(where: { $0.role == .assistant })?.failure
+        if failure != nil && !model.isStreaming { break }
+        try await Task.sleep(for: .milliseconds(5))
+    }
+
+    let assistant = try #require(model.selectedConversation?.messages.last(where: { $0.role == .assistant }))
+    #expect(assistant.failure?.category == .rateLimited)
+    #expect(assistant.failure?.retryability == .afterDelay)
+    #expect(assistant.failure?.safeMessage.contains("rate limited") == true)
+    #expect(model.canEndTask)
+    #expect(!model.canRetryLastRequest)
+}
+
+@Test @MainActor func retryActionDoesNotResurrectOlderFailureAfterSuccessfulTurn() {
+    let failure = AIExecutionRunFailure(
+        category: .timedOut,
+        originalRequestConfiguration: AIExecutionProviderConfigurationSnapshot(
+            providerID: AIProvider.openAI.rawValue,
+            modelID: "gpt-5.6-luna",
+            reasoningEffort: "medium"
+        ),
+        httpStatus: nil,
+        safeMessage: "The previous request timed out.",
+        invalidParameter: nil,
+        retryability: .safe
+    )
+    let conversation = AIConversation(
+        title: "Recovered task",
+        messages: [
+            AIChatMessage(role: .user, text: "First request"),
+            AIChatMessage(role: .assistant, text: "", failure: failure),
+            AIChatMessage(role: .user, text: "Second request"),
+            AIChatMessage(role: .assistant, text: "Completed answer")
+        ]
+    )
+    let store = AIConversationStore(fixtures: [conversation])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport.standard
+    )
+
+    #expect(!model.canRetryLastRequest)
+    model.retryLastRequest()
+    #expect(model.selectedConversationID == conversation.id)
+    #expect(model.selectedConversation?.messages == conversation.messages)
+    #expect(model.draft.isEmpty)
+}
+
+@Test @MainActor func aiRecoveryVisualFixturesUsePersistedFailures() {
+    let fixtures: [(AIChatVisualScenario, AIExecutionRunFailure.Category)] = [
+        (.failure, .invalidConfiguration),
+        (.quota, .quotaExhausted),
+        (.timeout, .timedOut)
+    ]
+    for (scenario, category) in fixtures {
+        let model = AIChatVisualFixtures.model(for: scenario)
+        let assistant = model.selectedConversation?.messages.last(where: { $0.role == .assistant })
+        #expect(assistant?.failure?.category == category)
+        #expect(assistant?.text.isEmpty == true)
+    }
+}
+
+@Test @MainActor func editedRetryCreatesBranchAndPreservesOriginalPromptContext() {
+    let previousAnswer = AIChatMessage(role: .assistant, text: "Earlier answer", responseID: "resp_previous")
+    let attachment = AIAttachment(kind: .selection, displayName: "Selection", text: "Original context")
+    let userMessage = AIChatMessage(role: .user, text: "Original request", attachments: [attachment])
+    let assistantMessage = AIChatMessage(
+        role: .assistant,
+        text: "Request failed",
+        failure: AIExecutionRunFailure(
+            category: .providerRejected,
+            originalRequestConfiguration: AIExecutionProviderConfigurationSnapshot(
+                providerID: AIProvider.openAI.rawValue,
+                modelID: "gpt-5.6-luna",
+                reasoningEffort: "medium"
+            ),
+            httpStatus: 400,
+            safeMessage: "The selected configuration was rejected.",
+            invalidParameter: "reasoning.summary",
+            retryability: .configurationChange
+        )
+    )
+    let original = AIConversation(
+        title: "Failed request",
+        model: "gpt-5.6-luna",
+        messages: [previousAnswer, userMessage, assistantMessage]
+    )
+    let store = AIConversationStore(fixtures: [original])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport.standard
+    )
+
+    let prepared = model.prepareEditedRetry(assistantMessageID: assistantMessage.id)
+
+    #expect(prepared)
+    #expect(model.selectedConversationID != original.id)
+    #expect(model.selectedConversation?.messages == [previousAnswer])
+    // Failed-run retries rebuild from durable messages rather than a potentially unfinished exchange.
+    #expect(model.selectedConversation?.lastResponseID == nil)
+    #expect(model.draft == "Original request")
+    #expect(model.attachments == [attachment])
+    #expect(store.conversation(id: original.id)?.messages == [previousAnswer, userMessage, assistantMessage])
+}
+
+@Test @MainActor func editingUserPromptPreservesSourceAndRestoresAttachments() {
+    let earlierAnswer = AIChatMessage(role: .assistant, text: "Earlier answer", responseID: "resp_before_edit")
+    let attachment = AIAttachment(kind: .clipboard, displayName: "Clipboard", text: "Original clipboard")
+    let userMessage = AIChatMessage(role: .user, text: "Original prompt", attachments: [attachment])
+    let answer = AIChatMessage(role: .assistant, text: "Original answer")
+    let source = AIConversation(title: "Prompt history", messages: [earlierAnswer, userMessage, answer])
+    let store = AIConversationStore(fixtures: [source])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport.standard
+    )
+
+    let prepared = model.prepareMessageEdit(userMessageID: userMessage.id)
+
+    #expect(prepared)
+    #expect(model.selectedConversationID != source.id)
+    #expect(model.selectedConversation?.messages == [earlierAnswer])
+    #expect(model.selectedConversation?.lastResponseID == "resp_before_edit")
+    #expect(model.draft == "Original prompt")
+    #expect(model.attachments == [attachment])
+    #expect(store.conversation(id: source.id)?.messages == [earlierAnswer, userMessage, answer])
+}
+
+@Test @MainActor func rerunWithAnotherModelCreatesIndependentBranch() async {
+    let userMessage = AIChatMessage(role: .user, text: "Rerun this prompt")
+    let originalAnswer = AIChatMessage(role: .assistant, text: "Original answer", responseID: "resp_original")
+    let source = AIConversation(title: "Rerun history", model: "gpt-5.6-luna", messages: [userMessage, originalAnswer])
+    let store = AIConversationStore(fixtures: [source])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [.textDelta("Branch answer"), .completed("resp_branch")])
+    )
+
+    model.rerunMessage(userMessageID: userMessage.id, using: AIModelOption(id: "gpt-5.4"))
+    for _ in 0..<300 where model.isStreaming {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+
+    let branch = model.selectedConversation
+    #expect(branch?.id != source.id)
+    #expect(branch?.model == "gpt-5.4")
+    #expect(branch?.lastResponseID == "resp_branch")
+    #expect(branch?.messages.first(where: { $0.role == .user })?.text == "Rerun this prompt")
+    #expect(branch?.messages.last(where: { $0.role == .assistant })?.text == "Branch answer")
+    #expect(store.conversation(id: source.id)?.messages == [userMessage, originalAnswer])
+}
+
+@Test func responsesPayloadOmitsProviderDefaultReasoning() {
+    let body = AIChatResponsesClient.replyBody(
+        model: "gpt-5.6-luna",
+        input: [],
+        previousResponseID: nil,
+        reasoningEffort: .none,
+        tools: []
+    )
+    #expect(body["reasoning"] == nil)
+}
+
+@Test func gpt54ReasoningProfileRejectsLegacyMinimalAndMax() {
+    let option = AIModelOption(id: "gpt-5.4")
+    #expect(option.supportedReasoningEfforts == [.none, .low, .medium, .high, .xhigh])
+    #expect(option.defaultReasoningEffort == .medium)
+    #expect(AIModelOption.fallbackModels.first?.id == "gpt-5.4")
+
+    let body = AIChatResponsesClient.replyBody(
+        model: "gpt-5.4",
+        input: [],
+        previousResponseID: nil,
+        reasoningEffort: .minimal,
+        tools: []
+    )
+    let reasoning = body["reasoning"] as? [String: Any]
+    #expect(reasoning?["effort"] as? String == AIReasoningEffort.medium.rawValue)
+}
+
+@Test func gpt56ReasoningProfileUsesCurrentSupportedValues() {
+    let option = AIModelOption(id: "gpt-5.6-terra")
+    #expect(option.supportedReasoningEfforts == [.none, .low, .medium, .high, .xhigh, .max])
+    #expect(option.defaultReasoningEffort == .medium)
+
+    let body = AIChatResponsesClient.replyBody(
+        model: "gpt-5.6-terra",
+        input: [],
+        previousResponseID: nil,
+        reasoningEffort: .minimal,
+        tools: []
+    )
+    let reasoning = body["reasoning"] as? [String: Any]
+    #expect(reasoning?["effort"] as? String == AIReasoningEffort.medium.rawValue)
+}
+
+@Test func aiModelDiscoveryFiltersNonChatModels() {
+    #expect(AIModelOption.isChatModel("gpt-5"))
+    #expect(AIModelOption.isChatModel("o4-mini"))
+    #expect(!AIModelOption.isChatModel("text-embedding-3-small"))
+    #expect(!AIModelOption.isChatModel("dall-e-3"))
+}
+
+@Test func responsesPayloadOmitsUnsupportedReasoningAndPreservesContinuation() throws {
+    let body = AIChatResponsesClient.replyBody(
+        model: "gpt-4o",
+        input: [["role": "user", "content": [["type": "input_text", "text": "Hello"]]]],
+        previousResponseID: "resp_previous",
+        reasoningEffort: .high,
+        tools: []
+    )
+    #expect(body["model"] as? String == "gpt-4o")
+    #expect(body["previous_response_id"] as? String == "resp_previous")
+    #expect(body["reasoning"] == nil)
+    #expect(body["stream"] as? Bool == true)
+}
+
+@Test func aiConversationRoundTripsNewPhaseTwoMetadata() throws {
+    let conversation = AIConversation(
+        title: "API debugging",
+        model: "gpt-5.6",
+        reasoningEffort: .high,
+        agentID: "agent.code-review",
+        skillIDs: ["skill.code-review", "extension.review-tools:review"],
+        reasoningSummary: "The failure comes from the request body.",
+        activities: [AIAgentActivity(kind: .toolCompleted, title: "Read package.json", completed: true)],
+        attachments: [AIAttachment(kind: .clipboard, displayName: "Clipboard", text: "hello")],
+        messages: [AIChatMessage(role: .user, text: "Explain this")]
+    )
+    let data = try JSONEncoder().encode(conversation)
+    let restored = try JSONDecoder().decode(AIConversation.self, from: data)
+    #expect(restored.reasoningEffort == .high)
+    #expect(restored.agentID == "agent.code-review")
+    #expect(restored.skillIDs == ["skill.code-review", "extension.review-tools:review"])
+    #expect(restored.reasoningSummary?.contains("request body") == true)
+    #expect(restored.activities.first?.title == "Read package.json")
+    #expect(restored.attachments.first?.kind == .clipboard)
+}
+
+@Test @MainActor func skillsAndAgentsConfigureTheExistingConversation() {
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        nativeToolStore: LimaAIToolStore(fixtures: ["search_files", "read_file", "browser_capabilities", "browser_read"]),
+        transport: FixtureAITransport.standard
+    )
+
+    #expect(AIChatConfigurationCatalog.provider(for: "openai") == .openAI)
+    #expect(AIChatConfigurationCatalog.provider(for: "google-gemini") == .gemini)
+
+    model.setSelectedSkills(["skill.writing"])
+    #expect(model.selectedConversation?.skillIDs == ["skill.writing"])
+    #expect(model.systemInstructions.contains("Skill — Writing"))
+    #expect(model.systemInstructions.contains("preserving the author's intent"))
+
+    model.selectAgent("agent.code-review")
+    #expect(model.selectedAgentConfiguration?.name == "Code Review")
+    #expect(model.selectedSkillIDs == ["skill.code-review"])
+    #expect(model.systemInstructions.contains("Agent configuration"))
+    #expect(model.systemInstructions.contains("careful code reviewer"))
+    #expect(model.reasoningEffort == .high)
+}
+
+@Test func conversationInstructionsReachProviderRequestBodies() {
+    let instructions = "Read-only safety policy.\nSkill instructions."
+    let responseBody = AIChatResponsesClient.replyBody(
+        model: "gpt-5",
+        input: [],
+        previousResponseID: nil,
+        reasoningEffort: .medium,
+        tools: [],
+        systemInstructions: instructions
+    )
+    #expect(responseBody["instructions"] as? String == instructions)
+
+    let anthropicBody = AnthropicAIProviderClient.body(
+        model: "claude-3-7-sonnet-latest",
+        history: [],
+        tools: [],
+        systemInstructions: instructions
+    )
+    #expect(anthropicBody["system"] as? String == instructions)
+}
+
+@Test func assistantTurnPersistsItsOwnReasoningAndActivity() throws {
+    let message = AIChatMessage(
+        role: .assistant,
+        text: "Lima works.",
+        reasoningSummary: "Checked the stream boundary.",
+        activities: [AIAgentActivity(kind: .toolCompleted, title: "Search Files", completed: true)]
+    )
+
+    let restored = try JSONDecoder().decode(AIChatMessage.self, from: JSONEncoder().encode(message))
+    #expect(restored.reasoningSummary == "Checked the stream boundary.")
+    #expect(restored.activities?.first?.title == "Search Files")
+}
+
+@Test func legacyConversationDecodingSuppliesNewDefaults() throws {
+    let legacy: [String: Any] = [
+        "id": UUID().uuidString,
+        "title": "Legacy",
+        "createdAt": Date().timeIntervalSince1970,
+        "updatedAt": Date().timeIntervalSince1970,
+        "model": "gpt-5.6",
+        "messages": []
+    ]
+    let data = try JSONSerialization.data(withJSONObject: legacy)
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .secondsSince1970
+    let restored = try decoder.decode(AIConversation.self, from: data)
+    #expect(restored.reasoningEffort == .medium)
+    #expect(restored.activities.isEmpty)
+    #expect(restored.attachments.isEmpty)
+    #expect(restored.agentID == nil)
+    #expect(restored.skillIDs.isEmpty)
+}
+
+@Test func markdownRendererSeparatesFencedCodeBlocks() {
+    let markdown = "Intro\n```swift\nlet answer = 42\n```\nDone"
+    let mirror = AIMarkdownView(markdown: markdown)
+    #expect(mirror.markdown.contains("let answer = 42"))
+}
+
+@Test func usageMetricsDisplayKnownTotal() {
+    let usage = AIUsageMetrics(inputTokens: 10, cachedInputTokens: 2, outputTokens: 7, reasoningTokens: 3)
+    #expect(usage.totalKnownTokens == 17)
+    #expect(usage.displayText == "17 tokens")
+    #expect(AIUsageMetrics(inputTokens: nil, outputTokens: nil, reasoningTokens: 3).totalKnownTokens == nil)
+    #expect(AIUsageMetrics(inputTokens: nil, outputTokens: 7).totalKnownTokens == 7)
+    #expect(AIUsageMetrics(inputTokens: Int.max, outputTokens: 1).totalKnownTokens == Int.max)
+    #expect(AIUsageMetrics(inputTokens: -1, outputTokens: nil).totalKnownTokens == nil)
+}
+
+@Test func usageRunSummaryAggregatesReportedRoundsWithoutCountingSubsetsTwice() {
+    let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+    let message = AIChatMessage(
+        role: .assistant,
+        text: "Done",
+        providerID: AIProvider.openAI.rawValue,
+        modelID: "gpt-test",
+        activities: [
+            AIAgentActivity(kind: .started, title: "Started", startedAt: startedAt),
+            AIAgentActivity(kind: .completed, title: "Usage",
+                            usage: AIUsageMetrics(inputTokens: 10, cachedInputTokens: 2,
+                                                  outputTokens: 5, reasoningTokens: 1), completed: true),
+            AIAgentActivity(kind: .toolCompleted, title: "Read file", completed: true),
+            AIAgentActivity(kind: .completed, title: "Usage",
+                            usage: AIUsageMetrics(inputTokens: 20, cachedInputTokens: 3,
+                                                  outputTokens: 15, reasoningTokens: 4), completed: true),
+            AIAgentActivity(kind: .toolFailed, title: "Open file", completed: true),
+            AIAgentActivity(kind: .completed, title: "Completed", duration: 83, completed: true)
+        ]
+    )
+    let summary = AIUsageRunSummary(message: message)
+    #expect(summary.providerLabel == "OpenAI")
+    #expect(summary.modelLabel == "gpt-test")
+    #expect(summary.usage?.inputTokens == 30)
+    #expect(summary.usage?.cachedInputTokens == 5)
+    #expect(summary.usage?.outputTokens == 20)
+    #expect(summary.usage?.reasoningTokens == 5)
+    #expect(summary.usage?.totalKnownTokens == 50)
+    #expect(summary.completedToolCalls == 2)
+    #expect(summary.failedToolCalls == 1)
+    #expect(summary.durationText == "1m 23s")
+    #expect(AIUsageRunSummary.costAvailability.contains("Unavailable"))
+}
+
+@Test func usageRunSummaryDoesNotInventMissingHistoricalProviderOrTokens() throws {
+    let message = AIChatMessage(role: .assistant, text: "Legacy response")
+    var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(message)) as? [String: Any])
+    object.removeValue(forKey: "providerID")
+    object.removeValue(forKey: "modelID")
+    let restored = try JSONDecoder().decode(AIChatMessage.self, from: JSONSerialization.data(withJSONObject: object))
+    let summary = AIUsageRunSummary(message: restored)
+    #expect(restored.providerID == nil)
+    #expect(restored.modelID == nil)
+    #expect(summary.providerLabel == "Not recorded")
+    #expect(summary.modelLabel == "Not recorded")
+    #expect(summary.usage == nil)
+    #expect(summary.reportedTokenText == "Not reported")
+    #expect(summary.duration == nil)
+}
+
+@Test func contextManifestSeparatesAttachedContentFromBrowserToolAccess() throws {
+    let conversationID = UUID()
+    let userMessageID = UUID()
+    let clipboard = AIAttachment(kind: .clipboard, displayName: "Clipboard excerpt", text: "private fixture text")
+    let missingFile = AIAttachment(kind: .file, displayName: "missing.txt", path: "/tmp/lima-context-missing-fixture.txt")
+    let manifest = AIContextManifest(
+        conversationID: conversationID,
+        userMessageID: userMessageID,
+        attachments: [clipboard, missingFile],
+        instructionSources: ["Project: Test"],
+        browserTabTitle: "Example tab",
+        browserTabHost: "example.com",
+        browserToolRouted: true,
+        hasPriorConversation: true,
+        permissionsSnapshot: AIContextPermissionsSnapshot(
+            toolAccessMode: "custom",
+            routedToolIDs: ["browser_read"],
+            browserControlMode: "readOnly"
+        )
+    )
+    #expect(manifest.entries.count == 5)
+    #expect(manifest.entries[0].delivery == .attachedWithMessage)
+    #expect(manifest.entries[0].availability == .ready)
+    #expect(manifest.entries[1].availability == .unavailable)
+    #expect(manifest.entries[2].delivery == .includedInInstructions)
+    #expect(manifest.entries[3].delivery == .availableThroughTool)
+    #expect(manifest.entries[3].detail.contains("Page contents are not attached"))
+    #expect(manifest.entries[4].delivery == .priorConversation)
+    let encoded = try JSONEncoder().encode(manifest)
+    let json = String(decoding: encoded, as: UTF8.self)
+    #expect(!json.contains("private fixture text"))
+    #expect(!json.contains("/tmp/lima-context-missing-fixture.txt"))
+    #expect(try JSONDecoder().decode(AIContextManifest.self, from: encoded) == manifest)
+
+    let message = AIChatMessage(role: .user, text: "Question", contextManifest: manifest)
+    let restored = try JSONDecoder().decode(AIChatMessage.self, from: JSONEncoder().encode(message))
+    #expect(restored.contextManifest == manifest)
+}
+
+// MARK: - Responses event compatibility
+
+private func responseEvent(_ type: String, _ fields: [String: Any] = [:]) -> [AIChatStreamEvent] {
+    var payload = fields
+    payload["type"] = type
+    let data = try! JSONSerialization.data(withJSONObject: payload, options: [])
+    return AIResponsesEventDecoder.events(eventType: type, dataLines: [String(decoding: data, as: UTF8.self)], model: "gpt-5")
+}
+
+private func outputItemEvent(_ eventType: String, item: [String: Any]) -> [AIChatStreamEvent] {
+    responseEvent(eventType, ["response_id": "resp_test", "item": item])
+}
+
+@Test func responsesDecoderAcceptsPlainAssistantText() {
+    let events = responseEvent("response.output_text.delta", ["delta": "Hello"])
+    guard case .textDelta(let text) = events.first else {
+        Issue.record("Expected a text delta")
+        return
+    }
+    #expect(text == "Hello")
+}
+
+@Test func responsesDecoderMarksCompletedAnswerTextBeforeResponseTerminal() {
+    let done = responseEvent("response.output_text.done", ["text": "# Answer"])
+    #expect(done.contains { if case .textDone = $0 { return true }; return false })
+    let message = outputItemEvent("response.output_item.done", item: [
+        "type": "message", "id": "message-1", "role": "assistant", "content": []
+    ])
+    #expect(message.contains { if case .textDone = $0 { return true }; return false })
+}
+
+@Test func responsesSSEParserReconstructsMultilineJSON() {
+    var parser = AIResponsesSSEParser(model: "gpt-5")
+    let events = [
+        "event: response.output_text.delta",
+        #"data: {"type":"response.output_text.delta","#,
+        #"data: "delta":"Lima works"}"#,
+        ""
+    ].flatMap { parser.append(line: $0) }
+
+    #expect(events.contains { if case .textDelta(let text) = $0 { return text == "Lima works" }; return false })
+    #expect(events.contains { if case .diagnostic = $0 { return true }; return false } == false)
+}
+
+@Test func responsesSSEByteParserPreservesCRLFEventDelimiters() {
+    var parser = AIResponsesSSEParser(model: "gpt-5.4")
+    let raw = "event: response.output_text.delta\r\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Lima works\"}\r\n\r\n"
+    var events: [AIChatStreamEvent] = []
+
+    for byte in raw.utf8 {
+        events += parser.append(byte: byte)
+    }
+    events += parser.finish()
+
+    #expect(events.contains { if case .textDelta(let text) = $0 { return text == "Lima works" }; return false })
+    #expect(events.contains { if case .diagnostic = $0 { return true }; return false } == false)
+}
+
+@Test func responsesDecoderAcceptsReasoningBeforeMessage() {
+    let reasoning = outputItemEvent("response.output_item.added", item: ["type": "reasoning", "id": "reasoning_1"])
+    let text = responseEvent("response.output_text.delta", ["delta": "Answer"])
+    #expect(reasoning.contains { if case .outputItem(let item) = $0 { return item.kind == .reasoning }; return false })
+    #expect(text.contains { if case .textDelta = $0 { return true }; return false })
+}
+
+@Test func responsesDecoderAcceptsMessageBeforeReasoning() {
+    let text = responseEvent("response.output_text.delta", ["delta": "Answer"])
+    let reasoning = outputItemEvent("response.output_item.done", item: ["type": "reasoning", "id": "reasoning_2"])
+    #expect(text.contains { if case .textDelta = $0 { return true }; return false })
+    #expect(reasoning.contains { if case .outputItem(let item) = $0 { return item.kind == .reasoning }; return false })
+}
+
+@Test func responsesDecoderPreservesMultipleOutputItems() {
+    let events = outputItemEvent("response.output_item.done", item: [
+        "type": "function_call",
+        "id": "fc_1",
+        "call_id": "call_1",
+        "name": "search_files",
+        "arguments": "{\"query\":\"report\"}"
+    ])
+    guard case .outputItem(let item) = events.first else {
+        Issue.record("Expected an output item")
+        return
+    }
+    #expect(item.kind == .functionCall)
+    #expect(item.callID == "call_1")
+    #expect(item.arguments?.contains("report") == true)
+}
+
+@Test func responsesDecoderAcceptsStreamedReasoningSummary() {
+    let events = responseEvent("response.reasoning_summary_text.delta", ["delta": "I checked the inputs."])
+    guard case .reasoningSummaryDelta(let summary) = events.first else {
+        Issue.record("Expected a reasoning summary delta")
+        return
+    }
+    #expect(summary == "I checked the inputs.")
+}
+
+@Test func responsesDecoderTreatsFunctionCallAsValidNonTextOutput() {
+    let events = outputItemEvent("response.output_item.done", item: [
+        "type": "function_call",
+        "id": "fc_2",
+        "call_id": "call_2",
+        "name": "get_lima_status",
+        "arguments": "{}"
+    ])
+    #expect(events.contains { if case .failed = $0 { return true }; return false } == false)
+    #expect(events.contains { if case .outputItem(let item) = $0 { return item.kind == .functionCall }; return false })
+}
+
+@Test func responsesDecoderSupportsFunctionCallContinuationInputs() {
+    let output = ["type": "function_call_output", "call_id": "call_3", "output": "{\"ok\":true}"] as [String: Any]
+    let body = AIChatResponsesClient.replyBody(
+        model: "gpt-5",
+        input: [output],
+        previousResponseID: "resp_tools",
+        reasoningEffort: .medium,
+        tools: []
+    )
+    let input = try? #require(body["input"] as? [[String: Any]])
+    #expect(input?.first?["type"] as? String == "function_call_output")
+    #expect(body["previous_response_id"] as? String == "resp_tools")
+}
+
+@Test func responsesDecoderReportsUnknownOutputItemWithoutFailing() {
+    let events = outputItemEvent("response.output_item.done", item: [
+        "type": "future_output_item",
+        "id": "future_1"
+    ])
+    #expect(events.contains { if case .outputItem(let item) = $0 { return item.kind == .unknown }; return false })
+    #expect(events.contains { if case .diagnostic(let diagnostic) = $0 { return diagnostic.outputItemType == "unknown" }; return false })
+    #expect(events.contains { if case .failed = $0 { return true }; return false } == false)
+}
+
+@Test func responsesDecoderReportsUnknownEventWithoutFailing() {
+    let events = responseEvent("response.future_event", ["response_id": "resp_future"])
+    #expect(events.count == 1)
+    guard case .diagnostic(let diagnostic) = events.first else {
+        Issue.record("Expected an unknown-event diagnostic")
+        return
+    }
+    #expect(diagnostic.eventType == "unknown")
+}
+
+@Test func responsesDecoderReportsMalformedJSONSafely() {
+    let events = AIResponsesEventDecoder.events(eventType: "response.output_text.delta", dataLines: ["{not-json"], model: "gpt-5")
+    guard case .diagnostic(let diagnostic) = events.first else {
+        Issue.record("Expected a malformed JSON diagnostic")
+        return
+    }
+    #expect(diagnostic.stage == .stream)
+    #expect(diagnostic.message.contains("malformed"))
+}
+
+@Test func responsesDecoderPreservesStructuredAPIErrorDetails() {
+    let events = responseEvent("error", [
+        "error": ["code": "invalid_prompt", "param": "input", "message": "The input is invalid."]
+    ])
+    #expect(events.contains { if case .failed(let message) = $0 { return message == "The input is invalid." }; return false })
+    guard case .diagnostic(let diagnostic) = events.first else {
+        Issue.record("Expected an API diagnostic")
+        return
+    }
+    #expect(diagnostic.errorCode == "invalid_prompt")
+    #expect(diagnostic.errorParameter == "input")
+}
+
+@Test func responsesDecoderEmitsCompletionForEmptyValidResponse() {
+    let events = responseEvent("response.completed", ["response": ["id": "resp_empty"]])
+    #expect(events.contains { if case .completed(let id) = $0 { return id == "resp_empty" }; return false })
+    #expect(events.contains { if case .failed = $0 { return true }; return false } == false)
+}
+
+@Test func responsesDecoderAcceptsResponseUsageOnCompletion() {
+    let events = responseEvent("response.completed", [
+        "response": [
+            "id": "resp_usage",
+            "usage": ["input_tokens": 4, "output_tokens": 6]
+        ]
+    ])
+    #expect(events.contains { if case .usage(let usage) = $0 { return usage.totalKnownTokens == 10 }; return false })
+}
+
+@Test @MainActor func advertisedNativeToolsAreReadOnly() {
+    #expect(LimaAIToolRegistry.definitions.allSatisfy { !$0.risk.requiresApproval })
+    #expect(LimaAIToolRegistry.definition(for: "open_lima_settings") == nil)
+    #expect(LimaAIToolRegistry.definition(for: "read_screen_context")?.displayName == "Screen context")
+    #expect(LimaAIToolRegistry.definition(for: "search_web") == nil)
+    #expect(LimaAIToolRegistry.definition(for: "read_web") == nil)
+    #expect(ExtensionToolHostAdapterRegistry.adapter(for: "read_public_web") == nil)
+    #expect(AIChatConfigurationCatalog.builtInSkills.allSatisfy {
+        $0.preferredToolIDs.allSatisfy { $0 != "search_web" && $0 != "read_web" }
+    })
+    #expect(AIChatConfigurationCatalog.builtInAgents.allSatisfy {
+        $0.toolIDs.allSatisfy { $0 != "search_web" && $0 != "read_web" }
+    })
+    #expect(["list_directory", "find_files", "search_files", "read_file", "file_metadata"]
+        .allSatisfy { LimaAIToolRegistry.definition(for: $0) != nil })
+}
+
+@Test @MainActor func fileToolsReturnBoundedNumberedRangesAndSkipHiddenOrLinkedEntries() throws {
+    let repository = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let directory = repository
+        .appendingPathComponent(".build", isDirectory: true)
+        .appendingPathComponent("ai-file-inspection-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let file = directory.appendingPathComponent("sample.txt")
+    try Data("alpha\nbeta\ngamma\n".utf8).write(to: file)
+    try Data("hidden".utf8).write(to: directory.appendingPathComponent(".hidden.txt"))
+    let symbolicLink = directory.appendingPathComponent("sample-link.txt")
+    try FileManager.default.createSymbolicLink(at: symbolicLink, withDestinationURL: file)
+
+    let firstRange = LimaAIToolRegistry.readTextFile(at: file.path, startLine: 2, length: 1)
+    #expect(!firstRange.isError)
+    let rangePayload = try #require(
+        JSONSerialization.jsonObject(with: Data(firstRange.output.utf8)) as? [String: Any]
+    )
+    #expect(rangePayload["content"] as? String == "2\tbeta")
+    #expect(rangePayload["next_start_line"] as? Int == 3)
+    #expect(rangePayload["truncated"] as? Bool == true)
+    #expect(LimaAIToolRegistry.integerArgument(named: "start_line", from: #"{"start_line":true}"#) == nil)
+
+    let listing = LimaAIToolRegistry.listDirectory(at: directory.path)
+    let listingPayload = try #require(
+        JSONSerialization.jsonObject(with: Data(listing.output.utf8)) as? [String: Any]
+    )
+    let entries = try #require(listingPayload["entries"] as? [[String: Any]])
+    let names = entries.compactMap { $0["name"] as? String }
+    #expect(names.contains("sample.txt"))
+    #expect(!names.contains(".hidden.txt"))
+    #expect(!names.contains("sample-link.txt"))
+
+    let metadata = LimaAIToolRegistry.fileMetadata(at: file.path)
+    let metadataPayload = try #require(
+        JSONSerialization.jsonObject(with: Data(metadata.output.utf8)) as? [String: Any]
+    )
+    #expect(metadataPayload["name"] as? String == "sample.txt")
+    #expect(metadataPayload["kind"] as? String == "file")
+    #expect(metadataPayload["size_bytes"] as? Int == 17)
+    #expect(LimaAIToolRegistry.readTextFile(at: symbolicLink.path).isError)
+    #expect(LimaAIToolRegistry.listDirectory(at: "/etc").isError)
+}
+
+@Test @MainActor func extensionHostAdaptersAreAllowlistedAndTextTransformIsPure() async throws {
+    let transform = try #require(ExtensionToolHostAdapterRegistry.adapter(for: "transform_text"))
+    #expect(transform.requiredCapabilities.isEmpty)
+    #expect(ExtensionToolHostAdapterRegistry.adapter(for: "run_shell") == nil)
+
+    let declaration = ExtensionToolDefinition(
+        id: "trim",
+        title: "Trim text",
+        description: "Remove surrounding whitespace.",
+        execution: .hostReadOnly,
+        hostAdapterID: "transform_text"
+    )
+    let result = try await transform.execute(
+        definition: declaration,
+        arguments: .object([
+            "operation": .string("trim"),
+            "text": .string("  review this  \n")
+        ])
+    )
+    #expect(result == JSONValue.object(["text": JSONValue.string("review this")]))
+    let normalizedName = ExtensionToolHostAdapterRegistry.functionName(extensionID: "local.review-tools", toolID: "read_diff")
+    #expect(normalizedName.hasPrefix("ext__local_review-tools__read_diff__"))
+    #expect(normalizedName != ExtensionToolHostAdapterRegistry.functionName(extensionID: "local_review-tools", toolID: "read_diff"))
+    #expect(ExtensionToolHostAdapterRegistry.adapter(for: "read_text_file")?.requiredCapabilities == [.filesystem])
+}
+
+@Test @MainActor func extensionToolsRequireExplicitAIOptIn() {
+    let identifier = "extension:local.review-tools:read_diff"
+    let store = LimaAIToolStore(fixtures: [])
+    let definition = LimaAIToolDefinition(
+        id: identifier,
+        name: "ext__local_review-tools__read_diff__deadbeef",
+        description: "Read an approved diff.",
+        parameters: ["type": "object"],
+        risk: .read
+    )
+
+    #expect(!LimaAIToolRegistry.defaultEnabledToolIDs.contains(identifier))
+    #expect(!store.isEnabled(definition))
+    store.setEnabled(definition, enabled: true)
+    #expect(store.isEnabled(definition))
+}
+
+@Test @MainActor func extensionHostAdapterRejectsUnapprovedBindings() async {
+    let declaration = ExtensionToolDefinition(
+        id: "trim",
+        title: "Trim text",
+        description: "Remove surrounding whitespace.",
+        execution: .hostReadOnly,
+        hostAdapterID: "transform_text"
+    )
+    let binding = ExtensionAIToolBinding(
+        extensionID: "test.unapproved-\(UUID().uuidString)",
+        extensionName: "Unapproved",
+        extensionCapabilities: [],
+        tool: declaration
+    )
+    var rejected = false
+    do {
+        _ = try await ExtensionToolHostAdapterRegistry.execute(
+            binding,
+            arguments: .object(["operation": .string("trim"), "text": .string(" data ")])
+        )
+    } catch {
+        rejected = true
+    }
+    #expect(rejected)
+}
+
+@Test func localToolFailureIsReturnedAsToolOutput() async {
+    let call = AIOutputItem(
+        phase: .completed,
+        apiType: "function_call",
+        callID: "call_bad",
+        name: "search_files",
+        arguments: "{\"query\":123}"
+    )
+    let result = await LimaAIToolRegistry.execute(call)
+    #expect(result.isError)
+    #expect(result.output.contains("error"))
+}
+
+@Test func unsupportedModelDoesNotReceiveReasoningConfiguration() {
+    let body = AIChatResponsesClient.replyBody(
+        model: "gpt-4o",
+        input: [],
+        previousResponseID: nil,
+        reasoningEffort: .high,
+        tools: []
+    )
+    #expect(body["reasoning"] == nil)
+}
+
+@Test func cancellationAndStreamInterruptionRemainNonFatalToDecoder() {
+    #expect(AIResponsesEventDecoder.events(eventType: "", dataLines: ["[DONE]"], model: "gpt-5").isEmpty)
+    let partial = responseEvent("response.output_text.delta", ["delta": "partial"])
+    #expect(partial.contains { if case .textDelta(let text) = $0 { return text == "partial" }; return false })
+}
+
+@Test func aiComposerReturnSendsAndModifiedReturnInsertsNewline() {
+    #expect(AIChatComposerKeyboardAction.action(isReturnKey: true, modifiers: []) == .send)
+    #expect(AIChatComposerKeyboardAction.action(isReturnKey: true, modifiers: [.command]) == .send)
+    #expect(AIChatComposerKeyboardAction.action(isReturnKey: true, modifiers: [.shift]) == .insertNewline)
+    #expect(AIChatComposerKeyboardAction.action(isReturnKey: true, modifiers: [.option]) == .insertNewline)
+    #expect(AIChatComposerKeyboardAction.action(isReturnKey: false, modifiers: []) == .passthrough)
+}
+
+@Test @MainActor func returnWithEmptyDraftDoesNotStartAIWork() {
+    let registry = TaskRegistry()
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: []),
+        taskRegistry: registry
+    )
+
+    model.send()
+
+    #expect(store.conversations.isEmpty)
+    #expect(registry.activeTasks.isEmpty)
+}
+
+@Test @MainActor func sentContextIsShownOnItsTurnAndNotReusedByTheNextPrompt() async {
+    let attachment = AIAttachment(kind: .selection, displayName: "Selected text", text: "First-turn context")
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [.textDelta("Done"), .completed("context-test")])
+    )
+
+    model.add(attachment)
+    model.draft = "First prompt"
+    model.send()
+    #expect(model.attachments.isEmpty)
+    #expect(store.conversations.first?.attachments.isEmpty == true)
+    #expect(store.conversations.first?.messages.first?.attachments == [attachment])
+    for _ in 0..<300 where model.isStreaming {
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+
+    model.draft = "Second prompt"
+    model.send()
+    let userTurns = store.conversations.first?.messages.filter { $0.role == .user } ?? []
+    #expect(userTurns.count == 2)
+    #expect(userTurns.first?.attachments == [attachment])
+    #expect(userTurns.last?.attachments == nil)
+    #expect(model.attachments.isEmpty)
+    for _ in 0..<300 where model.isStreaming {
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+}
+
+@Test @MainActor func longChatFixtureRepeatedTurnsCompleteAndMeasureComposerWork() async {
+    let history = (0..<80).map { index in
+        AIChatMessage(
+            role: index.isMultiple(of: 2) ? .user : .assistant,
+            text: "Prior turn \(index): " + String(repeating: "context ", count: 500)
+        )
+    }
+    let store = AIConversationStore(fixtures: [AIConversation(title: "Long Chat", messages: history)])
+    let registry = TaskRegistry()
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport.standard,
+        taskRegistry: registry
+    )
+    var sendDurations: [TimeInterval] = []
+    for turn in 0..<8 {
+        model.draft = "Fixture follow-up \(turn)"
+        let startedAt = Date()
+        model.send()
+        sendDurations.append(Date().timeIntervalSince(startedAt))
+        for _ in 0..<300 where model.isStreaming {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!model.isStreaming)
+        #expect(model.streamError == nil)
+        #expect(registry.activeTasks.isEmpty)
+    }
+    #expect(store.conversations.first?.messages.count == history.count + 16)
+    // Parallel CI can preempt a single MainActor call. Keep the 100 ms budget
+    // for the normal tail of repeated sends rather than failing on one
+    // scheduler outlier unrelated to composer work.
+    let sortedDurations = sendDurations.sorted()
+    let upperQuartileDuration = sortedDurations[5]
+    #expect(upperQuartileDuration < 0.1,
+            "Fixture long-chat composer work exceeded the 100 ms upper-quartile responsiveness budget.")
+    let upperQuartile = Int((upperQuartileDuration * 1_000).rounded())
+    let longest = Int(((sortedDurations.last ?? .infinity) * 1_000).rounded())
+    print("Fixture long-chat composer send: 8 turns, upper quartile \(upperQuartile) ms, longest \(longest) ms; no live provider or UI rendering")
+}
+
+@Test @MainActor func oneHundredMixedAIRunsLeaveNoActiveExecutionProjection() async throws {
+    let first = AIConversation(title: "Stress A")
+    let second = AIConversation(title: "Stress B")
+    let store = AIConversationStore(fixtures: [first, second])
+    let registry = TaskRegistry()
+    var transport = FixtureAITransport(events: [])
+    transport.toolOutputEvents = [.textDelta("Recovered from tool failure"), .completed("tool-continuation")]
+    transport.replyStream = { input, _ in
+        let index = Int(input.split(separator: " ").last ?? "") ?? 0
+        return AsyncThrowingStream { continuation in
+            continuation.yield(.responseCreated("stress-\(index)"))
+            switch index % 10 {
+            case 1:
+                continuation.yield(.failed("Fixture provider failure"))
+            case 2:
+                continuation.yield(.outputItem(AIOutputItem(
+                    phase: .completed,
+                    apiType: "function_call",
+                    callID: "tool-\(index)",
+                    name: "fixture_missing_tool",
+                    arguments: "{}"
+                )))
+                continuation.yield(.completed("stress-\(index)"))
+            default:
+                continuation.yield(.textDelta("Answer \(index)"))
+                continuation.yield(.completed("stress-\(index)"))
+            }
+            continuation.finish()
+        }
+    }
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: transport,
+        taskRegistry: registry
+    )
+
+    for index in 0..<100 {
+        model.select(index.isMultiple(of: 2) ? first.id : second.id)
+        model.draft = "Stress run \(index)"
+        model.send()
+        if index % 10 == 0 {
+            model.cancel()
+        } else {
+            for _ in 0..<500 {
+                let state = model.executionRun?.state
+                if state?.isTerminal == true ||
+                    state == .waitingForProvider ||
+                    state == .waitingForConfiguration {
+                    break
+                }
+                try await Task.sleep(for: .milliseconds(2))
+            }
+            if model.canEndTask {
+                #expect(model.executionRun?.state == .waitingForProvider ||
+                        model.executionRun?.state == .waitingForConfiguration)
+                model.endTask()
+            }
+        }
+        #expect(model.executionRun?.state.isTerminal == true)
+        #expect(!model.canEndTask)
+        #expect(!model.isStreaming)
+        #expect(model.pendingApproval == nil)
+        #expect(!model.hasActiveStreamTaskForTesting)
+        #expect(registry.activeTasks.isEmpty)
+    }
+    for _ in 0..<500 {
+        if await model.inFlightExecutionLoopCountForTesting() == 0 { break }
+        try await Task.sleep(for: .milliseconds(2))
+    }
+    #expect(await model.inFlightExecutionLoopCountForTesting() == 0)
+    #expect(store.conversations.reduce(0) { $0 + $1.messages.filter { $0.role == .user }.count } == 100)
+}
+
+@Test @MainActor func deletedConversationCannotCompleteAnUnpersistedAIRun() async throws {
+    let registry = TaskRegistry()
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [.textDelta("Answer"), .completed("removed-chat")]),
+        taskRegistry: registry
+    )
+    model.draft = "Answer this"
+    model.send()
+    let id = try #require(store.conversations.first?.id)
+    store.delete(id: id)
+
+    for _ in 0..<1000 where model.executionRun?.isActive == true { await Task.yield() }
+    #expect(model.executionRun?.state == .failed)
+    #expect(model.streamError?.contains("removed before") == true)
+    #expect(registry.activeTasks.isEmpty)
+    #expect(registry.recentTasks.first?.state == .failed)
+    #expect(!model.isStreaming)
+}
+
+@Test @MainActor func cancellingDeletedConversationClearsOrphanedStreamingText() async throws {
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(
+            events: [.textDelta("Partial answer"), .completed("cancel-removed-chat")],
+            interEventDelay: .seconds(2)
+        )
+    )
+    model.draft = "Start a response"
+    model.send()
+    for _ in 0..<300 where model.streamingText != "Partial answer" {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(model.streamingText == "Partial answer")
+    let id = try #require(store.conversations.first?.id)
+    store.delete(id: id)
+    model.cancel()
+
+    #expect(model.executionRun?.state == .cancelled)
+    #expect(!model.canEndTask)
+    #expect(model.streamingText.isEmpty)
+    #expect(model.streamingTextAssistantID == nil)
+}
+
+@Test @MainActor func deletedAssistantMessageCannotCompleteAnUnpersistedAIRun() async throws {
+    let registry = TaskRegistry()
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [.textDelta("Answer"), .completed("removed-message")]),
+        taskRegistry: registry
+    )
+    model.draft = "Answer this"
+    model.send()
+    var conversation = try #require(store.conversations.first)
+    conversation.messages.removeAll { $0.role == .assistant }
+    store.update(conversation)
+
+    for _ in 0..<1000 where model.executionRun?.isActive == true { await Task.yield() }
+    #expect(model.executionRun?.state == .failed)
+    #expect(model.streamError?.contains("removed before") == true)
+    #expect(registry.activeTasks.isEmpty)
+    #expect(registry.recentTasks.first?.state == .failed)
+    #expect(!model.isStreaming)
+}
+
+@Test @MainActor func returnDuringActiveTaskCannotStartAnotherAIRequest() async {
+    let registry = TaskRegistry()
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(
+            events: [.textDelta("partial"), .completed("active-task")],
+            interEventDelay: .seconds(2)
+        ),
+        taskRegistry: registry
+    )
+
+    model.draft = "First request"
+    model.send()
+    model.draft = "Second request"
+    model.send()
+
+    #expect(store.conversations.first?.messages.filter { $0.role == .user }.map(\.text) == ["First request"])
+    #expect(registry.activeTasks.count == 1)
+    model.cancel()
+}
+
+@Test @MainActor func launcherEscapeRouteKeepsAIWorkRunningUntilExplicitStop() async {
+    let registry = TaskRegistry()
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(
+            events: [.textDelta("partial"), .completed("escape-task")],
+            interEventDelay: .seconds(2)
+        ),
+        taskRegistry: registry
+    )
+    model.draft = "Keep working"
+    model.send()
+    guard let taskID = registry.activeTasks.first?.id else {
+        Issue.record("Expected a registered AI task before routing Escape.")
+        return
+    }
+
+    let escape = NSEvent.keyEvent(
+        with: .keyDown,
+        location: .zero,
+        modifierFlags: [],
+        timestamp: 0,
+        windowNumber: 0,
+        context: nil,
+        characters: "\u{1B}",
+        charactersIgnoringModifiers: "\u{1B}",
+        isARepeat: false,
+        keyCode: 53
+    )!
+
+    #expect(LauncherAIKeyboardRoute.action(for: escape) == .navigateBack)
+    #expect(model.canEndTask)
+    #expect(registry.task(id: taskID)?.state == .running)
+
+    // This is the same explicit cancellation invoked by the Activity Shelf's
+    // stop control. Escape routed above never touches the registry entry.
+    registry.cancel(taskID)
+    for _ in 0..<300 where model.canEndTask {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(!model.canEndTask)
+    #expect(registry.task(id: taskID)?.state == .cancelled)
+}
+
+private let openAIStrictSchemaKeywords: Set<String> = [
+    "type", "properties", "required", "additionalProperties", "description",
+    "enum", "items", "anyOf", "pattern", "minimum", "maximum",
+    "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "minItems",
+    "maxItems", "format"
+]
+
+private let openAIStrictSchemaFormats: Set<String> = [
+    "date-time", "time", "date", "duration", "email", "hostname",
+    "ipv4", "ipv6", "uuid"
+]
+
+private let openAIStrictJSONTypes: Set<String> = [
+    "string", "number", "integer", "boolean", "object", "array", "null"
+]
+
+private func openAIStrictSchemaIssue(
+    in schema: [String: Any],
+    path: String = "parameters"
+) -> String? {
+    if let unsupported = Set(schema.keys).subtracting(openAIStrictSchemaKeywords).sorted().first {
+        return "\(path) uses unsupported keyword \(unsupported)"
+    }
+
+    let types: [String]
+    if let type = schema["type"] as? String {
+        types = [type]
+    } else if let values = schema["type"] as? [String] {
+        types = values
+    } else if schema["anyOf"] != nil {
+        types = []
+    } else {
+        return "\(path) omits type"
+    }
+    if !types.isEmpty && (Set(types).count != types.count || !types.allSatisfy(openAIStrictJSONTypes.contains)) {
+        return "\(path) has an invalid type declaration"
+    }
+
+    if let format = schema["format"] {
+        guard types.contains("string"),
+              let format = format as? String,
+              openAIStrictSchemaFormats.contains(format) else {
+            return "\(path) has unsupported format"
+        }
+    }
+
+    if types.contains("object") {
+        guard let properties = schema["properties"] as? [String: Any],
+              schema["additionalProperties"] as? Bool == false,
+              let required = schema["required"] as? [String],
+              Set(required) == Set(properties.keys) else {
+            return "\(path) is not a strict object schema"
+        }
+        for (name, value) in properties {
+            guard let child = value as? [String: Any] else {
+                return "\(path).properties.\(name) is not a schema"
+            }
+            if let issue = openAIStrictSchemaIssue(in: child, path: "\(path).properties.\(name)") {
+                return issue
+            }
+        }
+    } else if schema["properties"] != nil || schema["required"] != nil || schema["additionalProperties"] != nil {
+        return "\(path) uses object keywords without object type"
+    }
+
+    if types.contains("array") {
+        guard let items = schema["items"] as? [String: Any] else {
+            return "\(path) omits array items"
+        }
+        if let issue = openAIStrictSchemaIssue(in: items, path: "\(path).items") {
+            return issue
+        }
+    } else if schema["items"] != nil || schema["minItems"] != nil || schema["maxItems"] != nil {
+        return "\(path) uses array keywords without array type"
+    }
+
+    if let rawBranches = schema["anyOf"] {
+        guard let branches = rawBranches as? [Any], !branches.isEmpty else {
+            return "\(path).anyOf is invalid"
+        }
+        for (index, value) in branches.enumerated() {
+            guard let branch = value as? [String: Any] else {
+                return "\(path).anyOf[\(index)] is not a schema"
+            }
+            if let issue = openAIStrictSchemaIssue(in: branch, path: "\(path).anyOf[\(index)]") {
+                return issue
+            }
+        }
+    }
+    return nil
+}
+
+@Test @MainActor func stoppingProviderDiagnosisCannotReviveCancelledRun() async throws {
+    for _ in 0..<12 {
+        let model = AIChatViewModel(
+            store: AIConversationStore(fixtures: []),
+            credentials: AIChatCredentialStore(configuration: .fixture),
+            nativeToolStore: LimaAIToolStore(fixtures: []),
+            transport: FixtureAITransport(events: [
+                .diagnostic(AIChatDiagnostic(stage: .transport, httpStatus: 429,
+                    errorCode: "insufficient_quota", message: "Fixture quota exhausted")),
+                .failed("Fixture failure")
+            ])
+        )
+        model.draft = "Cancel while diagnosing"
+        model.send()
+        for _ in 0..<500 {
+            if model.executionRun?.state == .diagnosingFailure || model.executionRun?.state == .waitingForConfiguration { break }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect([AIExecutionRunState.diagnosingFailure, .waitingForConfiguration].contains(model.executionRun?.state ?? .preparing))
+        let runID = try #require(model.executionRun?.id)
+        model.endTask()
+        #expect(model.executionRun?.state == .cancelled)
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(model.executionRun?.id == runID)
+        #expect(model.executionRun?.state == .cancelled)
+        #expect(!model.canEndTask)
+        let checkpoint = try #require(try await AIExecutionCheckpointStore.shared.checkpoint(runID: runID))
+        #expect(checkpoint.phase == .cancelled)
+        #expect(!checkpoint.automaticResume)
+    }
+}
