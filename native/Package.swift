@@ -23,6 +23,8 @@ let package = Package(
         .target(name: "LimaAuthorization", dependencies: ["LimaProtocol"]),
         .target(name: "LimaTerminal", dependencies: ["LimaProtocol"]),
         .target(name: "LimaAgentSupervisor", dependencies: ["LimaProtocol"]),
+        .target(name: "LimaStorage"),
+        .target(name: "LimaNotes", dependencies: ["LimaStorage"]),
         .executableTarget(
             name: "LimaHost",
             dependencies: ["LimaProtocol", "LimaAuthorization", "LimaTerminal", "LimaAgentSupervisor"]
@@ -30,7 +32,9 @@ let package = Package(
         .testTarget(name: "LimaProtocolTests", dependencies: ["LimaProtocol"]),
         .testTarget(name: "LimaAuthorizationTests", dependencies: ["LimaAuthorization"]),
         .testTarget(name: "LimaTerminalTests", dependencies: ["LimaTerminal"]),
-        .testTarget(name: "LimaAgentSupervisorTests", dependencies: ["LimaAgentSupervisor"])
+        .testTarget(name: "LimaAgentSupervisorTests", dependencies: ["LimaAgentSupervisor"]),
+        .testTarget(name: "LimaStorageTests", dependencies: ["LimaStorage"]),
+        .testTarget(name: "LimaNotesTests", dependencies: ["LimaNotes", "LimaStorage"])
     ],
     swiftLanguageModes: [.v6]
 )
