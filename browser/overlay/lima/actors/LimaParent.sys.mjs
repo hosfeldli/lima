@@ -105,6 +105,14 @@ export class LimaParent extends JSWindowActorParent {
         return lazy.LimaNotesBookmarks.trashNote(payload.noteId);
       case "restoreNote":
         return lazy.LimaNotesBookmarks.restoreNote(payload.noteId);
+      case "workspaceState": {
+        const { LimaWorkspaces } = ChromeUtils.importESModule("resource://lima/LimaWorkspaces.sys.mjs");
+        return LimaWorkspaces.browserState(payload.id);
+      }
+      case "workspaceFocusTab": {
+        const { LimaWorkspaces } = ChromeUtils.importESModule("resource://lima/LimaWorkspaces.sys.mjs");
+        return LimaWorkspaces.focusTab(payload.id, payload.url);
+      }
       case "openTabs": {
         const win = this.browsingContext.topChromeWindow;
         return [...win.gBrowser.tabs].map((tab, index) => ({

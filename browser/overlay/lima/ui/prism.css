@@ -75,13 +75,13 @@ a:hover { text-decoration: underline; }
 button, select, input, textarea { font: inherit; color: inherit; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
 
-/* Ambient aurora: three slow-drifting blobs behind every page. */
-.aurora { position: fixed; inset: -20vmax; z-index: -1; pointer-events: none; filter: blur(60px); }
-.aurora i { position: absolute; width: 60vmax; height: 60vmax; border-radius: 50%; animation: drift 28s var(--ease) infinite alternate; }
-.aurora i:nth-child(1) { background: radial-gradient(circle, var(--aurora-a), transparent 60%); left: 0; top: 0; }
-.aurora i:nth-child(2) { background: radial-gradient(circle, var(--aurora-b), transparent 60%); right: 0; top: 10%; animation-duration: 34s; animation-delay: -8s; }
-.aurora i:nth-child(3) { background: radial-gradient(circle, var(--aurora-c), transparent 60%); left: 25%; bottom: 0; animation-duration: 40s; animation-delay: -16s; }
-@keyframes drift { from { transform: translate(0, 0) scale(1); } to { transform: translate(6vmax, -4vmax) scale(1.15); } }
+/* Ambient backdrop: static soft gradients, painted once (no blur filter,
+ * no animation — Lima tabs stay cheap to keep open). */
+.aurora { position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background: radial-gradient(60vmax 40vmax at 0% 0%, var(--aurora-a), transparent 70%),
+              radial-gradient(50vmax 40vmax at 100% 10%, var(--aurora-b), transparent 70%),
+              radial-gradient(60vmax 40vmax at 40% 110%, var(--aurora-c), transparent 70%); }
+.aurora i { display: none; }
 
 /* ── Shell ──────────────────────────────────────────────────────────── */
 .bar {
@@ -91,8 +91,7 @@ button, select, input, textarea { font: inherit; color: inherit; }
   background: var(--surface-1); backdrop-filter: var(--blur);
   border-bottom: 1px solid var(--border);
 }
-.bar::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; background: var(--prism); opacity: .55;
-  background-size: 200% 100%; animation: shimmer 9s linear infinite; }
+.bar::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; background: var(--prism); opacity: .45; }
 @keyframes shimmer { to { background-position: -200% 0; } }
 .bar h1 { font: 650 16px/1.2 var(--font-display); margin: 0; letter-spacing: -.01em; display: flex; align-items: center; gap: var(--s2); }
 .bar .title-icon { width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center; color: white;
@@ -113,7 +112,7 @@ button, select, input, textarea { font: inherit; color: inherit; }
 .icon { width: 18px; height: 18px; flex: none; display: inline-block; vertical-align: middle; }
 button {
   display: inline-flex; align-items: center; gap: 6px;
-  border: 1px solid var(--border-strong); background: var(--surface-1); backdrop-filter: var(--blur);
+  border: 1px solid var(--border-strong); background: var(--surface-1);
   border-radius: 10px; padding: 6px 12px; font-weight: 520; cursor: default;
   transition: background var(--fast), border-color var(--fast), transform var(--fast), box-shadow var(--fast);
 }
@@ -140,11 +139,11 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 .badge.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
 .badge.bad { color: var(--danger); background: color-mix(in srgb, var(--danger) 13%, transparent); }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent); }
-.dot.live { animation: pulse 1.6s ease-in-out infinite; }
+.dot.live { animation: pulse 1.6s ease-in-out infinite; } /* only while something is actually running */
 @keyframes pulse { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, currentColor 0%, transparent); } }
 
 .card {
-  position: relative; background: var(--surface-1); backdrop-filter: var(--blur);
+  position: relative; background: var(--surface-1);
   border: 1px solid var(--border); border-radius: var(--r-lg); padding: var(--s4) var(--s5); margin-bottom: var(--s4);
   box-shadow: var(--shadow-1);
 }
@@ -290,7 +289,7 @@ kbd { font: 11px var(--mono); padding: 1px 6px; border: 1px solid var(--border-s
 .msg .tools { font: 12px var(--mono); color: var(--muted); border-left: 2px solid; border-image: var(--prism) 1; padding-left: 10px; margin: 6px 0; }
 .msg .failure { display: flex; gap: var(--s2); align-items: center; margin-top: 8px; padding: 8px 12px; border-radius: 12px; background: color-mix(in srgb, var(--danger) 10%, var(--surface-1)); font-size: 13px; box-shadow: inset 3px 0 0 var(--danger); }
 .composer { padding: var(--s3) var(--s5) var(--s4); }
-.composer-box { max-width: 780px; margin: 0 auto; border-radius: 18px; padding: 8px; background: linear-gradient(var(--surface-1), var(--surface-1)) padding-box, var(--prism-soft) border-box; border: 1.5px solid transparent; box-shadow: var(--shadow-2); backdrop-filter: var(--blur); transition: background var(--base); }
+.composer-box { max-width: 780px; margin: 0 auto; border-radius: 18px; padding: 8px; background: linear-gradient(var(--surface-1), var(--surface-1)) padding-box, var(--prism-soft) border-box; border: 1.5px solid transparent; box-shadow: var(--shadow-1); transition: background var(--base); }
 .composer-box:focus-within { background: linear-gradient(var(--solid), var(--solid)) padding-box, var(--prism) border-box; }
 .composer textarea { width: 100%; border: none !important; background: transparent !important; resize: none; min-height: 48px; max-height: 220px; padding: 6px 8px; box-shadow: none !important; }
 .typing::after { content: ""; display: inline-block; width: 8px; height: 1em; vertical-align: -2px; margin-left: 2px; background: var(--prism); border-radius: 2px; animation: blink 1s steps(2) infinite; }
@@ -319,3 +318,22 @@ kbd { font: 11px var(--mono); padding: 1px 6px; border: 1px solid var(--border-s
   .chat, .studio { grid-template-columns: 1fr; } .chat-list, .tray { display: none; }
   .page { padding: var(--s4); } .note-title, .note-editor { padding-left: var(--s4); padding-right: var(--s4); }
 }
+
+/* ── Home (compact) ─────────────────────────────────────────────────── */
+.home-search { display: flex; align-items: center; gap: 12px; width: 100%; padding: 16px 18px; margin: 8px 0 24px; border-radius: 16px;
+  font-size: 17px; color: var(--muted); text-align: left; background: var(--surface-1); border: 1px solid var(--border-strong); box-shadow: var(--shadow-1); }
+.home-search:hover { border-color: var(--accent); background: var(--surface-1); }
+.home-search .icon { width: 20px; height: 20px; }
+.home-search kbd { margin-left: auto; }
+.continue { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+.continue button { justify-content: flex-start; padding: 10px 12px; border-radius: 12px; border-color: var(--border); text-align: left; min-width: 0; }
+.continue button .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.continue button .when { font-size: 11px; color: var(--muted); font-weight: 450; }
+.actions { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.actions .tile { min-height: 0; flex-direction: row; align-items: center; padding: 10px 12px; gap: 10px; }
+.actions .tile .chip { width: 30px; height: 30px; border-radius: 9px; }
+.actions .tile .chip .icon { width: 16px; height: 16px; }
+.actions .tile span { display: none; }
+.segmented { display: inline-flex; padding: 3px; border-radius: 11px; background: color-mix(in srgb, var(--text) 7%, transparent); gap: 2px; }
+.segmented button { border: 0; background: transparent; padding: 5px 12px; border-radius: 8px; }
+.segmented button[aria-pressed=true] { background: var(--solid); box-shadow: var(--shadow-1); }

@@ -131,7 +131,10 @@ extension Runtime {
     /// to that workspace by token.
     func workspaceAgentConfiguration(_ conversation: Conversation) async -> (arguments: [String], environment: [String: String], preamble: String?) {
         guard let workspaceID = conversation.workspaceID, let workspace = try? await workspaces.get(workspaceID) else { return ([], [:], nil) }
-        let host = (CommandLine.arguments[0] as NSString).resolvingSymlinksInPath
+        // Absolute path: the agent's CLI runs in the workspace directory, so a
+        // relative argv[0] would not resolve there.
+        let host = Bundle.main.executableURL?.resolvingSymlinksInPath().path
+            ?? URL(fileURLWithPath: CommandLine.arguments[0], relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL.path
         var env: [String: String] = ["LIMA_WORKSPACE_TOKEN": workspace.token]
         for key in ["LIMA_DATA_DIR", "LIMA_KEY_FILE"] { if let value = ProcessInfo.processInfo.environment[key] { env[key] = value } }
         let preamble = """
@@ -175,6 +178,10 @@ extension Runtime {
         }
         register("workspace.get") { [unowned self] params, context in
             try await self.workspaces.get(try target(params, context)).publicView
+        }
+        /// Opening a workspace heals its terminal if the runtime restarted.
+        register("workspace.ensureTerminal") { [unowned self] params, context in
+            try await self.ensureTerminal(try await self.workspaces.get(try target(params, context))).publicView
         }
         register("workspace.create") { [unowned self] params, context in
             guard context.origin == .browser || context.workspaceID != nil || MCPGrants.shared.allows(scope: "workspaces:create") else {
@@ -226,10 +233,8 @@ extension Runtime {
             return .object(["filed": .string(folder.isEmpty ? workspace.name : "\(workspace.name)/\(folder)")])
         }
         register("workspace.run") { [unowned self] params, context in
-            let workspace = try await self.workspaces.get(try target(params, context))
-            guard let terminalID = workspace.terminalID, (try? await self.terminals.info(terminalID))?.state != .exited else {
-                throw BridgeError(.badRequest, "the workspace terminal has ended; ask the user to reopen the workspace")
-            }
+            let workspace = try await self.ensureTerminal(try await self.workspaces.get(try target(params, context)))
+            let terminalID = workspace.terminalID!
             guard let handle = try await self.terminals.currentHandle(terminalID, agentID: workspace.agentID) else {
                 try? await self.terminals.requestLease(terminalID, agentID: workspace.agentID)
                 throw BridgeError(.confirmationRequired, "The user has the keyboard in this workspace's terminal. Ask them to hand control back (Allow in the terminal tab).")
@@ -259,6 +264,22 @@ extension Runtime {
             guard let conversationID = workspace.conversationID else { throw BridgeError(.badRequest, "workspace has no agent") }
             return try JSONValue.from(try await self.conversations.send(conversationID, text: try params.string("text")))
         }
+    }
+
+    /// Terminals live in the runtime's memory; after a runtime restart (or if
+    /// the shell exited) a workspace gets a fresh one in the same folder,
+    /// keyboard-leased to its agent, and the browser shows the new tab.
+    func ensureTerminal(_ workspace: Workspace) async throws -> Workspace {
+        if let id = workspace.terminalID, let info = try? await terminals.info(id), info.state != .exited { return workspace }
+        var updated = workspace
+        let terminal = try await terminals.create(cwd: workspace.directory)
+        try await terminals.requestLease(terminal.id, agentID: workspace.agentID)
+        _ = try await terminals.grantLease(terminal.id, agentID: workspace.agentID)
+        _ = try await terminals.waitForPrompt(terminal.id, timeout: 10)
+        updated.terminalID = terminal.id
+        try await workspaces.save(updated)
+        broadcast("workspace.updated", updated.publicView)
+        return updated
     }
 
     func createWorkspace(name: String, directory: String?, provider: CLIProvider, parentID: String?, task: String?) async throws -> Workspace {

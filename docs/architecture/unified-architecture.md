@@ -72,3 +72,34 @@ capabilities.run(id, input)  ─┬─ authorize(risk, origin, mcpScope)   ← s
 | H3 | Every run is observable | Test: `capabilities.run` emits started/finished and records activity |
 | H4 | A shared shell + ResultView makes all pages visually consistent | Screenshot each surface after the refactor |
 | H5 | Palette stays within the spec's local-search budget (p95 < 100 ms) | Palette shows measured round-trip; runtime test bounds `search.query` latency over 2,000 docs |
+
+## Results (verified)
+H1–H3 and H5 hold in the native suite (64 tests). H4 was checked by screenshots of Home, Workspaces,
+workspace dashboard, notes, chat and terminal after the refactor.
+
+## AI workspaces
+A workspace binds four things and keeps them visible:
+
+| Part | Where it lives | Shown as |
+|---|---|---|
+| Directory | `~/Lima Workspaces/<name>` or an existing folder in your home directory (no automatic `git init`) | header path, Files card |
+| Terminal | daemon PTY with `cwd` = directory, keyboard leased to the workspace agent (typing takes it back) | Terminal tab + live mirror |
+| Agent | conversation with `cwd` = directory, CLI gets Lima's MCP server bound by a per-workspace token; Claude edits confined to cwd (`acceptEdits`) | Agent tab + dashboard |
+| Tabs & bookmarks | desired state in the runtime, reconciled by the browser | Zen tab folder `✦ <name>`; bookmarks `Lima Workspaces/✦ <name>/…` |
+
+Agents act through `workspace_open_tab`, `workspace_bookmark` (folder paths build structure),
+`workspace_run` (visible terminal, broker-classified, waits for its own prompt), `workspace_files`,
+`workspace_new`. The token confines an agent to its own workspace; deleting a workspace is user-only and
+keeps the directory. Terminals that ended (e.g. after a runtime restart) are recreated on demand.
+
+New things are created as a **Tab, Folder or AI Workspace** from the rail's ＋, and Lima adds
+"New AI Workspace / Note / Canvas / Terminal / AI Chat" to Zen's own new-tab command bar.
+
+## UI simplification (after review)
+- Rail: Home, Workspaces, Notes, Chat, Terminal + ＋ (was 11 glyphs). Everything else is in ⌘K.
+- Merged: Agents → Workspaces (CLI status strip); Context Shelf → Activity (Commands · Activity · Reports).
+- Home: search box, Continue (recency-merged workspaces/notes/chats/terminals), six actions. Removed the
+  stats panel, chart and 2,000-event load.
+- Run page: one input, one result.
+- Visual cost: static backdrop (no blur filter, no animation), blur only on header and palette, no
+  perpetual shimmer/drift.

@@ -5,16 +5,19 @@
 import { bridge, el, setPage } from "./lib.js";
 import { aurora, installPalette, openPalette } from "./components.js";
 import { renderActivity, renderHome, renderRun } from "./home.js";
+import { renderWorkspace, renderWorkspaces } from "./workspaces.js";
 import { renderIndex, renderNote } from "./notes.js";
 import { renderTerminal } from "./terminal.js";
 import { renderChat } from "./chat.js";
 import { renderStudio } from "./studio.js";
-import { renderAgents, renderAsk, renderAudio, renderContext, renderIntegrations } from "./views.js";
+import { renderAsk, renderAudio, renderIntegrations } from "./views.js";
 
 const params = new URLSearchParams(location.search);
 const app = document.getElementById("app");
 
 const routes = [
+  [() => params.has("workspace"), () => renderWorkspace(app, params.get("workspace"))],
+  [() => params.get("view") === "workspaces", () => renderWorkspaces(app, params.has("new"))],
   [() => params.has("note"), () => renderNote(app, params.get("note"))],
   [() => params.get("view") === "notes", () => renderIndex(app)],
   [() => params.has("terminal") || params.get("view") === "terminal", () => renderTerminal(app, params.get("terminal"))],
@@ -22,9 +25,9 @@ const routes = [
   [() => params.has("ask"), () => renderAsk(app, params.get("ask"))],
   [() => params.has("run"), () => renderRun(app, params.get("run"), params.get("input"))],
   [() => params.has("tool"), () => renderRun(app, params.get("tool"), params.get("input"))], // pre-unification links
-  [() => params.get("view") === "activity", () => renderActivity(app)],
-  [() => params.get("view") === "agents", () => renderAgents(app)],
-  [() => params.get("view") === "context", () => renderContext(app, params.get("report"))],
+  [() => params.get("view") === "activity", () => renderActivity(app, params.get("tab") ?? "commands")],
+  [() => params.get("view") === "agents", () => renderWorkspaces(app, false)], // merged into Workspaces
+  [() => params.get("view") === "context", () => renderActivity(app, "reports", params.get("report"))], // merged into Activity
   [() => params.get("view") === "studio", () => renderStudio(app)],
   [() => params.get("view") === "audio", () => renderAudio(app)],
   [() => params.get("view") === "integrations", () => renderIntegrations(app)],

@@ -6,6 +6,7 @@ const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
   LimaTabs: "resource://lima/LimaTabs.sys.mjs",
+  LimaWorkspaces: "resource://lima/LimaWorkspaces.sys.mjs",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
 });
 
@@ -78,6 +79,7 @@ function attachRail(win) {
   }
 
   populate(FALLBACK_RAIL);
+  rail.before(createChooser(win));
   for (const entry of FALLBACK_RAIL) urls.set(entry.id, entry.url);
   lazy.LimaBridge.request("capabilities.list").then(manifest => {
     const railEntries = manifest.filter(c => c.surfaces.rail).sort((a, b) => a.rank - b.rank);
@@ -94,6 +96,31 @@ function attachRail(win) {
     QueryInterface: ChromeUtils.generateQI(["nsIWebProgressListener", "nsISupportsWeakReference"]),
     onLocationChange: update,
   });
+}
+
+/** "＋" chooser: every new thing is a Tab, a Folder, or an AI Workspace. */
+function createChooser(win) {
+  const doc = win.document;
+  const menu = el(doc, "div", { id: "lima-new-menu", role: "menu", hidden: "true" });
+  const option = (iconName, title, detail, action) => {
+    const glyph = el(doc, "span", { class: "lima-glyph" });
+    glyph.style.maskImage = `url("resource://lima-ui/icons/${iconName}.svg")`;
+    return el(doc, "button", { class: "lima-new-option", role: "menuitem", onclick: () => { menu.hidden = true; action(); } },
+      [glyph, el(doc, "span", {}, [el(doc, "strong", { text: title }), el(doc, "small", { text: detail })])]);
+  };
+  menu.append(
+    option("tab", "Tab", "A page in this space", () => {
+      try { win.BrowserCommands.openTab(); } catch { win.gBrowser.selectedTab = win.gBrowser.addTab("about:newtab", { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal() }); }
+    }),
+    option("folder", "Folder", "Group tabs together", () => doc.getElementById("cmd_zenOpenFolderCreation")?.doCommand()),
+    option("workspace", "AI Workspace", "Folder + terminal + agent on a directory", () => lazy.LimaTabs.openOrFocus(win, "about:lima?view=workspaces&new=1")),
+  );
+  const plus = el(doc, "span", { class: "lima-glyph" });
+  plus.style.maskImage = 'url("resource://lima-ui/icons/plus.svg")';
+  const button = el(doc, "button", { id: "lima-new-button", title: "New Tab, Folder or AI Workspace", "aria-haspopup": "menu",
+    onclick: () => { menu.hidden = !menu.hidden; } }, [plus]);
+  doc.addEventListener("mousedown", event => { if (!menu.hidden && !menu.contains(event.target) && event.target !== button && !button.contains(event.target)) menu.hidden = true; });
+  return el(doc, "div", { id: "lima-new" }, [menu, button]);
 }
 
 function attachContextRecorder(win) {
@@ -120,6 +147,7 @@ export const LimaWindow = {
     if (win.limaAttached) return;
     win.limaAttached = true;
     attachRail(win);
+    win.gBrowser.tabContainer.addEventListener("TabClose", event => lazy.LimaWorkspaces.onTabClose(event.target));
     attachContextRecorder(win);
     // Development/testing aid: open a Lima URL once the window has settled
     // (Zen's first-run flow replaces command-line tabs on new profiles).

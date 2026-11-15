@@ -11,7 +11,7 @@ import re
 import sys
 from pathlib import Path
 
-ORDER = ["icons.js", "lib.js", "components.js", "notes.js", "terminal.js", "chat.js", "studio.js", "views.js", "home.js", "app.js"]
+ORDER = ["icons.js", "lib.js", "components.js", "notes.js", "terminal.js", "chat.js", "studio.js", "views.js", "home.js", "workspaces.js", "app.js"]
 
 SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#8b9cff" '
        'stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="{d}"/></svg>\n')

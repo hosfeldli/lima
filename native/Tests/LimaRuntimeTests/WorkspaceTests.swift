@@ -89,3 +89,18 @@ func call(_ runtime: Runtime, _ method: String, _ params: [String: JSONValue] = 
     #expect(try await runtime.terminals.info(workspace.terminalID!).pendingRequests == [workspace.agentID])
     try await runtime.terminals.close(workspace.terminalID!)
 }
+
+@Test(.timeLimit(.minutes(1))) func workspaceTerminalIsRecreatedAfterItEnds() async throws {
+    let (runtime, dir) = try await workspaceRuntime()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let id = try #require(await call(runtime, "workspace.create", ["name": .string("Heal")]).result?["id"]?.stringValue)
+    let original = try await runtime.workspaces.get(id).terminalID!
+    try await runtime.terminals.close(original) // simulate a runtime restart losing the shell
+    let ran = await call(runtime, "workspace.run", ["command": .string("echo healed")], origin: .chat, workspace: id)
+    #expect(ran.ok, "\(String(describing: ran.error))")
+    #expect(ran.result?["output"]?.stringValue?.contains("healed") == true)
+    let replacement = try await runtime.workspaces.get(id).terminalID!
+    #expect(replacement != original)
+    #expect(try await runtime.terminals.info(replacement).cwd == (try await runtime.workspaces.get(id).directory))
+    try await runtime.terminals.close(replacement)
+}

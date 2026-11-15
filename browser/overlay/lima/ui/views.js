@@ -1,5 +1,5 @@
 /* Smaller Lima surfaces, each its own tab. */
-import { bar, bridge, call, el, errorText, markdown, onEvent, prefs, relativeTime, setPage } from "./lib.js";
+import { bar, bridge, call, el, errorText, icon, markdown, onEvent, prefs, relativeTime, setPage } from "./lib.js";
 import { resultView } from "./components.js";
 
 const page = (...children) => el("div", { class: "page narrow" }, ...children);
@@ -50,50 +50,28 @@ export async function renderAsk(app, prompt) {
   }
 }
 
-// MARK: Agents
-
-export async function renderAgents(app) {
-  setPage("Agents", "agents");
-  const clis = el("div"), sessions = el("div"), terminals = el("div");
-  app.replaceChildren(bar("Agents", el("button", { onclick: () => bridge.openTab("about:lima?chat=new") }, "New Chat")),
-    el("div", { class: "prism-rule" }), page(card("Installed CLIs", clis), card("Conversations", sessions), card("Terminals", terminals),
-      el("p", { class: "muted", text: "External agents (Codex, Claude Code, OpenCode) can use Lima through its MCP server — see Integrations." })));
-
-  call("agents.discover").then(list => clis.replaceChildren(el("ul", { class: "list" }, list.map(a => el("li", {},
-    el("strong", { text: a.provider, style: { textTransform: "capitalize", minWidth: "80px" } }),
-    el("span", { class: "grow muted", text: a.executablePath ?? a.diagnostic ?? "" }),
-    el("span", { class: `badge ${a.status === "available" ? "ok" : "warn"}`, text: a.version ? `v${a.version}` : a.status.replaceAll("_", " ") })))))).catch(e => fail(clis, e));
-
-  const drawSessions = () => call("chat.list").then(list => sessions.replaceChildren(list.length ? el("ul", { class: "list" }, list.slice(0, 20).map(c => el("li", {
-    class: "clickable", onclick: () => bridge.openTab(`about:lima?chat=${encodeURIComponent(c.id)}`) },
-    el("span", { class: "grow", text: c.title }), el("span", { class: "badge", text: c.provider }),
-    c.running ? el("span", { class: "badge warn", text: "running" }) : el("span", { class: "muted", text: relativeTime(c.updatedAt) })))) : el("p", { class: "muted", text: "No conversations yet." }))).catch(e => fail(sessions, e));
-
-  const drawTerminals = () => call("terminal.list").then(list => terminals.replaceChildren(list.length ? el("ul", { class: "list" }, list.map(t => el("li", {
-    class: "clickable", onclick: () => bridge.openTab(`about:lima?terminal=${encodeURIComponent(t.id)}`) },
-    el("code", { class: "grow", text: t.cwd }), el("span", { class: "badge", text: t.state }),
-    t.owner !== "user" ? el("span", { class: "badge warn", text: t.owner }) : null,
-    t.pendingRequests.length ? el("span", { class: "badge warn", text: `${t.pendingRequests.length} request` }) : null))) : el("p", { class: "muted", text: "No running terminals." }))).catch(e => fail(terminals, e));
-
-  drawSessions(); drawTerminals();
-  onEvent(m => { if (m.event === "chat.updated") drawSessions(); if (m.event === "terminal.state") drawTerminals(); });
-}
-
 // MARK: Context Shelf
 
-export async function renderContext(app, reportId) {
-  setPage("Context Shelf", "context");
+/** Activity history, weekly reports and privacy settings. Embedded as the
+ * "Activity" / "Reports" tabs of the Activity page. */
+export async function renderContext(app, reportId, { embedded = false, section = "activity" } = {}) {
   const reportsNode = el("div"), eventsNode = el("div"), settingsNode = el("div"), viewer = el("div");
-  app.replaceChildren(bar("Context Shelf",
-    el("button", { onclick: async () => { const r = await call("context.generateReport"); showReport(r); drawReports(); } }, "Generate report now")),
-    el("div", { class: "prism-rule" }),
-    page(viewer, card("Weekly reports · Fridays 3:00 PM", reportsNode), card("Recent activity", eventsNode), card("Privacy & retention", settingsNode)));
+  const generate = el("button", { onclick: async () => { const r = await call("context.generateReport"); showReport(r); drawReports(); } }, icon("bolt"), "Generate report now");
+  const sections = section === "reports"
+    ? [el("div", { class: "row", style: { justifyContent: "flex-end", marginBottom: "12px" } }, generate), viewer, card("Weekly reports · Fridays 3:00 PM", reportsNode)]
+    : [card("Recent activity", eventsNode), card("Privacy & retention", settingsNode)];
+  if (embedded) {
+    app.replaceChildren(...sections);
+  } else {
+    setPage("Activity", "activity");
+    app.replaceChildren(bar("Activity"), page(...sections));
+  }
 
   let reports = [];
   function showReport(report) {
     viewer.replaceChildren(card(null, el("div", { class: "row" }, el("span", { class: "grow muted", text: `Generated ${new Date(report.generatedAt).toLocaleString()}` }),
       el("button", { class: "ghost", onclick: () => viewer.replaceChildren() }, "Close")), markdown(report.markdown)));
-    setPage(`Report ${report.id}`, "context");
+    if (!embedded) setPage(`Report ${report.id}`, "context");
   }
 
   async function drawReports() {
@@ -142,7 +120,7 @@ export async function renderContext(app, reportId) {
     } catch (error) { fail(settingsNode, error); }
   }
 
-  drawReports(); drawEvents(); drawSettings();
+  if (section === "reports") drawReports(); else { drawEvents(); drawSettings(); }
   onEvent(m => { if (m.event === "context.event") drawEvents(); if (m.event === "context.report") drawReports(); });
 }
 

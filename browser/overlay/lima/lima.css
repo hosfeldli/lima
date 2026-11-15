@@ -57,6 +57,62 @@
   border: 1px solid transparent;
 }
 
+#lima-new { position: relative; display: flex; justify-content: center; margin-top: 6px; }
+
+#lima-new-button {
+  appearance: none;
+  width: 38px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  color: white;
+  background:
+    linear-gradient(135deg, #7c5cff, #4fa3ff) padding-box,
+    linear-gradient(110deg, #ff6b8b, #ffb86b, #7cf2c8, #6bb6ff, #b98bff) border-box;
+  box-shadow: 0 4px 14px rgb(90 110 255 / 0.35);
+}
+
+#lima-new-button .lima-glyph { width: 16px; height: 16px; background: white; mask-size: contain; mask-repeat: no-repeat; mask-position: center; }
+
+#lima-new-menu {
+  position: absolute;
+  left: calc(100% + 8px);
+  bottom: 0;
+  z-index: 1000;
+  width: 260px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--zen-colors-tertiary, #1d1f25) 92%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  box-shadow: 0 18px 50px rgb(0 0 0 / 0.35);
+}
+
+#lima-new-menu[hidden] { display: none; }
+
+.lima-new-option {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: 13px/1.3 -apple-system, sans-serif;
+}
+
+.lima-new-option:hover { background: color-mix(in srgb, currentColor 10%, transparent); }
+.lima-new-option .lima-glyph { width: 18px; height: 18px; background: currentColor; mask-size: contain; mask-repeat: no-repeat; flex: none; }
+.lima-new-option strong { display: block; font-weight: 600; }
+.lima-new-option small { display: block; opacity: 0.65; }
+
 @media (prefers-reduced-motion: reduce) {
   #lima-rail * { transition: none !important; animation: none !important; }
 }

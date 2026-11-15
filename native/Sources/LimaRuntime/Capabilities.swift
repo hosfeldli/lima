@@ -180,17 +180,17 @@ public final class CapabilityRegistry: @unchecked Sendable {
         let q: @Sendable (String) -> String = { $0.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? $0 }
 
         // Navigate: every Lima surface (rail order is bottom-up by rank)
-        add("open.home", "Lima Home", "Live overview and quick actions", category: "navigate", icon: "home", keywords: ["dashboard", "start"], rail: true, rank: 0, handler: open("about:lima"))
+        add("open.home", "Lima Home", "Search, continue where you left off, quick actions", category: "navigate", icon: "home", keywords: ["dashboard", "start"], rail: true, rank: -1, handler: open("about:lima"))
         add("open.workspaces", "Workspaces", "AI workspaces: folder, terminal, agent and tabs", category: "navigate", icon: "workspace", keywords: ["projects", "agents"], rail: true, rank: 0, handler: open("about:lima?view=workspaces"))
         add("open.notes", "Notes", "All notes, organized by your bookmark folders", category: "navigate", icon: "note", keywords: ["notebook"], rail: true, rank: 1, handler: open("about:lima?view=notes"))
         add("open.chat", "AI Chat", "Conversations with Claude, Codex and OpenCode", category: "navigate", icon: "chat", keywords: ["assistant"], rail: true, rank: 2, handler: open("about:lima?view=chat"))
         add("open.terminal", "Terminal", "A shell that keeps running when tabs close", category: "navigate", icon: "terminal", keywords: ["shell", "zsh"], rail: true, rank: 3, handler: open("about:lima?view=terminal"))
-        add("open.agents", "Agents", "Installed CLIs, running chats and terminals", category: "navigate", icon: "agents", rail: true, rank: 4, handler: open("about:lima?view=agents"))
-        add("open.activity", "Activity", "Every action Lima ran, from every surface", category: "navigate", icon: "activity", keywords: ["history", "log", "timeline"], rail: true, rank: 5, handler: open("about:lima?view=activity"))
-        add("open.context", "Context Shelf", "Activity metadata and weekly reports", category: "navigate", icon: "context", keywords: ["week", "reports"], rail: true, rank: 6, handler: open("about:lima?view=context"))
-        add("open.studio", "Screenshot Studio", "Capture, annotate and read text", category: "navigate", icon: "studio", rail: true, rank: 7, handler: open("about:lima?view=studio"))
-        add("open.audio", "Audio", "Output device, volume and now playing", category: "navigate", icon: "audio", rail: true, rank: 8, handler: open("about:lima?view=audio"))
-        add("open.integrations", "Integrations & Settings", "Services, MCP grants, storage", category: "navigate", icon: "integrations", keywords: ["settings", "preferences"], rail: true, rank: 9, handler: open("about:lima?view=integrations"))
+        add("open.agents", "Agents", "Installed CLIs and workspaces", category: "navigate", icon: "agents", rank: 4, handler: open("about:lima?view=workspaces"))
+        add("open.activity", "Activity & Reports", "Commands Lima ran, activity history and weekly reports", category: "navigate", icon: "activity", keywords: ["history", "log", "timeline"], rank: 5, handler: open("about:lima?view=activity&tab=commands"))
+        add("open.context", "Weekly Reports", "Friday summaries of your week", category: "navigate", icon: "context", keywords: ["week", "reports", "context shelf"], rank: 6, handler: open("about:lima?view=activity&tab=reports"))
+        add("open.studio", "Screenshot Studio", "Capture, annotate and read text", category: "navigate", icon: "studio", rank: 7, handler: open("about:lima?view=studio"))
+        add("open.audio", "Audio", "Output device, volume and now playing", category: "navigate", icon: "audio", rank: 8, handler: open("about:lima?view=audio"))
+        add("open.integrations", "Integrations & Settings", "Services, MCP grants, storage", category: "navigate", icon: "integrations", keywords: ["settings", "preferences"], rank: 9, handler: open("about:lima?view=integrations"))
 
         // Create
         add("note.new", "New Note", "Create a note (it becomes a bookmark)", category: "create", icon: "note", keywords: ["write", "create"],
@@ -199,7 +199,7 @@ public final class CapabilityRegistry: @unchecked Sendable {
             return CapabilityResult.open("about:lima?note=\(note.id)")
         }
         add("canvas.new", "New Canvas", "A freeform canvas for diagrams and plans", category: "create", icon: "canvas", keywords: ["whiteboard", "diagram"],
-            input: ("Title", false), home: true, mcp: "notes:write", rank: 11) { input, runtime, _ in
+            input: ("Title", false), mcp: "notes:write", rank: 11) { input, runtime, _ in
             let note = try await runtime.notes.create(title: input.isEmpty ? "Untitled Canvas" : input, kind: .canvas)
             return CapabilityResult.open("about:lima?note=\(note.id)")
         }
@@ -226,7 +226,7 @@ public final class CapabilityRegistry: @unchecked Sendable {
         // Capture
         for (id, title, mode, rank) in [("screenshot.region", "Screenshot Region", "region", 20), ("screenshot.window", "Screenshot Window", "window", 21), ("screenshot.display", "Screenshot Display", "display", 22)] {
             add(id, title, "Capture to Screenshot Studio (never added to activity history)", category: "capture", icon: "studio", keywords: ["capture", "screen", "snip"],
-                input: mode == "display" ? ("Display number", false) : nil, home: mode == "region", risk: .captureScreen, mcp: "screen:capture", rank: rank) { input, _, _ in
+                input: mode == "display" ? ("Display number", false) : nil, risk: .captureScreen, mcp: "screen:capture", rank: rank) { input, _, _ in
                 let captureMode: CaptureService.Mode = mode == "region" ? .region : mode == "window" ? .window : .display(Int(input.filter(\.isNumber)) ?? 1)
                 let record = try await CaptureService.shared.capture(captureMode)
                 return .object(["type": .string("image"), "png": .string(record.pngBase64), "width": .number(Double(record.width)),
@@ -236,7 +236,7 @@ public final class CapabilityRegistry: @unchecked Sendable {
 
         // System & media
         add("audio.output", "Switch Audio Output", "Pick where sound plays", category: "system", icon: "audio", keywords: ["speakers", "headphones", "airpods", "sound"],
-            input: ("Device name", false), home: true, risk: .systemControl, mcp: "media:control", rank: 30) { input, _, _ in
+            input: ("Device name", false), risk: .systemControl, mcp: "media:control", rank: 30) { input, _, _ in
             let devices = AudioDevices.outputs()
             if !input.isEmpty, let match = devices.first(where: { $0.name.localizedCaseInsensitiveContains(input) }) {
                 try AudioDevices.setDefaultOutput(match.id)
@@ -276,7 +276,7 @@ public final class CapabilityRegistry: @unchecked Sendable {
 
         // Data & AI
         add("report.generate", "Generate Weekly Report", "Summarize this week from activity", category: "data", icon: "context", keywords: ["week", "summary", "accomplish"],
-            home: true, mcp: "context:read", rank: 40) { _, runtime, _ in
+            mcp: "context:read", rank: 40) { _, runtime, _ in
             let report = try await runtime.context.generateReportNow()
             runtime.search.index.upsert(Runtime.document(for: report))
             return CapabilityResult.markdown(report.markdown)
