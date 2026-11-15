@@ -387,6 +387,13 @@ public actor TerminalService {
         try session(id).withLease { $0.release(handle) }
     }
 
+    /// The handle for an agent that currently holds the lease, if any.
+    public func currentHandle(_ id: String, agentID: String) throws -> InputLeaseHandle? {
+        try session(id).withLease { lease in
+            lease.owner == .agent(agentID) ? InputLeaseHandle(agentID: agentID, generation: lease.generation) : nil
+        }
+    }
+
     public func reclaim(_ id: String) throws {
         try session(id).withLease { $0.userTakeover() }
     }

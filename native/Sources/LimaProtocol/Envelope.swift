@@ -125,3 +125,26 @@ public struct BridgeEvent: Codable, Equatable, Sendable {
         self.data = data
     }
 }
+
+public extension JSONValue {
+    var doubleValue: Double? { if case .number(let v) = self { return v }; return nil }
+    var intValue: Int? { doubleValue.map { Int($0) } }
+    var boolValue: Bool? { if case .bool(let v) = self { return v }; return nil }
+    var objectValue: [String: JSONValue]? { if case .object(let v) = self { return v }; return nil }
+}
+
+public extension Optional where Wrapped == JSONValue {
+    /// Required string parameter or a bad_request error.
+    func string(_ key: String) throws -> String {
+        guard let value = self?[key]?.stringValue else { throw BridgeError(.badRequest, "missing string parameter '\(key)'") }
+        return value
+    }
+    func optionalString(_ key: String) -> String? { self?[key]?.stringValue }
+    func int(_ key: String, default value: Int) -> Int { self?[key]?.intValue ?? value }
+    func double(_ key: String, default value: Double) -> Double { self?[key]?.doubleValue ?? value }
+    func bool(_ key: String, default value: Bool) -> Bool { self?[key]?.boolValue ?? value }
+    func decode<T: Decodable>(_ key: String, as type: T.Type) throws -> T {
+        guard let value = self?[key] else { throw BridgeError(.badRequest, "missing parameter '\(key)'") }
+        do { return try value.decode(as: T.self) } catch { throw BridgeError(.badRequest, "invalid parameter '\(key)'") }
+    }
+}

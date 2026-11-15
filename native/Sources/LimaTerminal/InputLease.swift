@@ -12,6 +12,11 @@ public enum TerminalInputOwner: Equatable, Sendable, Codable {
 public struct InputLeaseHandle: Equatable, Sendable, Codable {
     public let agentID: String
     public let generation: UInt64
+
+    public init(agentID: String, generation: UInt64) {
+        self.agentID = agentID
+        self.generation = generation
+    }
 }
 
 public enum InputLeaseError: Error, Equatable, Sendable {
