@@ -21,7 +21,8 @@ let package = Package(
     targets: [
         .target(name: "LimaProtocol"),
         .target(name: "LimaAuthorization", dependencies: ["LimaProtocol"]),
-        .target(name: "LimaTerminal", dependencies: ["LimaProtocol"]),
+        .target(name: "CLimaPTY"),
+        .target(name: "LimaTerminal", dependencies: ["LimaProtocol", "CLimaPTY"]),
         .target(name: "LimaAgentSupervisor", dependencies: ["LimaProtocol"]),
         .target(name: "LimaStorage"),
         .target(name: "LimaNotes", dependencies: ["LimaStorage"]),

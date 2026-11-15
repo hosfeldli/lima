@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import LimaTerminal
 
@@ -7,7 +8,7 @@ private func bytes(_ s: String) -> [UInt8] { Array(s.utf8) }
     var scanner = ShellMarkerScanner()
     let (out, events) = scanner.feed(bytes("ls\r\n\u{1B}]777;lima;preexec\u{07}a b\r\n\u{1B}]777;lima;prompt;0\u{07}$ "))
     #expect(String(decoding: out, as: UTF8.self) == "ls\r\na b\r\n$ ")
-    #expect(events == [.commandStarted, .promptReady(exitStatus: 0)])
+    #expect(events == [.commandStarted(command: nil), .promptReady(exitStatus: 0)])
 }
 
 @Test func handlesMarkerSplitAcrossChunks() {
@@ -29,4 +30,11 @@ private func bytes(_ s: String) -> [UInt8] { Array(s.utf8) }
     let (out, events) = scanner.feed(input)
     #expect(out == input)
     #expect(events.isEmpty)
+}
+
+@Test func preexecCarriesBase64Command() {
+    var scanner = ShellMarkerScanner()
+    let encoded = Data("git status".utf8).base64EncodedString()
+    let (_, events) = scanner.feed(bytes("\u{1B}]777;lima;preexec;\(encoded)\u{07}"))
+    #expect(events == [.commandStarted(command: "git status")])
 }

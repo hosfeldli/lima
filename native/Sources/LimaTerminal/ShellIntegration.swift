@@ -9,8 +9,9 @@ public enum TerminalProcessState: String, Codable, Sendable {
 public enum ShellIntegrationEvent: Equatable, Sendable {
     /// precmd fired: the prompt is back. Carries the previous command's status.
     case promptReady(exitStatus: Int?)
-    /// preexec fired: a command line was submitted.
-    case commandStarted
+    /// preexec fired: a command line was submitted. The command text comes
+    /// from the shell's own hook (explicit history), never from keystrokes.
+    case commandStarted(command: String?)
 }
 
 /// Shell integration adapted from Orca's shell-ready barrier: the shell
@@ -22,18 +23,40 @@ public enum ShellIntegrationEvent: Equatable, Sendable {
 public enum ShellIntegration {
     public static let oscPrefix = "\u{1B}]777;lima;"
 
-    /// Contents of a `.zshrc` placed in a Lima-owned ZDOTDIR. It restores the
-    /// user's real ZDOTDIR, sources their config, then installs the hooks.
-    public static let zshRC = #"""
-    # Lima shell integration (generated). Do not edit.
-    if [[ -n "$LIMA_USER_ZDOTDIR" ]]; then ZDOTDIR="$LIMA_USER_ZDOTDIR"; else ZDOTDIR="$HOME"; fi
-    [[ -r "$ZDOTDIR/.zshrc" ]] && source "$ZDOTDIR/.zshrc"
-    __lima_precmd() { printf '\033]777;lima;prompt;%s\007' "$?"; }
-    __lima_preexec() { printf '\033]777;lima;preexec\007'; }
-    autoload -Uz add-zsh-hook
-    add-zsh-hook precmd __lima_precmd
-    add-zsh-hook preexec __lima_preexec
-    """#
+    /// ZDOTDIR wrapper files. They source the user's real startup files
+    /// with ZDOTDIR pointed at the user's directory, then install hooks.
+    public static let zshFiles: [String: String] = [
+        ".zshenv": #"""
+        # Lima shell integration (generated). Do not edit.
+        LIMA_INTEGRATION_DIR="$ZDOTDIR"
+        ZDOTDIR="${LIMA_USER_ZDOTDIR:-$HOME}"
+        [[ -r "$ZDOTDIR/.zshenv" ]] && source "$ZDOTDIR/.zshenv"
+        LIMA_USER_ZDOTDIR="$ZDOTDIR"
+        ZDOTDIR="$LIMA_INTEGRATION_DIR"
+        """#,
+        ".zprofile": #"""
+        ZDOTDIR="$LIMA_USER_ZDOTDIR"
+        [[ -r "$ZDOTDIR/.zprofile" ]] && source "$ZDOTDIR/.zprofile"
+        ZDOTDIR="$LIMA_INTEGRATION_DIR"
+        """#,
+        ".zshrc": #"""
+        ZDOTDIR="$LIMA_USER_ZDOTDIR"
+        [[ -r "$ZDOTDIR/.zshrc" ]] && source "$ZDOTDIR/.zshrc"
+        __lima_precmd() { printf '\033]777;lima;prompt;%s\007' "$?"; }
+        __lima_preexec() { printf '\033]777;lima;preexec;%s\007' "$(print -rn -- "$1" | /usr/bin/base64 | tr -d '\n')"; }
+        autoload -Uz add-zsh-hook
+        add-zsh-hook precmd __lima_precmd
+        add-zsh-hook preexec __lima_preexec
+        """#
+    ]
+
+    /// Writes the wrapper files into `directory` (idempotent).
+    public static func install(in directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for (name, contents) in zshFiles {
+            try contents.write(to: directory.appendingPathComponent(name), atomically: true, encoding: .utf8)
+        }
+    }
 }
 
 /// Streaming scanner that strips Lima markers from PTY output and reports
@@ -41,7 +64,7 @@ public enum ShellIntegration {
 public struct ShellMarkerScanner: Sendable {
     private var pending: [UInt8] = []
     private static let prefix = Array(ShellIntegration.oscPrefix.utf8)
-    private static let maxMarkerLength = 64
+    private static let maxMarkerLength = 16 * 1024
 
     public init() {}
 
@@ -91,7 +114,9 @@ public struct ShellMarkerScanner: Sendable {
         let parts = body.split(separator: ";", omittingEmptySubsequences: false)
         switch parts.first {
         case "prompt": return .promptReady(exitStatus: parts.count > 1 ? Int(parts[1]) : nil)
-        case "preexec": return .commandStarted
+        case "preexec":
+            let command = parts.count > 1 ? Data(base64Encoded: String(parts[1])).map { String(decoding: $0, as: UTF8.self) } : nil
+            return .commandStarted(command: command)
         default: return nil
         }
     }
