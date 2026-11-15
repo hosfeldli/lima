@@ -1,25 +1,10 @@
 /* Smaller Lima surfaces, each its own tab. */
 import { bar, bridge, call, el, errorText, markdown, onEvent, prefs, relativeTime, setPage } from "./lib.js";
+import { resultView } from "./components.js";
 
 const page = (...children) => el("div", { class: "page narrow" }, ...children);
 const card = (title, ...children) => el("section", { class: "card" }, title ? el("h2", { text: title }) : null, ...children);
 const fail = (node, error) => node.replaceChildren(el("p", { class: "error", text: errorText(error) }));
-
-// MARK: Home
-
-export function renderHome(app) {
-  setPage("Lima");
-  const links = [
-    ["Notes", "about:lima?view=notes", "note"], ["AI Chat", "about:lima?view=chat", "chat"], ["Terminal", "about:lima?view=terminal", "terminal"],
-    ["Agents", "about:lima?view=agents", "agents"], ["Context Shelf", "about:lima?view=context", "context"],
-    ["Screenshot Studio", "about:lima?view=studio", "studio"], ["Audio", "about:lima?view=audio", "audio"],
-    ["Integrations & Settings", "about:lima?view=integrations", "integrations"],
-  ];
-  app.replaceChildren(bar("Lima"), el("div", { class: "prism-rule" }), page(
-    el("p", { class: "muted", text: "Type in the address bar to search notes, chats, terminal history, reports and Lima tools. Every Lima surface opens as a tab." }),
-    el("ul", { class: "list" }, links.map(([label, url, icon]) => el("li", { class: "clickable", onclick: () => bridge.openTab(url) },
-      el("img", { src: `resource://lima-ui/icons/${icon}.svg`, width: 18, height: 18, alt: "" }), el("span", { class: "grow", text: label }))))));
-}
 
 // MARK: Quick Ask (spec v1 §3.4): no tools, no page access, lowest effort.
 
@@ -62,76 +47,6 @@ export async function renderAsk(app, prompt) {
     off();
     answer.classList.remove("typing");
     fail(answer, error);
-  }
-}
-
-// MARK: Tool results
-
-export async function renderTool(app, tool, input) {
-  setPage("Lima command", "tool");
-  const out = el("div");
-  app.replaceChildren(bar(tool), el("div", { class: "prism-rule" }), page(out));
-  if (tool === "copy") { bridge.copy(input); out.replaceChildren(el("p", { text: "Copied to clipboard." }), el("pre", { text: input })); return; }
-  if (tool === "app.open") {
-    try { await call("system.openApp", { path: input }); out.replaceChildren(el("p", { text: `Opened ${input.split("/").pop()}` })); } catch (error) { fail(out, error); }
-    return;
-  }
-  out.replaceChildren(el("p", { class: "muted", text: "Running…" }));
-  try {
-    const result = await call("tools.run", { tool, input });
-    setPage(tool, "tool");
-    renderToolResult(out, result, { tool, input });
-  } catch (error) {
-    fail(out, error);
-  }
-}
-
-function renderToolResult(out, result, { tool }) {
-  switch (result.type) {
-    case "text":
-      out.replaceChildren(el("pre", { style: { whiteSpace: "pre-wrap", fontFamily: "var(--mono)" }, text: result.text }),
-        result.copy ? el("button", { class: "primary", onclick: () => bridge.copy(result.text) }, "Copy") : null);
-      if (result.copy) bridge.copy(result.text);
-      break;
-    case "list":
-      out.replaceChildren(el("ul", { class: "list" }, result.items.map(item => el("li", {
-        class: "clickable", onclick: () => /^https?:/.test(item.value) ? bridge.openTab(item.value) : bridge.copy(item.value),
-      }, el("strong", { text: item.title }), el("span", { class: "grow muted", text: item.subtitle })))));
-      if (!result.items.length) out.append(el("p", { class: "muted", text: "No results." }));
-      break;
-    case "audioOutputs":
-      renderAudioOutputs(out, result.items);
-      break;
-    case "volume":
-      out.replaceChildren(el("p", { text: `Volume ${Math.round(result.value)}%` }));
-      break;
-    case "capture":
-      bridge.openTab("about:lima?view=studio");
-      out.replaceChildren(el("p", { text: "Captured — opened in Screenshot Studio." }));
-      break;
-    case "report":
-      out.replaceChildren(markdown(result.markdown));
-      break;
-    case "browser":
-      handleBrowserTool(result.tool, result.input, out).catch(error => fail(out, error));
-      break;
-    default:
-      out.replaceChildren(el("pre", { text: JSON.stringify(result, null, 2) }));
-  }
-  void tool;
-}
-
-async function handleBrowserTool(tool, input, out) {
-  switch (tool) {
-    case "notes.new":
-    case "notes.newCanvas": {
-      const note = await bridge.browser("createNote", { kind: tool === "notes.new" ? "classic" : "canvas", title: input });
-      bridge.replaceURL(`about:lima?note=${encodeURIComponent(note.id)}`);
-      break;
-    }
-    case "terminal.new": bridge.replaceURL("about:lima?view=terminal"); break;
-    case "chat.new": bridge.replaceURL(`about:lima?chat=new${input ? `&prompt=${encodeURIComponent(input)}` : ""}`); break;
-    default: out.replaceChildren(el("p", { class: "error", text: `Unknown command ${tool}` }));
   }
 }
 
@@ -261,7 +176,7 @@ export async function renderAudio(app) {
   drawOutputs();
 }
 
-function renderAudioOutputs(node, items) {
+export function renderAudioOutputs(node, items) {
   node.replaceChildren(el("ul", { class: "list" }, items.map(d => el("li", {
     class: "clickable", onclick: async () => renderAudioOutputs(node, await call("audio.setOutput", { id: d.id })),
   }, el("span", { text: d.isDefault ? "●" : "○" }), el("span", { class: "grow", text: d.name }), el("span", { class: "badge", text: d.transport })))));

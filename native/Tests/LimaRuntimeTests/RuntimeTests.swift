@@ -20,9 +20,8 @@ import Testing
 }
 
 @Test(.timeLimit(.minutes(1))) func runtimeRoutesAndEnforcesOrigins() async throws {
-    let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("lima-rt-\(UUID().uuidString)")
+    let dir = TestEnvironment.freshDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
-    setenv("LIMA_KEY_FILE", dir.appendingPathComponent("key").path, 1)
     let runtime = try await Runtime.open(paths: RuntimePaths(data: dir, socket: dir.appendingPathComponent("s").path, lock: dir.appendingPathComponent("l").path))
     let browser = CallContext(client: nil, origin: .browser)
     let mcp = CallContext(client: nil, origin: .mcp)

@@ -9,7 +9,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
 
 const ALLOWED_PREFIXES = [
   "notes.", "chat.", "terminal.", "search.", "context.", "capture.", "audio.", "media.", "tools.",
-  "agents.", "integrations.", "mcp.grants.", "storage.", "background.",
+  "agents.", "integrations.", "mcp.grants.", "storage.", "background.", "capabilities.", "workspace.",
 ];
 const ALLOWED_METHODS = new Set(["quickAsk", "auth.approve", "auth.evaluate", "system.openApp", "host.hello"]);
 

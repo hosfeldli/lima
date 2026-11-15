@@ -16,7 +16,9 @@ public enum MCPServer {
         var call: @Sendable (JSONValue?, RuntimeClient) throws -> JSONValue
     }
 
-    static let tools: [Tool] = [
+    /// Content tools (read/append data). Actions come from the capability
+    /// manifest below, so there is no second list of Lima functions here.
+    static let contentTools: [Tool] = [
         Tool(name: "lima_search", description: "Search Lima notes, conversations, reports, terminal history and tools.",
              properties: ["query": ["type": "string"]], required: ["query"]) { args, client in
             let response = try client.call("search.query", params: .object(["query": args?["query"] ?? .string("")]))
@@ -28,10 +30,6 @@ public enum MCPServer {
         },
         Tool(name: "notes_get", description: "Get a note's full content including canvas blocks.", properties: ["id": ["type": "string"]], required: ["id"]) { args, client in
             try client.call("notes.get", params: .object(["id": args?["id"] ?? .null]))
-        },
-        Tool(name: "notes_create", description: "Create a classic Markdown note. Requires the user's notes:write grant.",
-             properties: ["title": ["type": "string"], "markdown": ["type": "string"]], required: ["title"]) { args, client in
-            try client.call("notes.create", params: .object(["title": args?["title"] ?? .string(""), "markdown": args?["markdown"] ?? .string(""), "kind": .string("classic")]))
         },
         Tool(name: "notes_append", description: "Append Markdown to a note as an undoable agent edit. Requires notes:write.",
              properties: ["id": ["type": "string"], "markdown": ["type": "string"]], required: ["id", "markdown"]) { args, client in
@@ -81,11 +79,14 @@ public enum MCPServer {
     public static func run() -> Never {
         let client: RuntimeClient
         do {
-            client = try RuntimeClient.connect(origin: .mcp)
+            let token = ProcessInfo.processInfo.environment["LIMA_WORKSPACE_TOKEN"]
+            client = try RuntimeClient.connect(origin: .mcp, workspaceToken: token?.isEmpty == false ? token : nil)
         } catch {
             FileHandle.standardError.write(Data("lima mcp: \(error)\n".utf8))
             exit(1)
         }
+        let bound = ProcessInfo.processInfo.environment["LIMA_WORKSPACE_TOKEN"].map { !$0.isEmpty } ?? false
+        let tools = contentTools + (bound ? workspaceTools : []) + capabilityTools(client)
         while let line = readLine(strippingNewline: true) {
             guard let data = line.data(using: .utf8), let message = try? JSONDecoder().decode(JSONValue.self, from: data) else { continue }
             guard let method = message["method"]?.stringValue else { continue }
@@ -141,6 +142,56 @@ public enum MCPServer {
             }
         }
         exit(0)
+    }
+}
+
+extension MCPServer {
+    /// Tools for a workspace's own agent. The runtime enforces that they act
+    /// only on that workspace.
+    static let workspaceTools: [Tool] = [
+        Tool(name: "workspace_info", description: "This workspace: name, directory, tabs, bookmarks, terminal and conversation.", properties: [:], required: []) { _, client in
+            try client.call("workspace.get")
+        },
+        Tool(name: "workspace_open_tab", description: "Open a web page as a tab inside this workspace's folder in Zen (the user sees it appear).",
+             properties: ["url": ["type": "string"], "title": ["type": "string"]], required: ["url"]) { args, client in
+            try client.call("workspace.openTab", params: .object(["url": args?["url"] ?? .null, "title": args?["title"] ?? .null]))
+        },
+        Tool(name: "workspace_close_tab", description: "Remove a tab you opened from this workspace.", properties: ["url": ["type": "string"]], required: ["url"]) { args, client in
+            try client.call("workspace.closeTab", params: .object(["url": args?["url"] ?? .null]))
+        },
+        Tool(name: "workspace_bookmark", description: "File a bookmark in this workspace's bookmark folder. Use folder paths like \"Research/Docs\" to build structure.",
+             properties: ["url": ["type": "string"], "title": ["type": "string"], "folder": ["type": "string"]], required: ["url", "title"]) { args, client in
+            try client.call("workspace.bookmark", params: .object(["url": args?["url"] ?? .null, "title": args?["title"] ?? .null, "folder": args?["folder"] ?? .string("")]))
+        },
+        Tool(name: "workspace_run", description: "Run a shell command in this workspace's terminal (in its directory) and wait for it to finish. The user watches and can take over; risky commands need their approval.",
+             properties: ["command": ["type": "string"], "timeout": ["type": "number"]], required: ["command"]) { args, client in
+            var result = try client.call("workspace.run", params: .object(["command": args?["command"] ?? .null, "timeout": args?["timeout"] ?? .number(120)]))
+            if case .object(var object) = result, let output = object["output"]?.stringValue {
+                object["output"] = .string(ANSI.strip(output))
+                result = .object(object)
+            }
+            return result
+        },
+        Tool(name: "workspace_files", description: "List files in this workspace's directory.", properties: [:], required: []) { _, client in
+            try client.call("workspace.files")
+        },
+        Tool(name: "workspace_new", description: "Create a new AI workspace (its own folder, terminal, agent and tab folder) when the user asks for one.",
+             properties: ["name": ["type": "string"], "task": ["type": "string", "description": "first instruction for the new workspace's agent"]], required: ["name"]) { args, client in
+            try client.call("workspace.create", params: .object(["name": args?["name"] ?? .null, "task": args?["task"] ?? .null]))
+        },
+    ]
+
+    /// One MCP tool per capability the user could grant to agents.
+    static func capabilityTools(_ client: RuntimeClient) -> [Tool] {
+        guard let manifest = try? client.call("capabilities.list").decode(as: [CapabilityDefinition].self) else { return [] }
+        return manifest.map { capability in
+            Tool(name: "lima_" + capability.id.replacingOccurrences(of: ".", with: "_"),
+                 description: "\(capability.title): \(capability.summary) (requires the user's \(capability.mcpScope ?? "") grant)",
+                 properties: capability.input.map { ["input": ["type": "string", "description": $0.placeholder]] } ?? [:],
+                 required: capability.input?.required == true ? ["input"] : []) { args, client in
+                try client.call("capabilities.run", params: .object(["id": .string(capability.id), "input": args?["input"] ?? .string("")]))
+            }
+        }
     }
 }
 

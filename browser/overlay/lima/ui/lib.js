@@ -1,5 +1,6 @@
 /* Shared helpers for about:lima pages. `window.lima` is the only bridge to
  * the native runtime (installed by the LimaChild actor). */
+import { ICONS } from "./icons.js";
 
 function requestBridge() {
   // Ask the LimaChild actor to install window.lima (dispatch is synchronous).
@@ -34,17 +35,44 @@ export function el(tag, props = {}, ...children) {
   return node;
 }
 
-export function setPage(title, icon = "lima") {
+let currentIcon = "lima";
+let currentHue = 225;
+
+/** Inline SVG from the shared Prism icon set. */
+export function icon(name, className = "icon") {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.7");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("class", className);
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", ICONS[name] ?? ICONS.lima);
+  svg.append(path);
+  return svg;
+}
+
+export const CATEGORY_HUES = { create: 222, navigate: 225, system: 170, media: 330, capture: 30, ai: 268, data: 150, developer: 205 };
+
+export function setPage(title, iconName = "lima", hue) {
   document.title = title;
-  document.getElementById("favicon").href = `resource://lima-ui/icons/${icon}.svg`;
+  currentIcon = ICONS[iconName] ? iconName : "lima";
+  if (hue !== undefined) currentHue = hue;
+  document.getElementById("favicon").href = `resource://lima-ui/icons/${currentIcon}.svg`;
+  for (const node of document.querySelectorAll(".bar .title-icon")) node.replaceChildren(icon(currentIcon));
 }
 
 export function errorText(error) {
   return error?.message ?? String(error);
 }
 
+/** Glass page header: icon chip, title, then actions. */
 export function bar(title, ...actions) {
-  return el("div", { class: "bar" }, el("h1", { text: title }), el("div", { class: "spacer" }), ...actions);
+  const chip = el("span", { class: "title-icon", style: { "--hue": currentHue } }, icon(currentIcon));
+  return el("header", { class: "bar" }, el("h1", {}, chip, title ? el("span", { text: title }) : null), el("div", { class: "spacer" }), ...actions);
 }
 
 export const b64 = {

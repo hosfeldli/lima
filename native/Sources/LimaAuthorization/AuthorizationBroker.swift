@@ -9,6 +9,12 @@ public enum ActionOrigin: String, Codable, Sendable {
 
 /// Action classes from spec §4.6, ordered roughly by impact.
 public enum ActionKind: String, Codable, Sendable, CaseIterable {
+    /// Self-contained utilities with no side effects (UUID, JSON format…).
+    case localUtility
+    /// Reversible local device controls (audio output, volume, playback).
+    case systemControl
+    /// Capturing screen contents.
+    case captureScreen
     case readProjectFile
     case writeProjectFile
     case runBuildOrTest
@@ -75,6 +81,9 @@ public struct ApprovalToken: Codable, Equatable, Sendable {
 
 public actor AuthorizationBroker {
     public static let defaultPolicy: [ActionKind: AuthorizationDecision] = [
+        .localUtility: .allow,
+        .systemControl: .allow,
+        .captureScreen: .confirm,
         .readProjectFile: .allow,
         .writeProjectFile: .allow,
         .runBuildOrTest: .allow,

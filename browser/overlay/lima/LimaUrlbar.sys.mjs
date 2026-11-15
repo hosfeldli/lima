@@ -10,16 +10,10 @@ ChromeUtils.defineESModuleGetters(lazy, {
   UrlbarShared: "chrome://browser/content/urlbar/UrlbarShared.mjs",
 });
 
-const ICONS = {
-  note: "resource://lima-ui/icons/note.svg",
-  conversation: "resource://lima-ui/icons/chat.svg",
-  report: "resource://lima-ui/icons/context.svg",
-  terminal: "resource://lima-ui/icons/terminal.svg",
-  context: "resource://lima-ui/icons/context.svg",
-  tool: "resource://lima-ui/icons/tool.svg",
-  ai: "resource://lima-ui/icons/chat.svg",
-  app: "resource://lima-ui/icons/tool.svg",
-};
+const icon = name => `resource://lima-ui/icons/${name}.svg`;
+const SOURCE_ICONS = { note: "note", conversation: "chat", report: "context", terminal: "terminal", context: "activity", ai: "spark" };
+/** capability id → icon, from the manifest (shared with rail, palette, Home). */
+let capabilityIcons = new Map();
 
 /** Maps a runtime search action to the about:lima tab that performs it. */
 export function urlForAction(action, query) {
@@ -30,11 +24,10 @@ export function urlForAction(action, query) {
     case "openConversation": return `about:lima?chat=${q(p.id)}`;
     case "openReport": return `about:lima?view=context&report=${q(p.id)}`;
     case "openContext": return `about:lima?view=context`;
-    case "runTool": return `about:lima?tool=${q(p.tool)}&input=${q(toolInput(query))}`;
-    case "openApp": return `about:lima?tool=app.open&input=${q(p.path)}`;
+    case "runCapability": return `about:lima?run=${q(p.id)}${toolInput(query) ? `&input=${q(toolInput(query))}` : ""}`;
     case "quickAsk": return `about:lima?ask=${q(p.prompt)}`;
     case "agentAsk": return `about:lima?chat=new&prompt=${q(p.prompt)}`;
-    case "copyText": return `about:lima?tool=copy&input=${q(p.text)}`;
+    case "copyText": return null;
     default: return null;
   }
 }
@@ -89,7 +82,7 @@ function makeProvider() {
           payload: {
             url,
             title: result.subtitle ? `${result.title} — ${result.subtitle}` : result.title,
-            icon: ICONS[result.source] ?? ICONS.tool,
+            icon: icon(result.action.type === "runCapability" ? capabilityIcons.get(result.action.payload.id) ?? "bolt" : SOURCE_ICONS[result.source] ?? "search"),
           },
         }));
         if (++added >= 6) break;
@@ -105,6 +98,9 @@ export const LimaUrlbar = {
       const { ProvidersManager } = ChromeUtils.importESModule("moz-src:///browser/components/urlbar/UrlbarProvidersManager.sys.mjs");
       providerInstance = makeProvider();
       ProvidersManager.getInstanceForSap("urlbar").registerProvider(providerInstance);
+      lazy.LimaBridge.request("capabilities.list")
+        .then(manifest => { capabilityIcons = new Map(manifest.map(c => [c.id, c.icon])); })
+        .catch(() => {});
       return true;
     } catch (error) {
       dump(`[lima] urlbar provider unavailable: ${error}\n`);

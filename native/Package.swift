@@ -41,7 +41,7 @@ let package = Package(
         .testTarget(name: "LimaStorageTests", dependencies: ["LimaStorage"]),
         .testTarget(name: "LimaNotesTests", dependencies: ["LimaNotes", "LimaStorage"]),
         .testTarget(name: "LimaSearchTests", dependencies: ["LimaSearch", "LimaContext", "LimaStorage"]),
-        .testTarget(name: "LimaRuntimeTests", dependencies: ["LimaRuntime", "LimaProtocol"])
+        .testTarget(name: "LimaRuntimeTests", dependencies: ["LimaRuntime", "LimaProtocol", "LimaAuthorization", "LimaAgentSupervisor", "LimaSearch"])
     ],
     swiftLanguageModes: [.v6]
 )

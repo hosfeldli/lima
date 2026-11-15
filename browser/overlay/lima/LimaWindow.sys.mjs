@@ -11,16 +11,14 @@ ChromeUtils.defineESModuleGetters(lazy, {
 
 const HTML = "http://www.w3.org/1999/xhtml";
 
-// Bottom-up order: the first entry sits lowest.
-const TOOLS = [
-  { id: "notes", label: "Notes", glyph: "✎", url: "about:lima?view=notes" },
-  { id: "chat", label: "AI Chat", glyph: "✦", url: "about:lima?view=chat" },
-  { id: "terminal", label: "Terminal", glyph: "›_", url: "about:lima?view=terminal" },
-  { id: "agents", label: "Agents", glyph: "◎", url: "about:lima?view=agents" },
-  { id: "context", label: "Context Shelf", glyph: "◷", url: "about:lima?view=context" },
-  { id: "studio", label: "Screenshot Studio", glyph: "⌗", url: "about:lima?view=studio" },
-  { id: "audio", label: "Audio", glyph: "♪", url: "about:lima?view=audio" },
-  { id: "integrations", label: "Integrations & Settings", glyph: "⇄", url: "about:lima?view=integrations" },
+// Fallback until the runtime answers; the rail is otherwise generated from
+// the capability manifest (surfaces.rail), so it never drifts from Search,
+// the palette, Home or MCP.
+const FALLBACK_RAIL = [
+  { id: "open.home", title: "Lima Home", icon: "home", url: "about:lima" },
+  { id: "open.notes", title: "Notes", icon: "note", url: "about:lima?view=notes" },
+  { id: "open.chat", title: "AI Chat", icon: "chat", url: "about:lima?view=chat" },
+  { id: "open.terminal", title: "Terminal", icon: "terminal", url: "about:lima?view=terminal" },
 ];
 
 function el(doc, tag, props = {}, children = []) {
@@ -34,37 +32,68 @@ function el(doc, tag, props = {}, children = []) {
   return node;
 }
 
+function railButton(doc, win, entry) {
+  const glyph = el(doc, "span", { class: "lima-glyph" });
+  glyph.style.maskImage = `url("resource://lima-ui/icons/${entry.icon}.svg")`;
+  return el(doc, "button", {
+    class: "lima-rail-button",
+    "data-tool": entry.id,
+    title: entry.title,
+    "aria-label": entry.title,
+    onclick: async event => {
+      try {
+        // Rail clicks run through the same capability entry point as every surface.
+        const result = entry.url ? { type: "open", url: entry.url } : await lazy.LimaBridge.request("capabilities.run", { id: entry.id });
+        if (result?.type === "open") lazy.LimaTabs.openOrFocus(win, result.url, { background: event.metaKey });
+      } catch (error) {
+        dump(`[lima] rail ${entry.id} failed: ${error.message}\n`);
+      }
+    },
+  }, [glyph]);
+}
+
 function attachRail(win) {
   const doc = win.document;
   const rail = el(doc, "div", { id: "lima-rail", role: "toolbar", "aria-orientation": "vertical", "aria-label": "Lima tools" });
-  for (const tool of TOOLS) {
-    rail.prepend(el(doc, "button", {
-      class: "lima-rail-button",
-      "data-tool": tool.id,
-      title: tool.label,
-      "aria-label": tool.label,
-      onclick: event => lazy.LimaTabs.openOrFocus(win, tool.url, { background: event.metaKey }),
-    }, [el(doc, "span", { class: "lima-glyph", text: tool.glyph })]));
-  }
+  const urls = new Map();
+  const populate = entries => {
+    rail.replaceChildren();
+    for (const entry of entries) rail.prepend(railButton(doc, win, entry)); // bottom-anchored: first entry lowest
+    update();
+  };
   const foot = doc.getElementById("zen-sidebar-foot-buttons");
   if (foot?.parentNode) foot.parentNode.insertBefore(rail, foot);
   else (doc.getElementById("navigator-toolbox") ?? doc.documentElement).append(rail);
 
   // Mark the active Lima surface in the rail.
-  const update = () => {
+  function update() {
     const url = win.gBrowser.selectedBrowser?.currentURI?.spec ?? "";
     for (const button of rail.querySelectorAll(".lima-rail-button")) {
-      const tool = TOOLS.find(t => t.id === button.dataset.tool);
-      const active = url.startsWith("about:lima") && (url === tool.url || (tool.id === "notes" && url.includes("note=")) || (tool.id === "chat" && url.includes("chat=")) || (tool.id === "terminal" && url.includes("terminal=")));
+      const target = urls.get(button.dataset.tool);
+      const view = target?.split("view=")[1];
+      const active = url.startsWith("about:lima") && (url === target ||
+        (view === "notes" && url.includes("note=")) || (view === "chat" && url.includes("chat=")) || (view === "terminal" && url.includes("terminal=")));
       button.toggleAttribute("data-active", active);
     }
-  };
+  }
+
+  populate(FALLBACK_RAIL);
+  for (const entry of FALLBACK_RAIL) urls.set(entry.id, entry.url);
+  lazy.LimaBridge.request("capabilities.list").then(manifest => {
+    const railEntries = manifest.filter(c => c.surfaces.rail).sort((a, b) => a.rank - b.rank);
+    // Navigation capabilities resolve to fixed URLs, so the rail can mark the active one.
+    const known = { "open.home": "about:lima", "open.notes": "about:lima?view=notes", "open.chat": "about:lima?view=chat", "open.terminal": "about:lima?view=terminal",
+      "open.agents": "about:lima?view=agents", "open.activity": "about:lima?view=activity", "open.context": "about:lima?view=context",
+      "open.studio": "about:lima?view=studio", "open.audio": "about:lima?view=audio", "open.integrations": "about:lima?view=integrations" };
+    for (const entry of railEntries) urls.set(entry.id, known[entry.id]);
+    populate(railEntries.map(c => ({ id: c.id, title: c.title, icon: c.icon, url: known[c.id] })));
+  }).catch(() => {});
+
   win.gBrowser.tabContainer.addEventListener("TabSelect", update);
   win.gBrowser.addProgressListener({
     QueryInterface: ChromeUtils.generateQI(["nsIWebProgressListener", "nsISupportsWeakReference"]),
     onLocationChange: update,
   });
-  update();
 }
 
 function attachContextRecorder(win) {

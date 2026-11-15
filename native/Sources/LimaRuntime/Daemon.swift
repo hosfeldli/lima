@@ -29,11 +29,20 @@ public enum Daemon {
         }
 
         let origins = OriginTable()
-        runtime.register("host.identify") { params, context in
+        runtime.register("host.identify") { [unowned runtime] params, context in
             guard let client = context.client else { return .null }
-            let requested = ActionOrigin(rawValue: params.optionalString("origin") ?? "mcp") ?? .mcp
-            origins.set(client, requested)
-            return .string(requested.rawValue)
+            var requested = ActionOrigin(rawValue: params.optionalString("origin") ?? "mcp") ?? .mcp
+            var workspaceID: String?
+            if let token = params.optionalString("workspaceToken") {
+                // A workspace agent: bound to exactly one workspace.
+                guard let id = await runtime.workspaces.id(forToken: token) else { throw BridgeError(.notAuthorized, "unknown workspace token") }
+                workspaceID = id
+                requested = .chat
+            } else if requested == .chat {
+                requested = .mcp // "chat" is reserved for token-bound workspace agents
+            }
+            origins.set(client, requested, workspaceID: workspaceID)
+            return .object(["origin": .string(requested.rawValue), "workspace": workspaceID.map(JSONValue.string) ?? .null])
         }
         runtime.register("terminal.lease.handle") { [unowned runtime] params, _ in
             let id = try params.string("id")
@@ -53,13 +62,13 @@ public enum Daemon {
                     return
                 }
                 Task {
-                    let origin = origins.get(client)
+                    let (origin, workspaceID) = origins.binding(client)
                     if origin == .mcp, request.method == "terminal.agentRun", !MCPGrants.shared.allows(scope: "terminal:control") {
                         let denied = BridgeResponse.failure(id: request.id, BridgeError(.confirmationRequired, "Allow terminal:control for MCP clients in Lima → Integrations first"))
                         if let data = try? JSONEncoder().encode(denied) { client.send(data) }
                         return
                     }
-                    let response = await runtime.handle(request, context: CallContext(client: client, origin: origin))
+                    let response = await runtime.handle(request, context: CallContext(client: client, origin: origin, workspaceID: workspaceID))
                     if let data = try? JSONEncoder().encode(response) { client.send(data) }
                 }
             })
@@ -108,10 +117,10 @@ public enum Daemon {
 
 final class OriginTable: @unchecked Sendable {
     private let lock = NSLock()
-    private var origins: [UUID: ActionOrigin] = [:]
-    func set(_ client: ClientConnection, _ origin: ActionOrigin) { lock.lock(); origins[client.id] = origin; lock.unlock() }
+    private var origins: [UUID: (ActionOrigin, String?)] = [:]
+    func set(_ client: ClientConnection, _ origin: ActionOrigin, workspaceID: String? = nil) { lock.lock(); origins[client.id] = (origin, workspaceID); lock.unlock() }
     /// Unidentified clients get the least-privileged origin.
-    func get(_ client: ClientConnection) -> ActionOrigin { lock.lock(); defer { lock.unlock() }; return origins[client.id] ?? .mcp }
+    func binding(_ client: ClientConnection) -> (ActionOrigin, String?) { lock.lock(); defer { lock.unlock() }; return origins[client.id] ?? (.mcp, nil) }
     func remove(_ client: ClientConnection) { lock.lock(); origins[client.id] = nil; lock.unlock() }
 }
 
@@ -128,7 +137,7 @@ public final class RuntimeClient: @unchecked Sendable {
 
     /// Connects, starting the daemon if needed and replacing a daemon left
     /// running from a different build.
-    public static func connect(paths: RuntimePaths = .resolve(), executable: String = CommandLine.arguments[0], origin: ActionOrigin) throws -> RuntimeClient {
+    public static func connect(paths: RuntimePaths = .resolve(), executable: String = CommandLine.arguments[0], origin: ActionOrigin, workspaceToken: String? = nil) throws -> RuntimeClient {
         var client = try connectOrSpawn(paths: paths, executable: executable)
         if let hello = try? client.call("host.hello"), hello["buildID"]?.stringValue != RuntimeBuild.id,
            ProcessInfo.processInfo.environment["LIMA_KEEP_DAEMON"] == nil,
@@ -138,7 +147,9 @@ public final class RuntimeClient: @unchecked Sendable {
             for _ in 0..<50 where SocketServer.connect(path: paths.socket).map({ close($0); return true }) ?? false { usleep(100_000) }
             client = try connectOrSpawn(paths: paths, executable: executable)
         }
-        _ = try client.call("host.identify", params: .object(["origin": .string(origin.rawValue)]))
+        var identity: [String: JSONValue] = ["origin": .string(origin.rawValue)]
+        if let workspaceToken { identity["workspaceToken"] = .string(workspaceToken) }
+        _ = try client.call("host.identify", params: .object(identity))
         return client
     }
 

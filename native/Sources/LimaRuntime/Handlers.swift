@@ -118,8 +118,7 @@ extension Runtime {
                                       "\(verdict.effectiveKind.rawValue): \(verdict.reasons.joined(separator: "; "))")
                 }
             }
-            try await self.terminals.agentWrite(id, data: Data((command + "\r").utf8), handle: handle)
-            let result = try await self.terminals.waitForPrompt(id, timeout: params.double("timeout", default: 120))
+            let result = try await self.terminals.agentRunCommand(id, command: command, handle: handle, timeout: params.double("timeout", default: 120))
             return .object([
                 "timedOut": .bool(result.timedOut),
                 "exitStatus": result.exitStatus.map { .number(Double($0)) } ?? .null,
@@ -293,9 +292,18 @@ extension Runtime {
             }
             return .number(Double(self.search.index.count))
         }
-        register("tools.list") { [unowned self] _, _ in try JSONValue.from(self.tools.definitions) }
-        register("tools.run") { [unowned self] params, context in
-            try await self.tools.run(try params.string("tool"), input: params.optionalString("input") ?? "", runtime: self, context: context)
+        // Unified capabilities: the only way any surface runs a Lima function.
+        register("capabilities.list") { [unowned self] _, context in
+            let all = self.capabilities.definitions.sorted { $0.rank < $1.rank }
+            // External agents only see what they could run.
+            return try JSONValue.from(context.origin == .mcp ? all.filter { $0.mcpScope != nil } : all)
+        }
+        register("capabilities.run") { [unowned self] params, context in
+            try await self.capabilities.run(try params.string("id"), input: params.optionalString("input") ?? "", runtime: self,
+                                            context: context, approvalDigest: params.optionalString("approvalDigest"))
+        }
+        register("capabilities.runs") { [unowned self] params, _ in
+            try JSONValue.from(self.capabilities.recentRuns(limit: params.int("limit", default: 100)))
         }
         register("system.openApp") { params, _ in
             let path = try params.string("path")

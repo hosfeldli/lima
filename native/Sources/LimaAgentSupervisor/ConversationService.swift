@@ -24,6 +24,8 @@ public struct Conversation: Codable, Equatable, Sendable {
     public var messages: [ChatMessage]
     public var createdAt: Double
     public var updatedAt: Double
+    /// Set for a workspace's agent conversation.
+    public var workspaceID: String?
 }
 
 public struct ConversationSummary: Codable, Equatable, Sendable {
@@ -69,6 +71,11 @@ public actor ConversationService {
     private var queues: [String: [String]] = [:] // conversationID → queued user message IDs
     private var executables: [CLIProvider: String] = [:]
     private let emit: @Sendable (ConversationEvent) -> Void
+    /// Supplies per-conversation CLI extras (workspace MCP config, preamble).
+    public typealias RunConfigurator = @Sendable (Conversation) async -> (arguments: [String], environment: [String: String], preamble: String?)
+    private var configurator: RunConfigurator?
+
+    public func setRunConfigurator(_ configurator: @escaping RunConfigurator) { self.configurator = configurator }
 
     public init(store: EncryptedStore, discovery: CLIDiscovery = CLIDiscovery(), emit: @escaping @Sendable (ConversationEvent) -> Void) async throws {
         self.store = store
@@ -96,11 +103,11 @@ public actor ConversationService {
         return conversation
     }
 
-    public func create(provider: CLIProvider, model: String?, workingDirectory: String?) async throws -> Conversation {
+    public func create(provider: CLIProvider, model: String?, workingDirectory: String?, workspaceID: String? = nil, title: String? = nil) async throws -> Conversation {
         let now = Self.now()
         let conversation = Conversation(
-            id: UUID().uuidString, title: "New conversation", provider: provider, model: model, cliSessionID: nil,
-            workingDirectory: workingDirectory ?? NSHomeDirectory(), messages: [], createdAt: now, updatedAt: now
+            id: UUID().uuidString, title: title ?? "New conversation", provider: provider, model: model, cliSessionID: nil,
+            workingDirectory: workingDirectory ?? NSHomeDirectory(), messages: [], createdAt: now, updatedAt: now, workspaceID: workspaceID
         )
         try await save(conversation)
         return conversation
@@ -216,11 +223,17 @@ public actor ConversationService {
             prompt = conversation.messages[userIndex].text
         }
 
-        let request = AgentRunRequest(
+        var request = AgentRunRequest(
             provider: conversation.provider, prompt: prompt, model: conversation.model,
             cliSessionID: conversation.provider == .opencode ? nil : conversation.cliSessionID,
             workingDirectory: URL(fileURLWithPath: conversation.workingDirectory), mode: .chat
         )
+        if let configurator {
+            let extras = await configurator(conversation)
+            request.extraArguments = extras.arguments
+            request.extraEnvironment = extras.environment
+            if let preamble = extras.preamble, conversation.cliSessionID == nil { request.prompt = preamble + "\n\n" + request.prompt }
+        }
         let run = AgentRun(request: request, executable: executable, searchPath: discovery.searchPaths)
         running[id] = run
 

@@ -66,7 +66,10 @@ final class TerminalSession: @unchecked Sendable {
     private var exitCode: Int?
     private var integrated: Bool
     private var history: [TerminalCommand] = []
-    private var promptWaiters: [(token: UUID, continuation: CheckedContinuation<Int?, Never>)] = []
+    private var promptWaiters: [(token: UUID, afterCommand: Int, continuation: CheckedContinuation<Int?, Never>)] = []
+    /// Incremented on every preexec; lets a waiter ignore prompts that
+    /// belong to earlier (or startup) prompts rather than its own command.
+    private var commandSequence = 0
 
     private var readSource: DispatchSourceRead?
     private var exitSource: DispatchSourceProcess?
@@ -147,9 +150,11 @@ final class TerminalSession: @unchecked Sendable {
                 lastExitStatus = status
                 state = .idle
                 stateChanged = true
-                waiters += promptWaiters.map(\.continuation)
-                promptWaiters.removeAll()
+                let ready = promptWaiters.filter { commandSequence >= $0.afterCommand }
+                promptWaiters.removeAll { commandSequence >= $0.afterCommand }
+                waiters += ready.map(\.continuation)
             case .commandStarted(let command):
+                commandSequence += 1
                 state = .running
                 stateChanged = true
                 if let command, !command.isEmpty {
@@ -271,7 +276,16 @@ final class TerminalSession: @unchecked Sendable {
     }
 
     /// Suspends until the shell reports its next prompt (or exits/timeout).
-    func waitForPrompt(timeout: TimeInterval) async -> (timedOut: Bool, exitStatus: Int?) {
+    /// Current preexec count, captured before typing a command.
+    func currentCommandSequence() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        return commandSequence
+    }
+
+    /// Suspends until the shell reports a prompt. With `afterCommand`, only a
+    /// prompt that follows at least that many preexecs counts — i.e. the
+    /// prompt after the command that was just typed, not a stale one.
+    func waitForPrompt(timeout: TimeInterval, afterCommand: Int = 0) async -> (timedOut: Bool, exitStatus: Int?) {
         let race = PromptRace()
         let token = UUID()
         let status: Int? = await withCheckedContinuation { continuation in
@@ -281,7 +295,7 @@ final class TerminalSession: @unchecked Sendable {
                 continuation.resume(returning: nil)
                 return
             }
-            promptWaiters.append((token, continuation))
+            promptWaiters.append((token, afterCommand, continuation))
             lock.unlock()
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
                 guard let self else { return }
@@ -394,6 +408,21 @@ public actor TerminalService {
         }
     }
 
+    public func commandSequence(_ id: String) throws -> Int { try session(id).currentCommandSequence() }
+
+    /// Agent command: type it under the lease, then wait for the prompt that
+    /// follows this command's own preexec.
+    public func agentRunCommand(_ id: String, command: String, handle: InputLeaseHandle, timeout: TimeInterval) async throws -> (timedOut: Bool, exitStatus: Int?, output: Data) {
+        let session = try session(id)
+        let sequence = session.currentCommandSequence()
+        let before = session.snapshot().count
+        try session.agentWrite(Data((command + "\r").utf8), handle: handle)
+        let result = await session.waitForPrompt(timeout: timeout, afterCommand: sequence + 1)
+        let after = session.snapshot()
+        let output = after.count >= before ? after.suffix(from: after.startIndex + min(before, after.count)) : after
+        return (result.timedOut, result.exitStatus, Data(output))
+    }
+
     public func reclaim(_ id: String) throws {
         try session(id).withLease { $0.userTakeover() }
     }
@@ -402,10 +431,10 @@ public actor TerminalService {
         for session in sessions.values { _ = session.withLease { $0.expireIfIdle(timeout: timeout) } }
     }
 
-    public func waitForPrompt(_ id: String, timeout: TimeInterval) async throws -> (timedOut: Bool, exitStatus: Int?, output: Data) {
+    public func waitForPrompt(_ id: String, timeout: TimeInterval, afterCommand: Int = 0) async throws -> (timedOut: Bool, exitStatus: Int?, output: Data) {
         let session = try session(id)
         let before = session.snapshot().count
-        let result = await session.waitForPrompt(timeout: timeout)
+        let result = await session.waitForPrompt(timeout: timeout, afterCommand: afterCommand)
         let after = session.snapshot()
         let output = after.count >= before ? after.suffix(from: after.startIndex + min(before, after.count)) : after
         return (result.timedOut, result.exitStatus, Data(output))

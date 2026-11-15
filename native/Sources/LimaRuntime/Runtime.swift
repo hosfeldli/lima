@@ -28,6 +28,9 @@ public struct RuntimePaths: Sendable {
 public struct CallContext: Sendable {
     public var client: ClientConnection?
     public var origin: ActionOrigin
+    /// Set when the caller is a workspace's agent (token-authenticated);
+    /// such callers can act only on that workspace.
+    public var workspaceID: String? = nil
 }
 
 public typealias MethodHandler = @Sendable (JSONValue?, CallContext) async throws -> JSONValue
@@ -43,7 +46,8 @@ public final class Runtime: @unchecked Sendable {
     public let terminals: TerminalService
     public let search: SearchService
     public let context: ContextService
-    public let tools: ToolRegistry
+    public let workspaces: WorkspaceService
+    public let capabilities: CapabilityRegistry
     public let discovery = CLIDiscovery()
     public let startedAt = Date()
 
@@ -63,12 +67,13 @@ public final class Runtime: @unchecked Sendable {
         let selections = try await store.get([String: Int].self, collection: "settings", id: "search.selections") ?? [:]
         let search = SearchService(selections: selections)
         let context = try await ContextService(store: store)
+        let workspaces = try await WorkspaceService(store: store)
         return try await Runtime(paths: paths, store: store, notes: notes, conversations: conversations,
-                                 terminals: terminals, search: search, context: context, sink: sink)
+                                 terminals: terminals, search: search, context: context, workspaces: workspaces, sink: sink)
     }
 
     private init(paths: RuntimePaths, store: EncryptedStore, notes: NotesService, conversations: ConversationService,
-                 terminals: TerminalService, search: SearchService, context: ContextService, sink: EventSink) async throws {
+                 terminals: TerminalService, search: SearchService, context: ContextService, workspaces: WorkspaceService, sink: EventSink) async throws {
         self.paths = paths
         self.store = store
         self.notes = notes
@@ -76,7 +81,8 @@ public final class Runtime: @unchecked Sendable {
         self.terminals = terminals
         self.search = search
         self.context = context
-        self.tools = ToolRegistry()
+        self.workspaces = workspaces
+        self.capabilities = CapabilityRegistry()
         sink.runtime = self
 
         registerCore()
@@ -86,6 +92,10 @@ public final class Runtime: @unchecked Sendable {
         registerSearch()
         registerContext()
         registerSystem()
+        registerWorkspaces()
+        await conversations.setRunConfigurator { [weak self] conversation in
+            await self?.workspaceAgentConfiguration(conversation) ?? ([], [:], nil)
+        }
         await buildSearchIndex()
         await notes.onChange { [weak self] note, id in self?.noteChanged(note, id: id) }
     }
@@ -136,7 +146,7 @@ public final class Runtime: @unchecked Sendable {
             index.upsert(SearchDocument(source: "conversation", id: summary.id, title: summary.title, subtitle: "AI conversation · \(summary.provider.rawValue)",
                                         timestamp: summary.updatedAt, action: SearchAction("openConversation", ["id": summary.id])))
         }
-        for tool in tools.definitions { index.upsert(tool.searchDocument) }
+        for capability in capabilities.definitions where capability.surfaces.search { index.upsert(capability.searchDocument) }
         if let reports = try? await context.reports() {
             for report in reports { index.upsert(Self.document(for: report)) }
         }

@@ -62,6 +62,10 @@ public struct AgentRunRequest: Sendable {
     public var cliSessionID: String?
     public var workingDirectory: URL
     public var mode: AgentMode
+    /// Provider-specific extras (e.g. a workspace's MCP config), inserted
+    /// before positional arguments.
+    public var extraArguments: [String] = []
+    public var extraEnvironment: [String: String] = [:]
 
     public init(provider: CLIProvider, prompt: String, model: String? = nil, cliSessionID: String? = nil, workingDirectory: URL, mode: AgentMode) {
         self.provider = provider
@@ -95,18 +99,19 @@ public enum AgentCommandLine {
             case .chat:
                 if let session = request.cliSessionID { args += ["--resume", session] }
             }
-            return args
+            return args + request.extraArguments
         case .codex:
             var args = ["exec", "--json", "--skip-git-repo-check", "-c", "sandbox_mode=\"read-only\""]
             if let model { args += ["-m", model] }
             if request.mode == .quickAsk { args += ["-c", "model_reasoning_effort=\"low\"", "--ephemeral"] }
+            args += request.extraArguments
             if request.mode == .chat, let session = request.cliSessionID { args += ["resume", session] }
             return args + ["-"]
         case .opencode:
             var args = ["run", "--format", "json"]
             if let model { args += ["--model", model] }
             if request.mode == .chat, let session = request.cliSessionID { args += ["--session", session] }
-            return args
+            return args + request.extraArguments
         }
     }
 }
@@ -244,6 +249,7 @@ public final class AgentRun: @unchecked Sendable {
         environment["PATH"] = searchPath.joined(separator: ":")
         environment["NO_COLOR"] = "1"
         environment.removeValue(forKey: "CLAUDECODE")
+        environment.merge(request.extraEnvironment) { _, new in new }
         process.environment = environment
 
         let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()

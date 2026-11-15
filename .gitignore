@@ -5,3 +5,4 @@
 native/.build/
 *.xcuserstate
 browser/overlay/lima/ui/bundle.js
+browser/overlay/lima/ui/icons.js
