@@ -100,3 +100,14 @@ func makeService() async throws -> (NotesService, EncryptedStore, URL) {
     #expect(migrated.pinned && migrated.tags == ["home"] && migrated.markdown == "- [ ] milk")
     #expect(try await store.meta(LegacyNotesMigration.metaKey) != nil)
 }
+
+@Test func trashIsReversibleAndKeepsContent() async throws {
+    let (notes, store, dir) = try await makeService()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let note = try await notes.create(title: "Keep me", kind: .classic, markdown: "important")
+    try await notes.trash(note.id)
+    #expect(await notes.list().first?.trashed == true)
+    #expect(try await store.get(Note.self, collection: NotesService.collection, id: note.id)?.markdown == "important")
+    let restored = try await notes.restore(note.id)
+    #expect(restored.trashedAt == nil && restored.markdown == "important")
+}

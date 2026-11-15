@@ -36,6 +36,7 @@ public struct NoteSummary: Codable, Equatable, Sendable {
     public var favorite: Bool
     public var modifiedAt: Double
     public var excerpt: String
+    public var trashed: Bool
 }
 
 /// Owns notes, their undo/redo history, and change notifications. Views and
@@ -68,7 +69,7 @@ public actor NotesService {
                 let source = note.kind == .classic ? note.markdown : note.blocks.map(\.content).joined(separator: " ")
                 return NoteSummary(
                     id: note.id, title: note.title, kind: note.kind, pinned: note.pinned, favorite: note.favorite,
-                    modifiedAt: note.modifiedAt, excerpt: String(source.prefix(160))
+                    modifiedAt: note.modifiedAt, excerpt: String(source.prefix(160)), trashed: note.trashedAt != nil
                 )
             }
     }
@@ -158,6 +159,20 @@ public actor NotesService {
             redoStacks[id] = source
             undoStacks[id, default: []].append(replayed)
         }
+        return note
+    }
+
+    /// Soft delete (bookmark removed). Content stays encrypted and restorable.
+    public func trash(_ id: String) async throws {
+        guard var note = cache[id] else { throw NoteEditError.noteNotFound(id) }
+        note.trashedAt = Note.now()
+        try await persist(note)
+    }
+
+    public func restore(_ id: String) async throws -> Note {
+        guard var note = cache[id] else { throw NoteEditError.noteNotFound(id) }
+        note.trashedAt = nil
+        try await persist(note)
         return note
     }
 

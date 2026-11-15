@@ -23,6 +23,10 @@ public struct Note: Codable, Equatable, Sendable {
     public var revision: Int
     /// Original Lima 4.x note ID when migrated.
     public var legacyID: String?
+    /// Set when the note's bookmark was deleted. Trashed notes keep their
+    /// encrypted content and can be restored; only an explicit purge
+    /// removes them.
+    public var trashedAt: Double?
 
     public init(id: String = UUID().uuidString, title: String, kind: Kind, markdown: String = "", now: Double = Note.now()) {
         self.id = id
@@ -38,6 +42,7 @@ public struct Note: Codable, Equatable, Sendable {
         self.modifiedAt = now
         self.revision = 0
         self.legacyID = nil
+        self.trashedAt = nil
     }
 
     public static func now() -> Double { (Date().timeIntervalSince1970 * 1000).rounded() }

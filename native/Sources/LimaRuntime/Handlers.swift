@@ -186,9 +186,20 @@ extension Runtime {
             self.recordActivity(ActivityEvent(kind: .note, title: note.title, detail: "created"))
             return try JSONValue.from(note)
         }
-        register("notes.delete") { [unowned self] params, context in
+        register("notes.trash") { [unowned self] params, context in
             try self.requireNotesWrite(context)
-            try await self.notes.delete(try params.string("id")); return .null
+            try await self.notes.trash(try params.string("id")); return .null
+        }
+        register("notes.restore") { [unowned self] params, context in
+            try self.requireNotesWrite(context)
+            return try JSONValue.from(try await self.notes.restore(try params.string("id")))
+        }
+        register("notes.purge") { [unowned self] params, context in
+            // Permanent deletion only from the user interface, only from trash.
+            guard context.origin == .browser else { throw BridgeError(.notAuthorized, "only the user can permanently delete notes") }
+            let id = try params.string("id")
+            guard try await self.notes.get(id).trashedAt != nil else { throw BridgeError(.badRequest, "move the note to trash first") }
+            try await self.notes.delete(id); return .null
         }
         register("notes.apply") { [unowned self] params, context in
             try self.requireNotesWrite(context)

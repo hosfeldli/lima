@@ -66,7 +66,7 @@ public actor SearchService {
                 let ageDays = document.timestamp > 0 ? max(0, (now - document.timestamp) / 86_400_000) : 30
                 let recency = 1 / (1 + ageDays / 14)
                 let learned = log(1 + Double(selections[document.key] ?? 0))
-                let score = relevance * (sourceWeights[document.source] ?? 1) + recency * 2 + learned * 3
+                let score = relevance * (sourceWeights[document.source] ?? 1) + recency * 2 + learned * 6
                 results.append(SearchResult(key: document.key, source: document.source, title: document.title,
                                             subtitle: document.subtitle, score: score, action: document.action))
             }

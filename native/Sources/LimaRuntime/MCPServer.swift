@@ -146,7 +146,7 @@ public enum MCPServer {
 
 enum ANSI {
     static func strip(_ text: String) -> String {
-        text.replacingOccurrences(of: #"\u{1B}\[[0-9;?]*[ -/]*[@-~]|\u{1B}\][^\u{07}\u{1B}]*(\u{07}|\u{1B}\\)|\u{1B}[@-Z\\-_]"#, with: "", options: .regularExpression)
+        text.replacingOccurrences(of: #"\x{1B}\[[0-9;?]*[ -/]*[@-~]|\x{1B}\][^\x{07}\x{1B}]*(\x{07}|\x{1B}\\)|\x{1B}[@-Z\\-_]"#, with: "", options: .regularExpression)
             .replacingOccurrences(of: "\r", with: "")
     }
 }
