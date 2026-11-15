@@ -32,7 +32,7 @@ let package = Package(
             dependencies: ["LimaRuntime", "LimaProtocol", "LimaAgentSupervisor", "LimaAuthorization"],
             exclude: ["Support"],
             linkerSettings: [.unsafeFlags(["-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist",
-                                           "-Xlinker", "Sources/LimaHost/Support/Info.plist"])]
+                                           "-Xlinker", Context.packageDirectory + "/Sources/LimaHost/Support/Info.plist"])]
         ),
         .testTarget(name: "LimaProtocolTests", dependencies: ["LimaProtocol"]),
         .testTarget(name: "LimaAuthorizationTests", dependencies: ["LimaAuthorization"]),

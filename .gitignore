@@ -4,3 +4,4 @@
 /browser/work/
 native/.build/
 *.xcuserstate
+browser/overlay/lima/ui/bundle.js

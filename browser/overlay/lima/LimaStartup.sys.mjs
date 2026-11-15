@@ -1,9 +1,11 @@
-/* Lima chrome entry point, loaded once per process from lima.cfg. */
+/* Lima chrome entry point, loaded once in the parent process from lima.cfg. */
 
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
   LimaWindow: "resource://lima/LimaWindow.sys.mjs",
+  LimaNotesBookmarks: "resource://lima/LimaNotesBookmarks.sys.mjs",
+  LimaUrlbar: "resource://lima/LimaUrlbar.sys.mjs",
 });
 
 let initialized = false;
@@ -12,27 +14,11 @@ function log(message) {
   dump(`[lima] ${message}\n`);
 }
 
-function registerBrandingOverride() {
-  const aomStartup = Cc["@mozilla.org/addons/addon-manager-startup;1"].getService(Ci.amIAddonManagerStartup);
-  const manifest = Services.io.newURI("resource://lima/");
-  aomStartup.registerChrome(manifest, [
-    ["override", "chrome://branding/locale/brand.properties", "resource://lima/branding/brand.properties"],
-  ]);
-}
-
-function registerStyles() {
-  const sss = Cc["@mozilla.org/content/style-sheet-service;1"].getService(Ci.nsIStyleSheetService);
-  const uri = Services.io.newURI("resource://lima/lima.css");
-  if (!sss.sheetRegistered(uri, sss.AUTHOR_SHEET)) sss.loadAndRegisterSheet(uri, sss.AUTHOR_SHEET);
-}
-
-function attach(win) {
-  if (win.document.documentElement.getAttribute("windowtype") !== "navigator:browser") return;
+function step(name, fn) {
   try {
-    lazy.LimaWindow.attach(win);
-    log("workspace rail attached");
+    fn();
   } catch (error) {
-    log(`rail attach failed: ${error}\n${error.stack}`);
+    log(`${name} failed: ${error}\n${error.stack ?? ""}`);
   }
 }
 
@@ -42,30 +28,61 @@ export const LimaStartup = {
     initialized = true;
     log("bootstrap loaded");
 
-    for (const step of [registerBrandingOverride, registerStyles]) {
+    step("ui substitution", () => {
+      // Page assets are content-accessible; chrome modules under resource://lima are not.
+      const ui = Services.dirsvc.get("GreD", Ci.nsIFile);
+      ui.append("lima");
+      ui.append("ui");
+      Services.io.getProtocolHandler("resource").QueryInterface(Ci.nsIResProtocolHandler)
+        .setSubstitutionWithFlags("lima-ui", Services.io.newFileURI(ui), Ci.nsISubstitutingProtocolHandler.ALLOW_CONTENT_ACCESS);
+    });
+    step("about:lima", () => {
+      ChromeUtils.importESModule("resource://lima/LimaAbout.sys.mjs").registerAboutLima();
+      Services.ppmm.loadProcessScript("resource://lima/LimaContentProcess.js", true);
+    });
+    step("window actor", () => {
+      ChromeUtils.registerWindowActor("Lima", {
+        parent: { esModuleURI: "resource://lima/actors/LimaParent.sys.mjs" },
+        child: {
+          esModuleURI: "resource://lima/actors/LimaChild.sys.mjs",
+          events: { DOMDocElementInserted: { capture: true }, DOMContentLoaded: {}, LimaInit: { wantUntrusted: true } },
+        },
+        // about:lima loads only in the privileged-about process (never with
+        // websites). Match patterns don't reliably cover about: URLs with
+        // queries, so LimaChild also checks the document URL itself.
+        remoteTypes: ["privilegedabout"],
+      });
+    });
+    step("branding", () => {
+      const aomStartup = Cc["@mozilla.org/addons/addon-manager-startup;1"].getService(Ci.amIAddonManagerStartup);
+      aomStartup.registerChrome(Services.io.newURI("resource://lima/"), [
+        ["override", "chrome://branding/locale/brand.properties", "resource://lima/branding/brand.properties"],
+      ]);
+    });
+    step("styles", () => {
+      const sss = Cc["@mozilla.org/content/style-sheet-service;1"].getService(Ci.nsIStyleSheetService);
+      const uri = Services.io.newURI("resource://lima/lima.css");
+      if (!sss.sheetRegistered(uri, sss.AUTHOR_SHEET)) sss.loadAndRegisterSheet(uri, sss.AUTHOR_SHEET);
+    });
+
+    Services.obs.addObserver(win => {
       try {
-        step();
+        lazy.LimaWindow.attach(win);
       } catch (error) {
-        log(`${step.name} failed: ${error}`);
+        log(`window attach failed: ${error}\n${error.stack}`);
       }
-    }
+    }, "browser-delayed-startup-finished");
 
-    Services.obs.addObserver(win => attach(win), "browser-delayed-startup-finished");
-
-    // Probe the native host once at startup so failures surface early.
-    Services.obs.addObserver(
-      async function onFirstWindow() {
-        Services.obs.removeObserver(onFirstWindow, "browser-delayed-startup-finished");
-        try {
-          const hello = await lazy.LimaBridge.request("host.hello");
-          log(`host.hello ${JSON.stringify(hello)}`);
-          const agents = await lazy.LimaBridge.request("agents.discover");
-          log(`agents.discover ${JSON.stringify(agents.map(a => [a.provider, a.status, a.version ?? null]))}`);
-        } catch (error) {
-          log(`native host unavailable: ${error}`);
-        }
-      },
-      "browser-delayed-startup-finished"
-    );
+    Services.obs.addObserver(async function onFirstWindow() {
+      Services.obs.removeObserver(onFirstWindow, "browser-delayed-startup-finished");
+      step("urlbar", () => log(`urlbar provider ${lazy.LimaUrlbar.register() ? "registered" : "not registered"}`));
+      try {
+        const hello = await lazy.LimaBridge.request("host.hello");
+        log(`runtime ${hello.hostVersion} pid ${hello.pid}`);
+        await lazy.LimaNotesBookmarks.start();
+      } catch (error) {
+        log(`runtime unavailable: ${error.message ?? error}`);
+      }
+    }, "browser-delayed-startup-finished");
   },
 };

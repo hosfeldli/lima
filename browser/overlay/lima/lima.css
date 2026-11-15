@@ -39,7 +39,7 @@
   outline-offset: 1px;
 }
 
-#lima-rail .lima-rail-button[aria-pressed="true"] {
+#lima-rail .lima-rail-button[data-active] {
   border-color: transparent;
   background:
     linear-gradient(var(--zen-colors-tertiary, #1d1f25), var(--zen-colors-tertiary, #1d1f25)) padding-box,
@@ -47,60 +47,6 @@
   border: 1px solid transparent;
 }
 
-#lima-panel {
-  width: 320px;
-  min-width: 240px;
-  display: flex;
-  flex-direction: column;
-  margin: 8px 8px 8px 0;
-  border-radius: 12px;
-  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
-  background: var(--zen-colors-tertiary, Canvas);
-  color: var(--zen-colors-primary-foreground, CanvasText);
-  font: 13px/1.45 -apple-system, sans-serif;
-  overflow: hidden;
-}
-
-#lima-panel[hidden] { display: none; }
-
-#lima-panel .lima-panel-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 12px;
-  border-bottom: 1px solid color-mix(in srgb, currentColor 10%, transparent);
-}
-
-#lima-panel h2 { margin: 0; font-size: 13px; font-weight: 650; }
-
-#lima-panel .lima-close {
-  appearance: none;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font-size: 16px;
-  opacity: 0.7;
-}
-
-#lima-panel .lima-panel-body { padding: 12px; overflow: auto; }
-#lima-panel .lima-muted { opacity: 0.65; margin: 0 0 10px; }
-#lima-panel .lima-error { color: #ff6b8b; margin: 0; }
-
-#lima-panel .lima-agent-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
-
-#lima-panel .lima-agent {
-  display: flex;
-  justify-content: space-between;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: color-mix(in srgb, currentColor 5%, transparent);
-}
-
-#lima-panel .lima-agent-name { font-weight: 600; text-transform: capitalize; }
-#lima-panel .lima-agent-detail { opacity: 0.7; font-variant-numeric: tabular-nums; }
-#lima-panel .lima-status-not_installed .lima-agent-detail,
-#lima-panel .lima-status-version_probe_failed .lima-agent-detail { color: #ffb86b; opacity: 1; }
-
 @media (prefers-reduced-motion: reduce) {
-  #lima-rail *, #lima-panel * { transition: none !important; animation: none !important; }
+  #lima-rail * { transition: none !important; animation: none !important; }
 }

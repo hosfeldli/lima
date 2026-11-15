@@ -247,8 +247,11 @@ enum EmojiCatalog {
     struct Entry { var emoji: String; var name: String }
 
     static let all: [Entry] = {
-        guard let url = Bundle.module.url(forResource: "emoji-test", withExtension: "txt"),
-              let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        // Inside Lima.app: Contents/Resources/lima-runtime; in development: the SwiftPM bundle.
+        let executable = URL(fileURLWithPath: (CommandLine.arguments[0] as NSString).resolvingSymlinksInPath)
+        let packaged = executable.deletingLastPathComponent().appendingPathComponent("../Resources/lima-runtime/emoji-test.txt").standardizedFileURL
+        let url = FileManager.default.fileExists(atPath: packaged.path) ? packaged : Bundle.module.url(forResource: "emoji-test", withExtension: "txt")
+        guard let url, let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
         return text.split(separator: "\n").compactMap { line in
             guard line.contains("; fully-qualified"), let hash = line.firstIndex(of: "#") else { return nil }
             let tail = line[line.index(after: hash)...].trimmingCharacters(in: .whitespaces)

@@ -230,31 +230,28 @@ public enum StdioRelay {
             exit(1)
         }
         let socketFD = client.fd
-        Thread.detachNewThread {
-            var buffer = [UInt8](repeating: 0, count: 64 * 1024)
-            while true {
-                let count = read(socketFD, &buffer, buffer.count)
-                if count < 0 && errno == EINTR { continue }
-                if count <= 0 { exit(0) }
-                var offset = 0
-                while offset < count {
-                    let written = write(STDOUT_FILENO, &buffer[offset], count - offset)
-                    if written <= 0 { exit(0) }
-                    offset += written
-                }
-            }
-        }
+        Thread.detachNewThread { pump(from: socketFD, to: STDOUT_FILENO) }
+        pump(from: STDIN_FILENO, to: socketFD)
+    }
+
+    /// Copies bytes until EOF on either side, then exits: the browser going
+    /// away ends only the relay, never the runtime.
+    static func pump(from source: Int32, to destination: Int32) -> Never {
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
-            let count = read(STDIN_FILENO, &buffer, buffer.count)
+            let count = buffer.withUnsafeMutableBytes { read(source, $0.baseAddress, $0.count) }
             if count < 0 && errno == EINTR { continue }
             if count <= 0 { exit(0) }
-            var offset = 0
-            while offset < count {
-                let written = write(socketFD, &buffer[offset], count - offset)
-                if written <= 0 { exit(0) }
-                offset += written
+            let delivered = buffer.withUnsafeBytes { raw -> Bool in
+                var offset = 0
+                while offset < count {
+                    let written = write(destination, raw.baseAddress!.advanced(by: offset), count - offset)
+                    if written < 0 { if errno == EINTR { continue }; return false }
+                    offset += written
+                }
+                return true
             }
+            if !delivered { exit(0) }
         }
     }
 }

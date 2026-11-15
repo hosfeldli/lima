@@ -77,10 +77,13 @@ cp "$BROWSER/overlay/defaults/pref/lima-autoconfig.js" "$R/defaults/pref/"
 cp "$BROWSER/overlay/lima.cfg" "$R/lima.cfg"
 cp "$BROWSER/overlay/distribution/policies.json" "$R/distribution/policies.json"
 ditto "$BROWSER/overlay/lima" "$R/lima"
+python3 "$BROWSER/scripts/bundle_ui.py" "$BROWSER/overlay/lima/ui" "$R/lima/ui/bundle.js"
 cp "$ROOT/legacy/lima-4/Packaging/RayPlacement.icns" "$R/lima.icns"
 
 install -m 0755 "$OUT/lima-launcher" "$C/MacOS/lima"
 install -m 0755 "$HOST_BIN" "$C/MacOS/lima-host"
+mkdir -p "$R/lima-runtime"
+cp "$ROOT/native/Sources/LimaRuntime/Resources/emoji-test.txt" "$R/lima-runtime/"
 
 PLIST="$C/Info.plist"
 plutil -replace CFBundleExecutable -string lima "$PLIST"
