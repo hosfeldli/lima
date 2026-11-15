@@ -1,7 +1,7 @@
 # Lima 5.0 specification
 
 The authoritative spec is "Lima 5.0 — Revised Complete Architecture & Development Specification" (v2.0,
-superseding v1.0 of 2026-11-13). Save the full text here as `lima-5.0-v2.md`.
+superseding v1.0 of 2026-11-13). Full text: [`lima-5.0-v2.md`](lima-5.0-v2.md) — v1.0 first, then the v2.0 revision, which wins where they conflict.
 
 Key decisions this repo implements against:
 - Zen fork, macOS only (Apple Silicon first), one public 5.0 release gated by internal milestones 1–7.
