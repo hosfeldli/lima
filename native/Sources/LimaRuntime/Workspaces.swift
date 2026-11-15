@@ -30,6 +30,12 @@ public struct Workspace: Codable, Sendable, Equatable {
     public var bookmarks: [Bookmark]
     public var createdAt: Double
     public var parentID: String?
+    /// A helper agent spawned by another workspace's agent: shares its
+    /// parent's directory, gets a terminal only when it first needs one, and
+    /// is dismissed when done (its conversation is kept).
+    public var temporary: Bool?
+    /// The task it was spawned for.
+    public var task: String?
     /// Secret for the workspace's MCP server; never sent to the browser.
     var token: String
 
@@ -137,12 +143,26 @@ extension Runtime {
             ?? URL(fileURLWithPath: CommandLine.arguments[0], relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL.path
         var env: [String: String] = ["LIMA_WORKSPACE_TOKEN": workspace.token]
         for key in ["LIMA_DATA_DIR", "LIMA_KEY_FILE"] { if let value = ProcessInfo.processInfo.environment[key] { env[key] = value } }
-        let preamble = """
-        You are the agent for the Lima workspace “\(workspace.name)”. Your working directory is \(workspace.directory).
-        Work visibly through the `lima` MCP tools: open web pages as tabs in this workspace (workspace_open_tab), \
-        file useful links as bookmarks (workspace_bookmark, use folder paths like "Research/Docs"), and run shell commands \
-        in the workspace terminal the user can watch (workspace_run). Create another workspace only if the user asks (workspace_new).
+        let tools = """
+        Work visibly through the `lima` MCP tools, which the user watches in Lima's sidebar: open web pages as tabs \
+        (workspace_open_tab), see and read the pages in your Tabs folder (workspace_list_tabs, workspace_read_tab), run shell \
+        commands in your terminal (workspace_run), file links (workspace_bookmark, folder paths like "Research/Docs") and \
+        write summaries or findings as notes (workspace_note).
         """
+        let preamble: String
+        if workspace.temporary == true {
+            preamble = """
+            You are “\(workspace.name)”, a helper agent in Lima, spawned for this task: \(workspace.task ?? "see the first message").
+            Your working directory is \(workspace.directory), shared with the agent that spawned you; don't undo its work. \(tools)
+            Finish with a short report of what you did and found.
+            """
+        } else {
+            preamble = """
+            You are the agent for the Lima workspace “\(workspace.name)”. Your working directory is \(workspace.directory). \(tools)
+            For parallel subtasks, spawn helper agents (agent_spawn) and check on them (agents_status); each gets its own chat, \
+            tabs and terminal in this workspace. Create a separate workspace only if the user asks (workspace_new).
+            """
+        }
         switch conversation.provider {
         case .claude:
             let config: [String: Any] = ["mcpServers": ["lima": ["command": host, "args": ["mcp"], "env": env]]]
@@ -195,10 +215,68 @@ extension Runtime {
         register("workspace.delete") { [unowned self] params, context in
             guard context.origin == .browser else { throw BridgeError(.notAuthorized, "only the user can remove a workspace") }
             let workspace = try await self.workspaces.get(try params.string("id"))
-            if let terminal = workspace.terminalID { try? await self.terminals.close(terminal) }
-            try await self.workspaces.remove(workspace.id)
-            self.broadcast("workspace.deleted", .object(["id": .string(workspace.id)]))
+            // Helper agents go with their workspace.
+            for child in await self.workspaces.list() where child.parentID == workspace.id { try await self.removeWorkspace(child) }
+            try await self.removeWorkspace(workspace)
             return .object(["directoryKept": .string(workspace.directory)])
+        }
+        register("workspace.rename") { [unowned self] params, context in
+            guard context.origin == .browser else { throw BridgeError(.notAuthorized, "only the user renames workspaces") }
+            var workspace = try await self.workspaces.get(try params.string("id"))
+            let name = try params.string("name").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, name != workspace.name else { return workspace.publicView }
+            workspace.name = String(name.prefix(60))
+            try await self.workspaces.save(workspace)
+            if let conversation = workspace.conversationID { _ = try? await self.conversations.rename(conversation, title: workspace.temporary == true ? workspace.name : "✦ \(workspace.name)") }
+            changed(workspace)
+            return workspace.publicView
+        }
+        register("agent.spawn") { [unowned self] params, context in
+            let parent = try await self.workspaces.get(try target(params, context))
+            let agent = try await self.spawnAgent(parent: parent, name: try params.string("name"), task: try params.string("task"),
+                                                  provider: params.optionalString("provider").flatMap(CLIProvider.init(rawValue:)))
+            return agent.publicView
+        }
+        register("agents.status") { [unowned self] params, context in
+            let parent = try await self.workspaces.get(try target(params, context))
+            var rows: [JSONValue] = []
+            for agent in await self.workspaces.list() where agent.parentID == parent.id {
+                let conversation = try? await self.conversations.get(agent.conversationID ?? "")
+                let reply = conversation?.messages.last { $0.role == .assistant }
+                let focus = self.focus.state(agent.id)
+                rows.append(.object([
+                    "id": .string(agent.id), "name": .string(agent.name), "task": .string(agent.task ?? ""),
+                    "state": .string(reply?.status == .streaming ? "working" : reply?.status == .failed ? "failed" : reply == nil ? "starting" : "done"),
+                    "now": .string(focus.surface == .tab ? "reading \(focus.url ?? "a tab")" : focus.surface.rawValue),
+                    "lastReply": .string(String((reply?.text ?? "").suffix(1200))),
+                    "recentTools": .array((reply?.tools ?? []).suffix(5).map(JSONValue.string)),
+                    "tabs": .array(agent.tabs.map { .string($0.url) }),
+                ]))
+            }
+            return .array(rows)
+        }
+        register("workspace.listTabs") { [unowned self] params, context in
+            let workspace = try await self.workspaces.get(try target(params, context))
+            return try await self.browserCalls.call(self, kind: "listTabs", workspaceID: workspace.id, payload: [:])
+        }
+        register("workspace.readTab") { [unowned self] params, context in
+            let workspace = try await self.workspaces.get(try target(params, context))
+            let url = try params.string("url")
+            self.setFocus(workspace.id, .tab, url: url)
+            return try await self.browserCalls.call(self, kind: "readTab", workspaceID: workspace.id, payload: ["url": .string(url)], timeout: 30)
+        }
+        register("workspace.note") { [unowned self] params, context in
+            var workspace = try await self.workspaces.get(try target(params, context))
+            let title = params.optionalString("title") ?? "Summary"
+            let note = try await self.notes.create(title: title, kind: .classic, markdown: try params.string("markdown"))
+            let url = "about:lima?note=\(note.id)"
+            if !workspace.tabs.contains(where: { $0.url == url }) {
+                workspace.tabs.append(.init(url: url, title: title))
+                try await self.workspaces.save(workspace)
+            }
+            self.setFocus(workspace.id, .tab, url: url)
+            changed(workspace)
+            return .object(["note": .string(note.id), "title": .string(title)])
         }
         register("workspace.openTab") { [unowned self] params, context in
             var workspace = try await self.workspaces.get(try target(params, context))
@@ -210,6 +288,7 @@ extension Runtime {
                 workspace.tabs.append(.init(url: url, title: params.optionalString("title") ?? url))
                 try await self.workspaces.save(workspace)
             }
+            self.setFocus(workspace.id, .tab, url: url)
             changed(workspace)
             return .object(["opened": .string(url), "tabs": .number(Double(workspace.tabs.count))])
         }
@@ -234,6 +313,7 @@ extension Runtime {
         }
         register("workspace.run") { [unowned self] params, context in
             let workspace = try await self.ensureTerminal(try await self.workspaces.get(try target(params, context)))
+            self.setFocus(workspace.id, .terminal)
             let terminalID = workspace.terminalID!
             guard let handle = try await self.terminals.currentHandle(terminalID, agentID: workspace.agentID) else {
                 try? await self.terminals.requestLease(terminalID, agentID: workspace.agentID)
@@ -248,7 +328,9 @@ extension Runtime {
         }
         register("workspace.files") { [unowned self] params, context in
             let workspace = try await self.workspaces.get(try target(params, context))
-            let url = URL(fileURLWithPath: workspace.directory)
+            let root = URL(fileURLWithPath: workspace.directory).standardizedFileURL
+            let url = root.appendingPathComponent(params.optionalString("path") ?? "").standardizedFileURL
+            guard url.path == root.path || url.path.hasPrefix(root.path + "/") else { throw BridgeError(.notAuthorized, WorkspaceError.outsideWorkspace.description) }
             let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey]
             let entries = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])) ?? []
             return .array(entries.prefix(300).map { entry in
@@ -282,35 +364,59 @@ extension Runtime {
         return updated
     }
 
-    func createWorkspace(name: String, directory: String?, provider: CLIProvider, parentID: String?, task: String?) async throws -> Workspace {
+    func removeWorkspace(_ workspace: Workspace) async throws {
+        if let terminal = workspace.terminalID { try? await terminals.close(terminal) }
+        try await workspaces.remove(workspace.id)
+        broadcast("workspace.deleted", .object(["id": .string(workspace.id), "parentId": workspace.parentID.map(JSONValue.string) ?? .null]))
+    }
+
+    /// A temporary helper agent inside `parent`: same directory, own chat;
+    /// its terminal is created the first time it runs a command.
+    func spawnAgent(parent: Workspace, name: String, task: String, provider: CLIProvider?, startTask: Bool = true) async throws -> Workspace {
+        guard parent.temporary != true else { throw BridgeError(.notAuthorized, "helper agents can't spawn more agents") }
+        let siblings = await workspaces.list().filter { $0.parentID == parent.id }
+        guard siblings.count < 8 else { throw BridgeError(.badRequest, "a workspace can run at most 8 helper agents; dismiss finished ones first") }
+        return try await createWorkspace(name: name, directory: nil, provider: provider ?? parent.provider, parentID: parent.id, task: task,
+                                         existingDirectory: URL(fileURLWithPath: parent.directory), temporary: true, startTask: startTask)
+    }
+
+    func createWorkspace(name: String, directory: String?, provider: CLIProvider, parentID: String?, task: String?,
+                         existingDirectory: URL? = nil, temporary: Bool = false, startTask: Bool = true) async throws -> Workspace {
         let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Workspace" : String(name.prefix(60))
         let folder: URL
-        do { folder = try WorkspaceService.resolveDirectory(name: cleanName, requested: directory) }
-        catch let error as WorkspaceError { throw BridgeError(.badRequest, error.description) }
+        if let existingDirectory { folder = existingDirectory }
+        else {
+            do { folder = try WorkspaceService.resolveDirectory(name: cleanName, requested: directory) }
+            catch let error as WorkspaceError { throw BridgeError(.badRequest, error.description) }
+        }
 
         var tokenBytes = [UInt8](repeating: 0, count: 32)
         _ = SecRandomCopyBytes(kSecRandomDefault, 32, &tokenBytes)
         var workspace = Workspace(
             id: UUID().uuidString, name: cleanName, directory: folder.path, hue: Int.random(in: 0..<360), provider: provider,
             terminalID: nil, conversationID: nil, tabs: [], bookmarks: [], createdAt: Date().timeIntervalSince1970 * 1000,
-            parentID: parentID, token: tokenBytes.map { String(format: "%02x", $0) }.joined()
+            parentID: parentID, temporary: temporary ? true : nil, task: task, token: tokenBytes.map { String(format: "%02x", $0) }.joined()
         )
 
         // Terminal in the workspace directory, keyboard leased to the agent.
         // Creating the workspace is the user's handoff; typing takes it back.
-        let terminal = try await terminals.create(cwd: folder.path)
-        workspace.terminalID = terminal.id
-        try await terminals.requestLease(terminal.id, agentID: workspace.agentID)
-        _ = try await terminals.grantLease(terminal.id, agentID: workspace.agentID)
+        // Helper agents get theirs on first use (ensureTerminal).
+        if !temporary {
+            let terminal = try await terminals.create(cwd: folder.path)
+            workspace.terminalID = terminal.id
+            try await terminals.requestLease(terminal.id, agentID: workspace.agentID)
+            _ = try await terminals.grantLease(terminal.id, agentID: workspace.agentID)
+        }
 
         let conversation = try await conversations.create(provider: provider, model: nil, workingDirectory: folder.path, workspaceID: workspace.id,
-                                                          title: "✦ \(cleanName)")
+                                                          title: temporary ? cleanName : "✦ \(cleanName)")
         workspace.conversationID = conversation.id
+        focus.bind(conversation: conversation.id, to: workspace.id)
         try await workspaces.save(workspace)
         broadcast("workspace.created", workspace.publicView)
         recordActivity(.init(kind: .agent, title: "Workspace “\(cleanName)” created", detail: folder.path, project: folder.path,
                              metadata: ["workspace": workspace.id]))
-        if let task, !task.isEmpty { _ = try await conversations.send(conversation.id, text: task) }
+        if startTask, let task, !task.isEmpty { _ = try await conversations.send(conversation.id, text: task) }
         return workspace
     }
 }

@@ -9,7 +9,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
 
 const ALLOWED_PREFIXES = [
   "notes.", "chat.", "terminal.", "search.", "context.", "capture.", "audio.", "media.", "tools.",
-  "agents.", "integrations.", "mcp.grants.", "storage.", "background.", "capabilities.", "workspace.",
+  "agents.", "integrations.", "mcp.grants.", "storage.", "background.", "capabilities.", "workspace.", "agent.", "agents.", "fs.", "dictation.",
 ];
 const ALLOWED_METHODS = new Set(["quickAsk", "auth.approve", "auth.evaluate", "system.openApp", "host.hello"]);
 
@@ -105,13 +105,35 @@ export class LimaParent extends JSWindowActorParent {
         return lazy.LimaNotesBookmarks.trashNote(payload.noteId);
       case "restoreNote":
         return lazy.LimaNotesBookmarks.restoreNote(payload.noteId);
-      case "workspaceState": {
+      case "workspaceOf": {
+        // The workspace a terminal or chat tab belongs to (for its header).
         const { LimaWorkspaces } = ChromeUtils.importESModule("resource://lima/LimaWorkspaces.sys.mjs");
-        return LimaWorkspaces.browserState(payload.id);
+        const tab = this.browsingContext.top.embedderElement && this.browsingContext.topChromeWindow.gBrowser.getTabForBrowser(this.browsingContext.top.embedderElement);
+        return tab ? LimaWorkspaces.workspaceForTab(tab) : null;
       }
-      case "workspaceFocusTab": {
+      case "openChat": {
         const { LimaWorkspaces } = ChromeUtils.importESModule("resource://lima/LimaWorkspaces.sys.mjs");
-        return LimaWorkspaces.focusTab(payload.id, payload.url);
+        LimaWorkspaces.openChat(this.browsingContext.topChromeWindow, payload.id);
+        return null;
+      }
+      case "search": {
+        const { LimaSearchPanel } = ChromeUtils.importESModule("resource://lima/LimaSearchPanel.sys.mjs");
+        LimaSearchPanel.open(this.browsingContext.topChromeWindow, payload?.text ?? "");
+        return null;
+      }
+      case "create": {
+        const { LimaCreate } = ChromeUtils.importESModule("resource://lima/LimaSidebar.sys.mjs");
+        const win = this.browsingContext.topChromeWindow;
+        if (payload?.what === "workspace") LimaCreate.workspace(win);
+        else if (payload?.what === "note") LimaCreate.note(win);
+        else if (payload?.what === "terminal") LimaCreate.terminal(win);
+        return null;
+      }
+      case "dictate": {
+        const { LimaBridge } = ChromeUtils.importESModule("resource://lima/LimaBridge.sys.mjs");
+        const status = await LimaBridge.request("dictation.status");
+        if (status.phase === "recording") return LimaBridge.request("dictation.stop");
+        return LimaBridge.request("dictation.start", { target: payload?.noteId ?? null });
       }
       case "openTabs": {
         const win = this.browsingContext.topChromeWindow;

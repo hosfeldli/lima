@@ -1,118 +1,370 @@
-/* Lima workspace chrome. Registered as an author sheet for all documents,
- * so every rule is scoped to Lima-owned IDs. */
+/* Lima in Zen's chrome. Registered as an author sheet for all documents,
+ * so every rule is scoped to Lima-owned IDs or attributes. */
 
 @namespace html url("http://www.w3.org/1999/xhtml");
 
-#lima-rail {
-  --lima-prism: linear-gradient(160deg, #ff6b8b, #ffb86b 25%, #7cf2c8 50%, #6bb6ff 75%, #b98bff);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  padding: 6px 4px;
-  margin: 4px auto;
-  border-radius: 12px;
-  border: 1px solid color-mix(in srgb, currentColor 14%, transparent);
-  background: color-mix(in srgb, currentColor 4%, transparent);
+@property --lima-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
 }
 
-#lima-rail .lima-glyph {
-  width: 17px;
-  height: 17px;
+@keyframes lima-spin { to { --lima-angle: 360deg; } }
+@keyframes lima-sheen { from { background-position: 200% 0; } to { background-position: -100% 0; } }
+@keyframes lima-breathe { 50% { transform: scale(1.12); } }
+
+:root {
+  --lima-prism-stops: #ff6b8b, #ffb86b, #7cf2c8, #6bb6ff, #b98bff, #ff6b8b;
+  --lima-prism: linear-gradient(135deg, #ff6b8b, #ffb86b 28%, #7cf2c8 52%, #6bb6ff 76%, #b98bff);
+  --lima-star: url("resource://lima-ui/marks/star.svg");
+  --lima-panel: light-dark(rgb(250 250 252 / 0.97), rgb(30 31 37 / 0.97));
+  --lima-panel-raised: light-dark(rgb(0 0 0 / 0.045), rgb(255 255 255 / 0.06));
+  --lima-panel-selected: light-dark(rgb(91 124 255 / 0.12), rgb(138 166 255 / 0.16));
+  --lima-ink: light-dark(#171923, #eef0f6);
+  --lima-ink-2: light-dark(#5a6075, #a9afc2);
+  --lima-ink-3: light-dark(#8a90a3, #7d8397);
+  --lima-line: light-dark(rgb(23 25 35 / 0.1), rgb(255 255 255 / 0.09));
+  --lima-accent: light-dark(#4f6df5, #8aa6ff);
+}
+
+/* ── Where the agent is ─────────────────────────────────────────────── */
+
+/* A page or terminal the agent is working in: a moving prism ring plus a
+ * faint sheen, drawn over the tab's own background. */
+.tabbrowser-tab[lima-ai="here"] > .tab-stack > .tab-background {
+  position: relative;
+  box-shadow: 0 0 14px -4px rgb(120 160 255 / 0.65), 0 0 20px -8px rgb(255 120 160 / 0.5) !important;
+}
+.tabbrowser-tab[lima-ai="here"] > .tab-stack > .tab-background::before,
+.tabbrowser-tab[lima-ai="here"] > .tab-stack > .tab-background::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.tabbrowser-tab[lima-ai="here"] > .tab-stack > .tab-background::before {
+  padding: 1.5px;
+  background: conic-gradient(from var(--lima-angle), var(--lima-prism-stops));
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  animation: lima-spin 2.6s linear infinite;
+}
+.tabbrowser-tab[lima-ai="here"] > .tab-stack > .tab-background::after {
+  background: linear-gradient(100deg, transparent 30%, rgb(255 140 180 / 0.13) 42%, rgb(124 242 200 / 0.13) 50%, rgb(107 182 255 / 0.13) 58%, transparent 70%);
+  background-size: 250% 100%;
+  animation: lima-sheen 3.2s linear infinite;
+}
+
+/* The agent is writing in chat: the ✦ turns prismatic and rotates. */
+.tabbrowser-tab[lima-ai="thinking"] .tab-icon-stack::after {
+  content: "";
+  grid-area: 1 / 1;
+  align-self: center;
+  justify-self: center;
+  width: 16px;
+  height: 16px;
+  background: conic-gradient(from var(--lima-angle), var(--lima-prism-stops));
+  mask: var(--lima-star) center / contain no-repeat;
+  animation: lima-spin 1.4s linear infinite, lima-breathe 1.4s ease-in-out infinite;
+}
+.tabbrowser-tab[lima-ai="thinking"] .tab-icon-image { opacity: 0 !important; }
+
+/* Workspace folders: the folder glyph is a ✦ that opens Chat. */
+zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon {
+  display: grid !important;
+  place-items: center;
+  cursor: pointer;
+}
+zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon > svg { display: none !important; }
+zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon::after {
+  content: "";
+  width: 15px;
+  height: 15px;
+  background: var(--lima-prism);
+  mask: var(--lima-star) center / contain no-repeat;
+  transition: transform 160ms ease;
+}
+zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon:hover::after { transform: scale(1.15); }
+zen-folder[lima-workspace][lima-ai="thinking"] > .tab-group-label-container > .tab-group-folder-icon::after {
+  background: conic-gradient(from var(--lima-angle), var(--lima-prism-stops));
+  animation: lima-spin 1.4s linear infinite, lima-breathe 1.4s ease-in-out infinite;
+}
+zen-folder[lima-workspace][lima-ai="working"] > .tab-group-label-container > .tab-group-folder-icon::after {
+  background: conic-gradient(from var(--lima-angle), var(--lima-prism-stops));
+  animation: lima-spin 3.5s linear infinite;
+}
+zen-folder[lima-agent] > .tab-group-label-container > .tab-group-folder-icon::after { width: 12px; height: 12px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tabbrowser-tab[lima-ai] *,
+  .tabbrowser-tab[lima-ai] > .tab-stack > .tab-background::before,
+  .tabbrowser-tab[lima-ai] > .tab-stack > .tab-background::after,
+  .tabbrowser-tab[lima-ai] .tab-icon-stack::after,
+  zen-folder[lima-workspace] .tab-group-folder-icon::after,
+  #lima-dock *, #lima-search * { animation: none !important; transition: none !important; }
+}
+
+/* ── Dock: music, dictation, mic ────────────────────────────────────── */
+
+#lima-dock {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  margin: 6px 6px 2px;
+  font: 12px/1.3 -apple-system, sans-serif;
+}
+#lima-dock-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+#lima-dock .lima-glyph {
+  width: 15px;
+  height: 15px;
   background: currentColor;
   mask-size: contain;
   mask-repeat: no-repeat;
   mask-position: center;
-  opacity: 0.85;
+  flex: none;
+}
+#lima-dock button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 0;
 }
 
-#lima-rail .lima-rail-button[data-active] .lima-glyph { opacity: 1; }
-
-#lima-rail .lima-rail-button {
-  appearance: none;
+#lima-mic {
   width: 30px;
   height: 30px;
   display: grid;
   place-items: center;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: transparent;
-  color: inherit;
-  font: 600 13px/1 -apple-system, sans-serif;
-  cursor: default;
+  border-radius: 9px !important;
+  flex: none;
+  opacity: 0.8;
 }
+#lima-mic:hover { opacity: 1; background: color-mix(in srgb, currentColor 10%, transparent) !important; }
+#lima-mic[data-recording] { opacity: 1; color: #ff5d73 !important; background: rgb(255 93 115 / 0.14) !important; }
 
-#lima-rail .lima-rail-button:hover { background: color-mix(in srgb, currentColor 10%, transparent); }
-
-#lima-rail .lima-rail-button:focus-visible {
-  outline: 2px solid #6bb6ff;
-  outline-offset: 1px;
+#lima-music, #lima-dictation {
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+  background: color-mix(in srgb, currentColor 5%, transparent);
+  overflow: hidden;
 }
-
-#lima-rail .lima-rail-button[data-active] {
-  border-color: transparent;
-  background:
-    linear-gradient(var(--zen-colors-tertiary, #1d1f25), var(--zen-colors-tertiary, #1d1f25)) padding-box,
-    var(--lima-prism) border-box;
-  border: 1px solid transparent;
+#lima-music[hidden], #lima-dictation[hidden], #lima-music[data-covered] { display: none; }
+#lima-music { cursor: default; }
+.lima-music-row { display: flex; align-items: center; gap: 8px; padding: 5px 6px 5px 5px; }
+.lima-music-art {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px !important;
+  flex: none;
+  background-size: cover !important;
+  background-position: center !important;
 }
-
-#lima-new { position: relative; display: flex; justify-content: center; margin-top: 6px; }
-
-#lima-new-button {
-  appearance: none;
-  width: 38px;
-  height: 30px;
+.lima-music-art[data-empty] { background: var(--lima-prism) !important; opacity: 0.85; }
+.lima-music-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.lima-music-title, .lima-music-artist { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lima-music-title { font-weight: 600; }
+.lima-music-artist { font-size: 11px; opacity: 0.65; }
+.lima-music-btn {
+  width: 26px;
+  height: 26px;
   display: grid;
   place-items: center;
-  border-radius: 10px;
-  border: 1px solid transparent;
-  color: white;
-  background:
-    linear-gradient(135deg, #7c5cff, #4fa3ff) padding-box,
-    linear-gradient(110deg, #ff6b8b, #ffb86b, #7cf2c8, #6bb6ff, #b98bff) border-box;
-  box-shadow: 0 4px 14px rgb(90 110 255 / 0.35);
+  border-radius: 7px !important;
+  flex: none;
 }
+.lima-music-btn:hover { background: color-mix(in srgb, currentColor 12%, transparent) !important; }
+.lima-music-btn.big { width: 32px; height: 32px; }
+.lima-music-expanded { display: none; padding: 0 10px 8px; }
+#lima-music[data-open] .lima-music-expanded { display: block; }
+#lima-music[data-open] .lima-music-row > .lima-music-btn { display: none; }
+.lima-music-progress { height: 3px; border-radius: 2px; background: color-mix(in srgb, currentColor 14%, transparent); overflow: hidden; }
+.lima-music-progress > i { display: block; height: 100%; width: 0; background: var(--lima-prism); border-radius: 2px; }
+.lima-music-times { display: flex; justify-content: space-between; font-size: 10px; opacity: 0.6; margin-top: 3px; font-variant-numeric: tabular-nums; }
+.lima-music-transport { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 4px; }
+.lima-music-dj {
+  margin-left: 6px;
+  padding: 3px 8px !important;
+  border-radius: 999px !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.04em;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent) !important;
+}
+#lima-music[data-playing] .lima-music-art:not([data-empty]) { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.08), 0 2px 8px rgb(0 0 0 / 0.25); }
 
-#lima-new-button .lima-glyph { width: 16px; height: 16px; background: white; mask-size: contain; mask-repeat: no-repeat; mask-position: center; }
+#lima-dictation { display: flex; align-items: center; gap: 7px; padding: 5px 5px 5px 10px; }
+.lima-dict-dot { width: 8px; height: 8px; border-radius: 50%; background: #ff5d73; flex: none; box-shadow: 0 0 0 3px rgb(255 93 115 / 0.2); }
+#lima-dictation[data-phase="transcribing"] .lima-dict-dot { background: var(--lima-prism); animation: lima-breathe 1s ease-in-out infinite; box-shadow: none; }
+#lima-dictation[data-phase="failed"] .lima-dict-dot { background: #f0b45a; }
+#lima-dictation:not([data-phase="recording"]) .lima-dict-level { display: none; }
+.lima-dict-level { display: flex; align-items: center; gap: 2px; height: 16px; }
+.lima-dict-level > i { display: block; width: 3px; height: 16px; border-radius: 2px; background: currentColor; opacity: 0.8; transform: scaleY(0.15); transition: transform 90ms linear; }
+.lima-dict-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 
-#lima-new-menu {
-  position: absolute;
-  left: calc(100% + 8px);
-  bottom: 0;
-  z-index: 1000;
-  width: 260px;
-  padding: 6px;
+/* ── Lima Search (⌘T) ──────────────────────────────────────────────── */
+
+#lima-search-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 14vh;
+  background: rgb(0 0 0 / 0.12);
+}
+#lima-search-scrim[hidden] { display: none; }
+#lima-search {
+  width: min(700px, 86vw);
+  max-height: 66vh;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--zen-colors-tertiary, #1d1f25) 92%, transparent);
-  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
-  box-shadow: 0 18px 50px rgb(0 0 0 / 0.35);
+  border-radius: 18px;
+  background: var(--lima-panel);
+  color: var(--lima-ink);
+  font: 13px/1.35 -apple-system, BlinkMacSystemFont, sans-serif;
+  box-shadow: 0 22px 70px rgb(0 0 0 / 0.35), 0 2px 10px rgb(0 0 0 / 0.12);
+  position: relative;
+  padding-bottom: 2px;
 }
-
-#lima-new-menu[hidden] { display: none; }
-
-.lima-new-option {
-  appearance: none;
+/* The 4.x prism frame: a hairline gradient around the shell. */
+#lima-search::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(120deg, rgb(255 107 139 / 0.55), rgb(255 184 107 / 0.4), rgb(124 242 200 / 0.4), rgb(107 182 255 / 0.55), rgb(185 139 255 / 0.55));
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  pointer-events: none;
+}
+#lima-search-eyebrow {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 1.6px;
+  color: var(--lima-ink-3);
+  padding: 6px 0 0 18px;
+}
+#lima-search-field {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 10px;
+  height: 46px;
+  margin: 4px 8px 6px;
+  padding: 0 13px 0 9px;
+  border-radius: 14px;
+  background: var(--lima-panel-raised);
+  border: 1px solid var(--lima-line);
+}
+#lima-search-field:focus-within { border-color: color-mix(in srgb, var(--lima-accent) 55%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--lima-accent) 16%, transparent); }
+#lima-search-mark {
+  appearance: none;
+  width: 30px;
+  height: 30px;
+  flex: none;
   border: 0;
-  border-radius: 10px;
+  border-radius: 9px;
+  background: url("resource://lima-ui/marks/lima-mark.svg") center / 24px no-repeat;
+  cursor: pointer;
+  transition: transform 140ms ease, background-color 140ms ease;
+}
+#lima-search-mark:hover { transform: scale(1.08); background-color: var(--lima-panel-selected); }
+#lima-search-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
   background: transparent;
   color: inherit;
-  text-align: left;
-  font: 13px/1.3 -apple-system, sans-serif;
+  font: 500 17px/1.2 -apple-system, BlinkMacSystemFont, sans-serif;
 }
-
-.lima-new-option:hover { background: color-mix(in srgb, currentColor 10%, transparent); }
-.lima-new-option .lima-glyph { width: 18px; height: 18px; background: currentColor; mask-size: contain; mask-repeat: no-repeat; flex: none; }
-.lima-new-option strong { display: block; font-weight: 600; }
-.lima-new-option small { display: block; opacity: 0.65; }
-
-@media (prefers-reduced-motion: reduce) {
-  #lima-rail * { transition: none !important; animation: none !important; }
+#lima-search-input::placeholder { color: var(--lima-ink-3); }
+#lima-search kbd {
+  font: 600 10px/1 ui-rounded, -apple-system, sans-serif;
+  color: var(--lima-ink-2);
+  padding: 4px 7px;
+  border-radius: 6px;
+  background: var(--lima-panel-raised);
+  border: 1px solid var(--lima-line);
 }
+#lima-search-spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--lima-line);
+  border-top-color: var(--lima-accent);
+  animation: lima-spin-rot 0.8s linear infinite;
+}
+#lima-search-spinner[hidden] { display: none; }
+@keyframes lima-spin-rot { to { transform: rotate(360deg); } }
+#lima-search-results { overflow-y: auto; padding: 0 8px 6px; min-height: 0; }
+.lima-s-group {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--lima-ink-3);
+  padding: 9px 11px 4px;
+  letter-spacing: 0.02em;
+}
+.lima-s-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 44px;
+  padding: 0 11px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+}
+.lima-s-row[aria-selected="true"] { background: var(--lima-panel-selected); border-color: color-mix(in srgb, var(--lima-accent) 35%, transparent); }
+.lima-s-row[aria-selected="true"]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--lima-accent);
+}
+.lima-s-icon {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  border-radius: 8px;
+  background: var(--lima-panel-raised);
+  border: 1px solid var(--lima-line);
+  color: var(--lima-ink-2);
+}
+.lima-s-row[aria-selected="true"] .lima-s-icon { color: var(--lima-accent); }
+.lima-s-glyph { width: 15px; height: 15px; background: currentColor; mask-size: contain; mask-repeat: no-repeat; mask-position: center; }
+.lima-s-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.lima-s-title { font-size: 13.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lima-s-row[aria-selected="true"] .lima-s-title { font-weight: 600; }
+.lima-s-sub { font-size: 11.25px; color: var(--lima-ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lima-s-action {
+  flex: none;
+  font: 700 10.25px/1 ui-rounded, -apple-system, sans-serif;
+  color: white;
+  background: var(--lima-accent);
+  padding: 5px 9px;
+  border-radius: 6px;
+}
+.lima-s-empty { padding: 22px 12px; text-align: center; color: var(--lima-ink-3); }
+#lima-search-footer {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--lima-line);
+  font-size: 11px;
+  color: var(--lima-ink-2);
+}
+.lima-s-hint { display: inline-flex; align-items: center; gap: 6px; }
+.lima-s-flex { flex: 1; }
+
+/* Lima menu items in Zen's menus use the shared icon set. */
+.lima-menuitem > .menu-icon { -moz-context-properties: fill, stroke; }

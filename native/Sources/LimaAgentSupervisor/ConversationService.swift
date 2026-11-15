@@ -121,6 +121,13 @@ public actor ConversationService {
 
     /// Changing provider or model never breaks the conversation: the next
     /// turn starts a fresh CLI session with the transcript as context.
+    public func rename(_ id: String, title: String) async throws -> Conversation {
+        var conversation = try get(id)
+        conversation.title = title
+        try await save(conversation)
+        return conversation
+    }
+
     public func configure(_ id: String, provider: CLIProvider, model: String?) async throws -> Conversation {
         var conversation = try get(id)
         if conversation.provider != provider || conversation.model != model { conversation.cliSessionID = nil }

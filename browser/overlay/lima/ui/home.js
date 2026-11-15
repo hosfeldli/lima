@@ -1,77 +1,11 @@
-/* Home dashboard, Activity timeline and the universal Run page — all
- * projections of the capability manifest. */
+/* Activity timeline and the universal Run page — projections of the
+ * capability manifest. */
 import { bar, bridge, call, el, errorText, icon, onEvent, relativeTime, setPage } from "./lib.js";
 import { renderContext } from "./views.js";
 import { capabilities, empty, hueFor, onCapabilityRun, openPalette, resultView, runCapability, skeleton, tile, toast } from "./components.js";
 
 const page = (...children) => el("div", { class: "page narrow" }, ...children);
 const card = (title, ...children) => el("section", { class: "card" }, title ? el("h2", {}, ...[].concat(title)) : null, ...children);
-
-function greeting() {
-  const hour = new Date().getHours();
-  return hour < 5 ? "Working late" : hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
-}
-
-// MARK: Home — search, continue, act. Nothing decorative.
-
-export async function renderHome(app) {
-  setPage("Lima", "home", 225);
-  const playing = el("span");
-  const recents = el("div", { class: "continue" }, skeleton(2));
-  const actions = el("div", { class: "actions" });
-  app.replaceChildren(
-    bar("Home", playing),
-    page(
-      el("h2", { style: { font: "700 24px/1.2 var(--font-display)", margin: "8px 0 0", letterSpacing: "-.015em" }, text: `${greeting()}.` }),
-      el("button", { class: "home-search", onclick: () => openPalette() }, icon("search"), "Search notes, chats, workspaces — or run a command", el("kbd", { text: "⌘K" })),
-      el("div", { class: "section-title" }, "Continue"), recents,
-      el("div", { class: "section-title" }, "New"), actions));
-
-  // Typing anywhere on Home starts a search.
-  document.addEventListener("keydown", event => {
-    if (event.metaKey || event.ctrlKey || event.altKey || event.key.length !== 1 || /input|textarea/i.test(document.activeElement?.tagName ?? "")) return;
-    event.preventDefault();
-    openPalette(event.key);
-  });
-
-  const all = await capabilities();
-  actions.replaceChildren(...all.filter(c => c.surfaces.home).map(c => tile(c, cap => activate(cap))));
-
-  async function activate(capability) {
-    try {
-      if (capability.input?.required) { openPalette(capability.title); return; }
-      const result = await runCapability(capability.id, "");
-      if (result) bridge.openTab(`about:lima?run=${encodeURIComponent(capability.id)}`);
-    } catch (error) {
-      toast(errorText(error), "bad");
-    }
-  }
-
-  try {
-    const [workspaces, notes, chats, terminals] = await Promise.all([
-      call("workspace.list"), call("notes.list"), call("chat.list"), call("terminal.list")]);
-    const inWorkspace = new Set(workspaces.flatMap(w => [w.conversationID, w.terminalID]));
-    const items = [
-      ...workspaces.map(w => ({ icon: "workspace", label: `✦ ${w.name}`, when: w.createdAt, url: `about:lima?workspace=${w.id}` })),
-      ...notes.filter(n => !n.trashed).map(n => ({ icon: n.kind === "canvas" ? "canvas" : "note", label: n.title, when: n.modifiedAt, url: `about:lima?note=${n.id}` })),
-      ...chats.filter(c => !inWorkspace.has(c.id)).map(c => ({ icon: "chat", label: c.title, when: c.updatedAt, url: `about:lima?chat=${c.id}`, live: c.running })),
-      ...terminals.filter(t => t.state !== "exited" && !inWorkspace.has(t.id)).map(t => ({ icon: "terminal", label: t.cwd.replace(/^\/Users\/[^/]+/, "~"), when: Date.now(), url: `about:lima?terminal=${t.id}`, live: t.state === "running" })),
-    ].sort((a, b) => b.when - a.when).slice(0, 9);
-    recents.replaceChildren(...(items.length ? items.map(item => el("button", { onclick: () => bridge.openTab(item.url) },
-      item.live ? el("span", { class: "dot live", style: { color: "var(--warn)" } }) : icon(item.icon),
-      el("span", { class: "label", text: item.label }), el("span", { class: "when", text: relativeTime(item.when) })))
-      : [el("p", { class: "muted", text: "Nothing yet — start with a workspace or a note below." })]));
-  } catch (error) {
-    recents.replaceChildren(el("p", { class: "error", text: errorText(error) }));
-  }
-
-  const drawPlaying = item => playing.replaceChildren(item?.title && item.state === "Playing"
-    ? el("button", { class: "ghost", title: "Play / pause", onclick: () => runCapability("media.playpause").catch(e => toast(errorText(e), "bad")) },
-        icon("audio"), el("span", { text: `${item.title} — ${item.artist}`, style: { maxWidth: "260px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }))
-    : "");
-  call("media.nowPlaying").then(drawPlaying).catch(() => {});
-  onEvent(m => { if (m.event === "media.nowPlaying") drawPlaying(m.data); });
-}
 
 // MARK: Activity timeline (every capability run, every surface)
 

@@ -78,6 +78,8 @@ H1–H3 and H5 hold in the native suite (64 tests). H4 was checked by screenshot
 workspace dashboard, notes, chat and terminal after the refactor.
 
 ## AI workspaces
+> Superseded by `sidebar-workspaces.md`: the dashboard, Workspaces index, Home and rail described below were removed.
+
 A workspace binds four things and keeps them visible:
 
 | Part | Where it lives | Shown as |

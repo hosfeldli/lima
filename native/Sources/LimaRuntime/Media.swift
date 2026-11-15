@@ -116,6 +116,10 @@ struct NowPlaying: Codable, Sendable {
     var state: String
     var durationMs: Double?
     var updatedAt: Double
+    /// Spotify artwork (https); Music has none to share by URL.
+    var artworkURL: String?
+    /// Playback position when the notification fired (or when queried).
+    var positionMs: Double?
 }
 
 /// Spotify and Music post track metadata as distributed notifications; no
@@ -144,9 +148,12 @@ final class NowPlayingMonitor: @unchecked Sendable {
             album: info["Album"] as? String ?? "",
             state: info["Player State"] as? String ?? "",
             durationMs: ((info["Duration"] as? NSNumber)?.doubleValue ?? (info["Total Time"] as? NSNumber)?.doubleValue).map { $0 * durationScale },
-            updatedAt: Date().timeIntervalSince1970 * 1000
+            updatedAt: Date().timeIntervalSince1970 * 1000,
+            artworkURL: current?.player == player && current?.title == (info["Name"] as? String ?? "") ? current?.artworkURL : nil,
+            positionMs: (info["Playback Position"] as? NSNumber).map { $0.doubleValue * 1000 }
         )
         current = item
+        if player == "Spotify", item.artworkURL == nil, !item.title.isEmpty { fetchArtwork(for: item) }
         let key = "\(player)|\(item.title)|\(item.artist)"
         let isNewTrack = item.state == "Playing" && !item.title.isEmpty && key != lastRecordedKey
         if isNewTrack { lastRecordedKey = key }
@@ -154,7 +161,54 @@ final class NowPlayingMonitor: @unchecked Sendable {
     }
 }
 
+extension NowPlayingMonitor {
+    /// Spotify exposes the cover as a URL through AppleScript (the same
+    /// Automation permission its playback controls use).
+    func fetchArtwork(for item: NowPlaying) {
+        DispatchQueue.global().async { [weak self] in
+            guard let url = MediaControl.query("Spotify", "artwork url of current track"), url.hasPrefix("https://") else { return }
+            DispatchQueue.main.async {
+                guard let self, var current = self.current, current.title == item.title, current.player == item.player else { return }
+                current.artworkURL = url
+                self.replace(current)
+            }
+        }
+    }
+
+    func replace(_ item: NowPlaying) {
+        current = item
+        onChange(item, false)
+    }
+
+    /// Current state with a fresh playback position.
+    func refreshed() -> NowPlaying? {
+        guard var item = current else { return nil }
+        if let seconds = MediaControl.query(item.player, "player position").flatMap(Double.init) {
+            item.positionMs = seconds * 1000
+            item.updatedAt = Date().timeIntervalSince1970 * 1000
+        }
+        return item
+    }
+}
+
 enum MediaControl {
+    /// One AppleScript property read from a running player (nil if it's not running).
+    static func query(_ player: String, _ expression: String) -> String? {
+        let bundle = player == "Spotify" ? "com.spotify.client" : "com.apple.Music"
+        guard NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == bundle }) else { return nil }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", "tell application \"\(player)\" to \(expression)"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return nil }
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        let text = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text.replacingOccurrences(of: ",", with: ".")
+    }
+
     static func send(_ command: String) throws {
         let running = NSWorkspace.shared.runningApplications
         let target = running.contains { $0.bundleIdentifier == "com.spotify.client" } ? "Spotify" : "Music"
@@ -264,7 +318,7 @@ extension Runtime {
             return .number(Double(AudioDevices.volume() ?? 0))
         }
         register("media.nowPlaying") { [unowned self] _, _ in
-            (try? JSONValue.from(self.activity?.nowPlaying.current)) ?? .null
+            (try? JSONValue.from(self.activity?.nowPlaying.refreshed())) ?? .null
         }
         register("media.control") { params, _ in
             let action = try params.string("action")

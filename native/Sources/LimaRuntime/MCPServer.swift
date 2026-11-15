@@ -172,8 +172,26 @@ extension MCPServer {
             }
             return result
         },
-        Tool(name: "workspace_files", description: "List files in this workspace's directory.", properties: [:], required: []) { _, client in
-            try client.call("workspace.files")
+        Tool(name: "workspace_files", description: "List files in this workspace's directory (or a sub-folder via path).", properties: ["path": ["type": "string"]], required: []) { args, client in
+            try client.call("workspace.files", params: .object(["path": args?["path"] ?? .string("")]))
+        },
+        Tool(name: "workspace_list_tabs", description: "The web pages currently in this workspace's Tabs folder in Zen, including ones the user added.", properties: [:], required: []) { _, client in
+            try client.call("workspace.listTabs")
+        },
+        Tool(name: "workspace_read_tab", description: "Read the text of a page in this workspace's Tabs folder (opens it there first if needed). The user sees which tab you are reading.",
+             properties: ["url": ["type": "string"]], required: ["url"]) { args, client in
+            try client.call("workspace.readTab", params: .object(["url": args?["url"] ?? .null]))
+        },
+        Tool(name: "workspace_note", description: "Write a note (Markdown) — summaries, findings, plans. It appears in this workspace's folder and the user's Notebook.",
+             properties: ["title": ["type": "string"], "markdown": ["type": "string"]], required: ["title", "markdown"]) { args, client in
+            try client.call("workspace.note", params: .object(["title": args?["title"] ?? .null, "markdown": args?["markdown"] ?? .null]))
+        },
+        Tool(name: "agent_spawn", description: "Spawn a helper agent for a parallel subtask. It gets its own chat (visible under Agents in this workspace), works in the same directory, and can open its own tabs and terminal.",
+             properties: ["name": ["type": "string", "description": "short name, e.g. pricing-scout"], "task": ["type": "string", "description": "what it should do and report back"]], required: ["name", "task"]) { args, client in
+            try client.call("agent.spawn", params: .object(["name": args?["name"] ?? .null, "task": args?["task"] ?? .null]))
+        },
+        Tool(name: "agents_status", description: "What each helper agent you spawned is doing: state, current surface, recent tools and its latest reply.", properties: [:], required: []) { _, client in
+            try client.call("agents.status")
         },
         Tool(name: "workspace_new", description: "Create a new AI workspace (its own folder, terminal, agent and tab folder) when the user asks for one.",
              properties: ["name": ["type": "string"], "task": ["type": "string", "description": "first instruction for the new workspace's agent"]], required: ["name"]) { args, client in

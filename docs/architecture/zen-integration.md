@@ -11,7 +11,8 @@ Essentials/pinning, split view, Glance, session restore, history and bookmarks a
 | `about:lima?chat=<id>` / `?chat=new&prompt=` | An AI conversation |
 | `about:lima?ask=<prompt>` | Quick Ask (no tools, no page access) |
 | `about:lima?tool=<id>&input=` | A built-in command's result |
-| `about:lima?view=agents|context|studio|audio|integrations` | Other surfaces |
+| `about:lima?view=context|studio|audio|integrations` | Other surfaces |
+| `about:lima?workspace=<id>` | Redirects to the workspace's Chat (pre-sidebar links) |
 
 ## Notes are bookmarks
 `LimaNotesBookmarks.sys.mjs` keeps every note as a bookmark to `about:lima?note=<id>`. The bookmark tree is
@@ -35,9 +36,10 @@ unless that row is chosen.
 - UI sources are ES modules bundled into one classic script at build time (`scripts/bundle_ui.py`),
   because module scripts cannot load cross-origin into an `about:` document.
 
-## Rail
-The bottom-anchored rail in Zen's sidebar opens or focuses the corresponding `about:lima` tab (⌘-click opens
-in the background) and highlights the active surface.
+## Sidebar (no rail, no dashboards)
+See `sidebar-workspaces.md`. Workspaces, helper agents and the Notebook are Zen folders; creation is in
+Zen's bottom ＋ and the sidebar's right-click menus; ⌘T opens Lima Search; the dock above Zen's footer holds
+the now-playing pill, the dictation pill and the mic. `about:lima` with no parameters only points at these.
 
 ## Testing
 `LIMA_DEV_OPEN_URL=about:lima?… build/Lima.app/Contents/MacOS/lima -profile <dir> -no-remote` opens a Lima

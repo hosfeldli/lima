@@ -180,12 +180,9 @@ public final class CapabilityRegistry: @unchecked Sendable {
         let q: @Sendable (String) -> String = { $0.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? $0 }
 
         // Navigate: every Lima surface (rail order is bottom-up by rank)
-        add("open.home", "Lima Home", "Search, continue where you left off, quick actions", category: "navigate", icon: "home", keywords: ["dashboard", "start"], rail: true, rank: -1, handler: open("about:lima"))
-        add("open.workspaces", "Workspaces", "AI workspaces: folder, terminal, agent and tabs", category: "navigate", icon: "workspace", keywords: ["projects", "agents"], rail: true, rank: 0, handler: open("about:lima?view=workspaces"))
-        add("open.notes", "Notes", "All notes, organized by your bookmark folders", category: "navigate", icon: "note", keywords: ["notebook"], rail: true, rank: 1, handler: open("about:lima?view=notes"))
-        add("open.chat", "AI Chat", "Conversations with Claude, Codex and OpenCode", category: "navigate", icon: "chat", keywords: ["assistant"], rail: true, rank: 2, handler: open("about:lima?view=chat"))
-        add("open.terminal", "Terminal", "A shell that keeps running when tabs close", category: "navigate", icon: "terminal", keywords: ["shell", "zsh"], rail: true, rank: 3, handler: open("about:lima?view=terminal"))
-        add("open.agents", "Agents", "Installed CLIs and workspaces", category: "navigate", icon: "agents", rank: 4, handler: open("about:lima?view=workspaces"))
+        add("open.notes", "Notes", "All notes, organized by your bookmark folders", category: "navigate", icon: "note", keywords: ["notebook"], rank: 1, handler: open("about:lima?view=notes"))
+        add("open.chat", "AI Chat", "Conversations with Claude, Codex and OpenCode", category: "navigate", icon: "chat", keywords: ["assistant"], rank: 2, handler: open("about:lima?view=chat"))
+        add("open.terminal", "Terminal", "A shell that keeps running when tabs close", category: "navigate", icon: "terminal", keywords: ["shell", "zsh"], rank: 3, handler: open("about:lima?view=terminal"))
         add("open.activity", "Activity & Reports", "Commands Lima ran, activity history and weekly reports", category: "navigate", icon: "activity", keywords: ["history", "log", "timeline"], rank: 5, handler: open("about:lima?view=activity&tab=commands"))
         add("open.context", "Weekly Reports", "Friday summaries of your week", category: "navigate", icon: "context", keywords: ["week", "reports", "context shelf"], rank: 6, handler: open("about:lima?view=activity&tab=reports"))
         add("open.studio", "Screenshot Studio", "Capture, annotate and read text", category: "navigate", icon: "studio", rank: 7, handler: open("about:lima?view=studio"))
@@ -193,7 +190,7 @@ public final class CapabilityRegistry: @unchecked Sendable {
         add("open.integrations", "Integrations & Settings", "Services, MCP grants, storage", category: "navigate", icon: "integrations", keywords: ["settings", "preferences"], rank: 9, handler: open("about:lima?view=integrations"))
 
         // Create
-        add("note.new", "New Note", "Create a note (it becomes a bookmark)", category: "create", icon: "note", keywords: ["write", "create"],
+        add("note.new", "New Note", "A page in your Notebook", category: "create", icon: "note", keywords: ["write", "create"],
             input: ("Title", false), home: true, risk: .localUtility, mcp: "notes:write", rank: 10) { input, runtime, _ in
             let note = try await runtime.notes.create(title: input, kind: .classic)
             return CapabilityResult.open("about:lima?note=\(note.id)")

@@ -6,8 +6,8 @@ ChromeUtils.defineESModuleGetters(lazy, {
   LimaWindow: "resource://lima/LimaWindow.sys.mjs",
   LimaNotesBookmarks: "resource://lima/LimaNotesBookmarks.sys.mjs",
   LimaUrlbar: "resource://lima/LimaUrlbar.sys.mjs",
+  LimaNotebook: "resource://lima/LimaNotebook.sys.mjs",
   LimaWorkspaces: "resource://lima/LimaWorkspaces.sys.mjs",
-  registerZenActions: "resource://lima/LimaWorkspaces.sys.mjs",
 });
 
 let initialized = false;
@@ -83,7 +83,7 @@ export const LimaStartup = {
         log(`runtime ${hello.hostVersion} pid ${hello.pid}`);
         await lazy.LimaNotesBookmarks.start();
         lazy.LimaWorkspaces.start();
-        lazy.registerZenActions();
+        lazy.LimaNotebook.start();
       } catch (error) {
         log(`runtime unavailable: ${error.message ?? error}`);
       }

@@ -59,9 +59,14 @@ export const CATEGORY_HUES = { create: 222, navigate: 225, system: 170, media: 3
 
 export function setPage(title, iconName = "lima", hue) {
   document.title = title;
-  currentIcon = ICONS[iconName] ? iconName : "lima";
+  if (String(iconName).startsWith("resource://")) {
+    document.getElementById("favicon").href = iconName;
+    currentIcon = "star";
+  } else {
+    currentIcon = ICONS[iconName] ? iconName : "lima";
+    document.getElementById("favicon").href = `resource://lima-ui/icons/${currentIcon}.svg`;
+  }
   if (hue !== undefined) currentHue = hue;
-  document.getElementById("favicon").href = `resource://lima-ui/icons/${currentIcon}.svg`;
   for (const node of document.querySelectorAll(".bar .title-icon")) node.replaceChildren(icon(currentIcon));
 }
 
@@ -177,7 +182,7 @@ function inline(node, text, attachments) {
     if (match[1]) {
       const src = match[3];
       if (src.startsWith("lima-attachment:")) {
-        const img = el("img", { alt: match[2] });
+        const img = el("img", { alt: match[2], "data-src": src });
         attachments?.(src.slice("lima-attachment:".length)).then(url => { img.src = url; }).catch(() => {});
         node.append(img);
       } else if (src.startsWith("data:image/")) {

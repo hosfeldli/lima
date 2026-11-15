@@ -1,5 +1,5 @@
 /* Notes: index (organized by the bookmark tree), classic editor and canvas. */
-import { bar, bridge, call, debounce, el, errorText, markdown, onEvent, relativeTime, setPage } from "./lib.js";
+import { bar, bridge, call, debounce, el, errorText, icon, markdown, onEvent, relativeTime, setPage } from "./lib.js";
 
 const attachmentCache = new Map();
 function attachmentURL(id) {
@@ -117,86 +117,237 @@ function trashedNotice(note, rerender) {
     el("button", { onclick: async () => { await bridge.browser("restoreNote", { noteId: note.id }); rerender(); } }, "Restore"));
 }
 
+// MARK: Page (OneNote-style): title, date, and a WYSIWYG body that
+// round-trips to the encrypted Markdown store.
+
+export function toMarkdown(root) {
+  const out = [];
+  const inline = node => {
+    let text = "";
+    for (const child of node.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) { text += child.textContent.replace(/\u00a0/g, " ").replace(/\u200b/g, ""); continue; }
+      if (child.nodeType !== Node.ELEMENT_NODE) continue;
+      const tag = child.localName;
+      if (tag === "ul" || tag === "ol" || (tag === "input" && child.type === "checkbox")) continue;
+      const inner = inline(child);
+      if (tag === "br") text += "\n";
+      else if (tag === "strong" || tag === "b") text += inner.trim() ? `**${inner}**` : inner;
+      else if (tag === "em" || tag === "i") text += inner.trim() ? `*${inner}*` : inner;
+      else if (tag === "code") text += `\`${child.textContent}\``;
+      else if (tag === "s" || tag === "del" || tag === "strike") text += `~~${inner}~~`;
+      else if (tag === "a") text += `[${inner}](${child.getAttribute("href")})`;
+      else if (tag === "img") text += `![${child.alt ?? ""}](${child.dataset.src ?? child.getAttribute("src") ?? ""})`;
+      else text += inner;
+    }
+    return text;
+  };
+  const list = (node, depth) => {
+    let n = 1;
+    for (const li of node.children) {
+      if (li.localName === "ul" || li.localName === "ol") { list(li, depth + 1); continue; }
+      if (li.localName !== "li") continue;
+      const box = li.querySelector(":scope > input[type=checkbox]");
+      if (!inline(li).replace(/\u200b/g, "").trim() && !li.querySelector("ul, ol")) continue; // empty rows aren't saved
+      const marker = node.localName === "ol" ? `${n++}.` : "-";
+      out.push(`${"  ".repeat(depth)}${marker} ${box ? `[${box.checked ? "x" : " "}] ` : ""}${inline(li).trim()}`);
+      for (const nested of li.querySelectorAll(":scope > ul, :scope > ol")) list(nested, depth + 1);
+    }
+  };
+  const block = node => {
+    if (node.nodeType === Node.TEXT_NODE) { if (node.textContent.trim()) out.push(node.textContent.trim(), ""); return; }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const tag = node.localName;
+    if (/^h[1-6]$/.test(tag)) out.push(`${"#".repeat(Number(tag[1]))} ${inline(node).trim()}`, "");
+    else if (tag === "ul" || tag === "ol") { list(node, 0); out.push(""); }
+    else if (tag === "pre") out.push("```", node.textContent.replace(/\n$/, ""), "```", "");
+    else if (tag === "blockquote") out.push(...inline(node).trim().split("\n").map(l => `> ${l}`), "");
+    else if (tag === "hr") out.push("---", "");
+    else if (tag === "table") {
+      const rows = [...node.querySelectorAll("tr")].map(tr => [...tr.children].map(c => inline(c).trim().replace(/\|/g, "\\|")));
+      if (rows.length) {
+        out.push(`| ${rows[0].join(" | ")} |`, `|${rows[0].map(() => " --- ").join("|")}|`, ...rows.slice(1).map(r => `| ${r.join(" | ")} |`), "");
+      }
+    } else if (tag === "div" && node.classList.contains("md")) { for (const child of node.childNodes) block(child); }
+    else {
+      const text = inline(node);
+      if (text.trim()) out.push(text.trim(), "");
+      else if (out.length && out.at(-1) !== "") out.push("");
+    }
+  };
+  for (const child of root.childNodes) block(child);
+  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
+}
+
+const dateLine = ms => new Date(ms).toLocaleString([], { weekday: "long", month: "long", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+
 async function renderClassic(app, note) {
   let dirty = false;
-  let preview = false;
-  const status = el("span", { class: "muted", text: "Saved" });
-  const title = el("input", { class: "note-title", value: note.title, "aria-label": "Title" });
-  const editor = el("textarea", { class: "note-editor", spellcheck: "true", "aria-label": "Note" });
-  editor.value = note.markdown;
-  const previewPane = el("div", { class: "note-preview", hidden: true });
-  const body = el("div", { class: "note-body" }, editor, previewPane);
-  const undoButton = el("button", { class: "ghost", title: "Undo (⌘Z)", onclick: () => history("notes.undo") }, "Undo");
-  const redoButton = el("button", { class: "ghost", title: "Redo (⇧⌘Z)", onclick: () => history("notes.redo") }, "Redo");
-  const previewButton = el("button", { onclick: () => { preview = !preview; renderPreview(); } }, "Preview");
+  const status = el("span", { class: "page-status", text: "" });
+  const title = el("input", { class: "page-title", value: note.title === "Untitled" ? "" : note.title, placeholder: "Untitled", "aria-label": "Title" });
+  const body = el("div", { class: "page-body", contenteditable: "true", spellcheck: "true", "aria-label": "Page", "data-placeholder": "Start writing…" });
+  const tool = (iconOrText, label, fn) => el("button", { class: "fmt", title: label, "aria-label": label,
+    onmousedown: e => { e.preventDefault(); fn(); body.dispatchEvent(new Event("input")); } },
+    typeof iconOrText === "string" && iconOrText.length < 3 ? el("span", { text: iconOrText }) : iconOrText);
+  const exec = (command, value) => () => document.execCommand(command, false, value);
+  const toolbar = el("div", { class: "page-tools", role: "toolbar" },
+    tool("H1", "Heading", exec("formatBlock", "h1")), tool("H2", "Subheading", exec("formatBlock", "h2")), tool("¶", "Text", exec("formatBlock", "p")),
+    el("i", { class: "sep" }),
+    tool("B", "Bold (⌘B)", exec("bold")), tool("I", "Italic (⌘I)", exec("italic")), tool("S", "Strikethrough", exec("strikeThrough")),
+    tool("{}", "Code", () => wrapCode()),
+    el("i", { class: "sep" }),
+    tool("•", "Bulleted list", exec("insertUnorderedList")), tool("1.", "Numbered list", exec("insertOrderedList")), tool("☐", "To-do", () => insertTodo()),
+    el("i", { class: "sep" }),
+    tool(icon("mic"), "Dictate (⌃⌥D)", () => bridge.browser("dictate", { noteId: note.id })),
+    el("span", { class: "spacer" }), status,
+    tool(icon("undo"), "Undo (⌘Z)", () => history("notes.undo")), tool(icon("redo"), "Redo (⇧⌘Z)", () => history("notes.redo")));
 
   setPage(note.title || "Untitled", "note");
-  app.replaceChildren(
-    bar("", status, undoButton, redoButton, previewButton,
-      el("button", { class: "ghost", onclick: () => bridge.openTab("about:lima?view=notes") }, "All notes")),
+  app.replaceChildren(el("div", { class: "page-wrap" },
     trashedNotice(note, () => renderNote(app, note.id)) ?? "",
-    el("div", { class: "note-layout" }, title, body)
-  );
+    toolbar,
+    el("article", { class: "page-sheet" }, title, el("div", { class: "page-date", text: dateLine(note.createdAt) }), body)));
+  document.execCommand("defaultParagraphSeparator", false, "p");
 
-  function renderPreview() {
-    previewPane.hidden = !preview;
-    previewButton.textContent = preview ? "Hide preview" : "Preview";
-    if (preview) previewPane.replaceChildren(markdown(editor.value, { onTaskToggle: toggleTask, attachments: attachmentURL }));
+  function paint() {
+    const rendered = markdown(note.markdown, { onTaskToggle: () => { dirty = true; save(); }, attachments: attachmentURL });
+    for (const box of rendered.querySelectorAll("input[type=checkbox]")) box.disabled = false;
+    body.replaceChildren(...rendered.childNodes);
+    body.classList.toggle("empty", !note.markdown.trim());
   }
 
-  function toggleTask(line, checked) {
-    const lines = editor.value.split("\n");
-    lines[line] = lines[line].replace(/\[( |x|X)\]/, checked ? "[x]" : "[ ]");
-    editor.value = lines.join("\n");
-    dirty = true;
-    save.flush();
+  function wrapCode() {
+    const selection = getSelection();
+    if (!selection.rangeCount || selection.isCollapsed) return;
+    const range = selection.getRangeAt(0);
+    const code = document.createElement("code");
+    code.textContent = range.toString();
+    range.deleteContents();
+    range.insertNode(code);
   }
+
+  function insertTodo() {
+    const selection0 = getSelection();
+    const current = selection0.anchorNode && (selection0.anchorNode.nodeType === 1 ? selection0.anchorNode : selection0.anchorNode.parentElement)?.closest("li");
+    if (current && body.contains(current)) {
+      // Already in a list: turn this item into a to-do.
+      current.classList.add("task");
+      if (!current.querySelector(":scope > input[type=checkbox]")) current.prepend(el("input", { type: "checkbox" }));
+      return;
+    }
+    const li = el("li", { class: "task" }, el("input", { type: "checkbox" }), " ");
+    const ul = el("ul", {}, li);
+    const selection = getSelection();
+    const block = selection.anchorNode && (selection.anchorNode.nodeType === 1 ? selection.anchorNode : selection.anchorNode.parentElement)?.closest("p, h1, h2, h3, li, div.page-body > *");
+    if (block && block !== body && body.contains(block)) {
+      li.append(...[...block.childNodes]);
+      block.replaceWith(ul);
+    } else body.append(ul);
+    const range = document.createRange();
+    range.selectNodeContents(li);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  // Markdown shortcuts at the start of a line: "# ", "## ", "- ", "1. ", "[] ".
+  body.addEventListener("keydown", event => {
+    if (event.key !== " ") return;
+    const selection = getSelection();
+    const node = selection.anchorNode;
+    if (!node || node.nodeType !== Node.TEXT_NODE) return;
+    const block = node.parentElement.closest("p, div, li");
+    if (!block || !body.contains(block) || block.textContent !== node.textContent) return;
+    const before = node.textContent.slice(0, selection.anchorOffset);
+    const actions = { "#": () => exec("formatBlock", "h1")(), "##": () => exec("formatBlock", "h2")(), "###": () => exec("formatBlock", "h3")(),
+      "-": () => exec("insertUnorderedList")(), "*": () => exec("insertUnorderedList")(), "1.": () => exec("insertOrderedList")(), "[]": insertTodo, ">": () => exec("formatBlock", "blockquote")() };
+    if (!actions[before]) return;
+    event.preventDefault();
+    node.textContent = node.textContent.slice(before.length);
+    actions[before]();
+    body.dispatchEvent(new Event("input"));
+  });
+
+  body.addEventListener("click", event => {
+    if (event.target.matches("input[type=checkbox]")) { dirty = true; save(); }
+    const link = event.target.closest("a[href]");
+    if (link && (event.metaKey || !body.contains(document.activeElement))) { event.preventDefault(); bridge.openTab(link.href); }
+  });
 
   const save = debounce(async () => {
+    const markdownText = toMarkdown(body);
     const edits = [];
-    if (editor.value !== note.markdown) edits.push({ setMarkdown: { _0: editor.value } });
-    if (title.value !== note.title) edits.push({ setTitle: { _0: title.value || "Untitled" } });
-    if (!edits.length) { dirty = false; status.textContent = "Saved"; return; }
+    if (markdownText.trim() !== note.markdown.trim()) edits.push({ setMarkdown: { _0: markdownText } });
+    const nextTitle = title.value.trim() || "Untitled";
+    if (nextTitle !== note.title) edits.push({ setTitle: { _0: nextTitle } });
+    if (!edits.length) { dirty = false; status.textContent = ""; return; }
     status.textContent = "Saving…";
     try {
       note = await call("notes.apply", { id: note.id, edits, baseRevision: note.revision, author: "user" });
-      dirty = editor.value !== note.markdown || title.value !== note.title;
-      status.textContent = dirty ? "Saving…" : "Saved";
+      dirty = false;
+      status.textContent = "Saved";
       setPage(note.title, "note");
-      if (dirty) save();
     } catch (error) {
       if (/changed \(expected revision/.test(errorText(error))) {
-        // Someone else (an agent, MCP client, another tab) edited it.
+        // An agent or another tab edited it: keep both.
         const latest = await call("notes.get", { id: note.id });
-        status.textContent = "Updated elsewhere — your unsaved text is kept below";
+        const mine = markdownText;
         note = latest;
-        editor.value = `${latest.markdown}\n\n<!-- your unsaved edit -->\n${editor.value}`;
+        note.markdown = `${latest.markdown.trim()}\n\n${mine}`;
+        paint();
         dirty = true;
+        status.textContent = "Merged with an edit from elsewhere";
+        save();
       } else status.textContent = `Not saved: ${errorText(error)}`;
     }
-    if (preview) renderPreview();
   }, 450);
 
   async function history(method) {
     if (dirty) await save.flush();
     try {
       note = await call(method, { id: note.id, author: "user" });
-      editor.value = note.markdown;
-      title.value = note.title;
+      title.value = note.title === "Untitled" ? "" : note.title;
+      paint();
       status.textContent = method === "notes.undo" ? "Undone" : "Redone";
-      if (preview) renderPreview();
     } catch (error) {
       status.textContent = errorText(error);
     }
   }
 
-  editor.addEventListener("input", () => { dirty = true; status.textContent = "Editing…"; save(); });
+  body.addEventListener("input", () => {
+    // New to-do rows (Enter on a to-do) get their checkbox.
+    for (const li of body.querySelectorAll("li.task")) {
+      if (!li.querySelector(":scope > input[type=checkbox]")) li.prepend(el("input", { type: "checkbox" }));
+    }
+    autoInline();
+  });
+  // Typing **bold**, *italic*, `code` or ~~strike~~ formats it in place.
+  function autoInline() {
+    const selection = getSelection();
+    const node = selection.anchorNode;
+    if (!node || node.nodeType !== Node.TEXT_NODE || !body.contains(node)) return;
+    const text = node.textContent.slice(0, selection.anchorOffset);
+    const match = /(\*\*([^*]+)\*\*|~~([^~]+)~~|`([^`]+)`|(?<![*\w])\*([^*]+)\*)$/.exec(text);
+    if (!match) return;
+    const [whole, , bold, strike, code, italic] = match;
+    const tag = bold ? "strong" : strike ? "s" : code ? "code" : "em";
+    const start = selection.anchorOffset - whole.length;
+    const range = document.createRange();
+    range.setStart(node, start);
+    range.setEnd(node, selection.anchorOffset);
+    range.deleteContents();
+    const wrapped = el(tag, { text: bold ?? strike ?? code ?? italic });
+    range.insertNode(wrapped);
+    const after = document.createTextNode("\u200b");
+    wrapped.after(after);
+    selection.collapse(after, 1);
+  }
+  body.addEventListener("input", () => { dirty = true; body.classList.remove("empty"); status.textContent = ""; save(); });
   title.addEventListener("input", () => { dirty = true; save(); });
-  // Undo goes through the service's transaction history, never a view's
-  // own (possibly stale) editor state.
+  title.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); body.focus(); } });
+  // Undo goes through the service's transaction history (shared with agents).
   document.addEventListener("keydown", e => {
     if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "z") return;
-    if (document.activeElement !== editor && document.activeElement !== title) return;
+    if (!body.contains(document.activeElement) && document.activeElement !== body && document.activeElement !== title) return;
     e.preventDefault();
     history(e.shiftKey ? "notes.redo" : "notes.undo");
   });
@@ -205,13 +356,26 @@ async function renderClassic(app, note) {
   onEvent(message => {
     if (message.event === "notes.changed" && message.data.id === note.id && message.data.revision > note.revision && !dirty) {
       note = message.data;
-      if (editor.value !== note.markdown) editor.value = note.markdown;
-      if (title.value !== note.title) title.value = note.title;
+      if (document.activeElement !== title) title.value = note.title === "Untitled" ? "" : note.title;
       setPage(note.title, "note");
-      if (preview) renderPreview();
+      paint();
+    }
+    // Dictation started in this note lands at the cursor.
+    if (message.event === "dictation.result" && message.data.target === note.id && message.data.text) {
+      body.focus();
+      const selection = getSelection();
+      if (!selection.rangeCount || !body.contains(selection.anchorNode)) {
+        const range = document.createRange();
+        range.selectNodeContents(body);
+        range.collapse(false);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      document.execCommand("insertText", false, (body.textContent.trim() ? " " : "") + message.data.text);
     }
   });
-  if (!note.markdown) title.select();
+  paint();
+  if (!note.markdown.trim() && !title.value) title.focus(); else body.focus();
 }
 
 // MARK: Canvas

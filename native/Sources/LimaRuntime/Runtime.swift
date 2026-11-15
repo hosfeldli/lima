@@ -49,6 +49,9 @@ public final class Runtime: @unchecked Sendable {
     public let workspaces: WorkspaceService
     public let capabilities: CapabilityRegistry
     public let discovery = CLIDiscovery()
+    public let focus = WorkspaceFocus()
+    let browserCalls = BrowserCalls()
+    let dictation = DictationService()
     public let startedAt = Date()
 
     private var handlers: [String: MethodHandler] = [:]
@@ -93,6 +96,8 @@ public final class Runtime: @unchecked Sendable {
         registerContext()
         registerSystem()
         registerWorkspaces()
+        registerWorkspaceActivity()
+        registerDictation()
         await conversations.setRunConfigurator { [weak self] conversation in
             await self?.workspaceAgentConfiguration(conversation) ?? ([], [:], nil)
         }
@@ -222,6 +227,7 @@ final class EventSink: @unchecked Sendable {
 
     func conversation(_ event: ConversationEvent) {
         guard let runtime else { return }
+        runtime.trackConversation(event)
         switch event {
         case .updated(let conversation):
             runtime.broadcast("chat.updated", (try? JSONValue.from(conversation)) ?? .null)

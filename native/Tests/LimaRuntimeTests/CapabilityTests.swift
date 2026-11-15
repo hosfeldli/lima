@@ -24,7 +24,9 @@ func openRuntime() async throws -> (Runtime, URL) {
     let mcp = await runtime.handle(BridgeRequest(id: "1", method: "capabilities.list"), context: CallContext(client: nil, origin: .mcp))
     let exposed = (mcp.result?.arrayValue ?? []).compactMap { $0["id"]?.stringValue }
     #expect(Set(exposed) == Set(runtime.capabilities.definitions.filter { $0.mcpScope != nil }.map(\.id)))
-    #expect(!runtime.capabilities.definitions.filter(\.surfaces.rail).isEmpty)
+    // The sidebar replaced the rail: nothing points at a dashboard any more.
+    #expect(runtime.capabilities.definitions.filter(\.surfaces.rail).isEmpty)
+    #expect(!runtime.capabilities.definitions.contains { ["open.home", "open.workspaces", "open.agents"].contains($0.id) })
 }
 
 // H2: identical policy regardless of origin; UI gesture = confirmation, agents need approval.

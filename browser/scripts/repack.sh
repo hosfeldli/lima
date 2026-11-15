@@ -12,7 +12,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BROWSER="$ROOT/browser"
 LOCK="$BROWSER/lima.lock.json"
 CACHE="$BROWSER/.cache"
-OUT="$ROOT/build"
+OUT="${LIMA_BUILD_DIR:-$ROOT/build}"
 APP="$OUT/Lima.app"
 
 lock() { python3 -c "import json,sys; d=json.load(open('$LOCK')); print(eval('d'+sys.argv[1]))" "$1"; }
@@ -82,6 +82,10 @@ cp "$ROOT/legacy/lima-4/Packaging/RayPlacement.icns" "$R/lima.icns"
 
 install -m 0755 "$OUT/lima-launcher" "$C/MacOS/lima"
 install -m 0755 "$HOST_BIN" "$C/MacOS/lima-host"
+# On-device dictation: the same whisper-cli 4.x shipped. The 466 MB model
+# isn't copied; the runtime finds the one Lima 4 installed (see Dictation.swift).
+mkdir -p "$R/Whisper/runtime"
+install -m 0755 "$ROOT/legacy/lima-4/Packaging/WhisperRuntime/whisper-cli" "$R/Whisper/runtime/whisper-cli"
 mkdir -p "$R/lima-runtime"
 cp "$ROOT/native/Sources/LimaRuntime/Resources/emoji-test.txt" "$R/lima-runtime/"
 
