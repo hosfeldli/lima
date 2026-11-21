@@ -2,13 +2,21 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleIdentifier</key><string>dev.lima.runtime</string>
-  <key>CFBundleName</key><string>Lima Runtime</string>
-  <key>CFBundleShortVersionString</key><string>5.0.0</string>
-  <key>NSCalendarsFullAccessUsageDescription</key><string>Lima shows your upcoming meetings and never changes calendar events.</string>
-  <key>NSRemindersFullAccessUsageDescription</key><string>Lima lets you view, create and complete reminders from Search.</string>
-  <key>NSMicrophoneUsageDescription</key><string>Lima uses the microphone when you start dictation.</string>
-  <key>NSSpeechRecognitionUsageDescription</key><string>When you choose meeting dictation, Apple Speech Recognition may process your audio on Apple servers to create a note.</string>
-  <key>NSAppleEventsUsageDescription</key><string>Lima controls music playback when you use its media controls.</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.lima.runtime</string>
+	<key>CFBundleName</key>
+	<string>Lima Runtime</string>
+	<key>CFBundleShortVersionString</key>
+	<string>5.0.1</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Lima controls music playback when you use its media controls.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Lima shows your upcoming meetings and never changes calendar events.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Lima uses the microphone when you start dictation.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Lima lets you view, create and complete reminders from Search.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>When you choose meeting dictation, Apple Speech Recognition may process your audio on Apple servers to create a note.</string>
 </dict>
 </plist>
