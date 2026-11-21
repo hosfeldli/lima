@@ -1,70 +1,113 @@
 /* Lima in Zen's chrome. Registered as an author sheet for all documents,
  * so every rule is scoped to Lima-owned IDs or attributes. */
 
+@import url("resource://lima-ui/theme.css");
 @namespace html url("http://www.w3.org/1999/xhtml");
 
-@property --lima-angle {
-  syntax: "<angle>";
-  initial-value: 0deg;
-  inherits: false;
+:root[lima-window] {
+  --lima-character: url("resource://lima-ui/marks/companion-glyph.svg");
+  --lima-panel: var(--lima-sidebar);
+  --lima-hover: var(--lima-elevated);
+  --lima-select: var(--lima-accent-fill);
+  --lima-ink: var(--lima-fg);
+  --lima-ink-2: var(--lima-secondary);
+  --lima-ink-3: var(--lima-muted);
+  --lima-line: var(--lima-border);
+  --lima-line-strong: var(--lima-border);
 }
 
-@keyframes lima-spin { to { --lima-angle: 360deg; } }
+/* Keep the Zen frame and Lima's pages on the same palette. Private windows
+ * retain Zen's appearance as a window-level privacy cue. */
+:root[lima-window]:not([zen-private-window="true"]) {
+  color-scheme: light;
+  --zen-primary-color: var(--lima-accent) !important;
+  --zen-colors-primary: var(--lima-accent) !important;
+  --zen-colors-secondary: var(--lima-accent-fill) !important;
+  --zen-colors-tertiary: var(--lima-bg) !important;
+  --zen-colors-primary-foreground: var(--lima-fg) !important;
+  --zen-colors-border: var(--lima-border) !important;
+  --zen-colors-border-contrast: var(--lima-border) !important;
+  --zen-colors-input-bg: var(--lima-bg) !important;
+  --zen-colors-hover-bg: var(--lima-elevated) !important;
+  --zen-sidebar-themed-icon-fill: var(--lima-secondary) !important;
+  --zen-main-browser-background: var(--lima-sidebar) !important;
+  --zen-appcontent-border: 0 !important;
+  --zen-main-browser-background-toolbar: var(--lima-bg) !important;
+  --zen-main-browser-background-old: var(--lima-sidebar) !important;
+  --zen-main-browser-background-toolbar-old: var(--lima-bg) !important;
+  --zen-toolbar-element-bg: var(--lima-elevated) !important;
+  --zen-urlbar-background: var(--lima-bg) !important;
+  --toolbox-textcolor: var(--lima-fg) !important;
+  --toolbar-color-scheme: light !important;
+  --toolbar-field-background-color: var(--lima-bg) !important;
+  --toolbar-field-focus-background-color: var(--lima-bg) !important;
+  --tab-selected-bgcolor: var(--lima-bg) !important;
+  --tab-background-color-hover: var(--lima-elevated) !important;
+}
 
-:root {
-  --lima-prism-stops: #ff6b8b, #ffb86b, #7cf2c8, #6bb6ff, #b98bff, #ff6b8b;
-  --lima-prism: linear-gradient(135deg, #ff6b8b, #ffb86b 28%, #7cf2c8 52%, #6bb6ff 76%, #b98bff);
-  --lima-star: url("resource://lima-ui/marks/star.svg");
-  --lima-panel: light-dark(#ffffff, #141414);
-  --lima-hover: light-dark(#f2f2f2, #1f1f1f);
-  --lima-select: light-dark(#fdeced, #2c1417);
-  --lima-ink: light-dark(#111111, #f2f2f2);
-  --lima-ink-2: light-dark(#4a4a4a, #c8c8c8);
-  --lima-ink-3: light-dark(#6e6e6e, #9a9a9a);
-  --lima-line: light-dark(#e0e0e0, #2e2e2e);
-  --lima-line-strong: light-dark(#c9c9c9, #404040);
-  --lima-red: light-dark(#e60012, #ff2a3a);
+:root[lima-window]:not([zen-private-window="true"]) #navigator-toolbox {
+  color-scheme: light !important;
+  color: var(--lima-fg) !important;
+  background-color: var(--lima-sidebar) !important;
+}
+:root[lima-window]:not([zen-private-window="true"]) #zen-appcontent-wrapper,
+:root[lima-window]:not([zen-private-window="true"]) :is(#zen-appcontent-navbar-wrapper, #zen-appcontent-navbar-container, #zen-appcontent-wrapper #nav-bar) {
+  background: var(--lima-bg) !important;
+  background-image: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+:root[lima-window]:not([zen-private-window="true"]) .zen-browser-grain { display: none !important; }
+:root[lima-window]:not([inDOMFullscreen="true"]):not([popup-window]) #zen-tabbox-wrapper {
+  margin-block-start: 0 !important;
+  margin-inline-end: 0 !important;
+}
+:root[lima-window] #tabbrowser-tabpanels .browserSidebarContainer:not(.zen-glance-overlay) {
+  border: 0 !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+}
+:root[lima-window] #zen-library-button,
+:root[lima-window] zen-folder[lima-notebook] { display: none !important; }
+#navigator-toolbox[orient="vertical"], #navigator-toolbox:has(#tabbrowser-tabs[orient="vertical"]) {
+  --tab-min-height: 26px !important;
+  --tab-margin-block: 1px !important;
+}
+#navigator-toolbox .tab-label,
+#navigator-toolbox .tab-group-label,
+#navigator-toolbox .bookmark-item { font-size: 11.5px; }
+#navigator-toolbox zen-folder[lima-workspace]:not([lima-agent]) {
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--lima-bg) 44%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lima-border) 54%, transparent);
+  margin-block: 3px;
+}
+#navigator-toolbox .bookmark-item { padding-block: 2px; }
+:root[lima-window]:not([zen-private-window="true"]) zen-folder:is([lima-notebook], [lima-section]) > .tab-group-label-container > .tab-group-folder-icon {
+  filter: grayscale(1);
 }
 
 /* ── Where the agent is ─────────────────────────────────────────────── */
 
-/* A page or terminal the agent is working in: a moving prism ring plus a
- * faint sheen, drawn over the tab's own background. */
+/* Small edge and icon signals keep the active page unobstructed. */
 .tabbrowser-tab[lima-ai="here"] > .tab-stack > .tab-background {
-  position: relative;
-  box-shadow: none !important;
+  box-shadow: inset 2px 0 currentColor !important;
+  animation: lima-tab-arrive 280ms ease-out;
 }
-.tabbrowser-tab[lima-ai="here"] > .tab-stack > .tab-background::before,
-.tabbrowser-tab[lima-ai="here"] > .tab-stack > .tab-background::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
-}
-.tabbrowser-tab[lima-ai="here"] > .tab-stack > .tab-background::before {
-  padding: 1.5px;
-  background: conic-gradient(from var(--lima-angle), var(--lima-prism-stops));
-  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
-  animation: lima-spin 2.6s linear infinite;
-}
-.tabbrowser-tab[lima-ai="here"] > .tab-stack > .tab-background::after { display: none; }
-
-/* The agent is writing in chat: the ✦ turns prismatic and rotates. */
 .tabbrowser-tab[lima-ai="thinking"] .tab-icon-stack::after {
   content: "";
   grid-area: 1 / 1;
-  align-self: center;
-  justify-self: center;
-  width: 16px;
-  height: 16px;
-  background: conic-gradient(from var(--lima-angle), var(--lima-prism-stops));
-  mask: var(--lima-star) center / contain no-repeat;
-  animation: lima-spin 1.4s linear infinite;
+  align-self: end;
+  justify-self: end;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: lima-assistant-breathe 2s ease-in-out infinite;
 }
-.tabbrowser-tab[lima-ai="thinking"] .tab-icon-image { opacity: 0 !important; }
+@keyframes lima-tab-arrive { from { opacity: .62; transform: scaleX(.98); } }
 
-/* Workspace folders: the folder glyph is a ✦ that opens Chat. */
+/* The workspace companion opens its chat. */
 zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon {
   display: grid !important;
   place-items: center;
@@ -75,41 +118,72 @@ zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon
   content: "";
   width: 15px;
   height: 15px;
-  background: var(--lima-prism);
-  mask: var(--lima-star) center / contain no-repeat;
-  transition: transform 160ms cubic-bezier(.23, 1, .32, 1);
+  background: currentColor;
+  mask: var(--lima-character) center / contain no-repeat;
+  transition: transform 180ms cubic-bezier(.23, 1, .32, 1);
 }
-zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon:hover::after { transform: scale(1.15); }
+zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon:hover::after { transform: translateY(-1px) scale(1.08); }
 zen-folder[lima-workspace][lima-ai="thinking"] > .tab-group-label-container > .tab-group-folder-icon::after {
-  background: conic-gradient(from var(--lima-angle), var(--lima-prism-stops));
-  animation: lima-spin 1.4s linear infinite;
+  animation: lima-assistant-breathe 2s ease-in-out infinite;
 }
 zen-folder[lima-workspace][lima-ai="working"] > .tab-group-label-container > .tab-group-folder-icon::after {
-  background: conic-gradient(from var(--lima-angle), var(--lima-prism-stops));
-  animation: lima-spin 3.5s linear infinite;
+  animation: lima-assistant-glance 2.4s ease-in-out infinite;
 }
 zen-folder[lima-agent] > .tab-group-label-container > .tab-group-folder-icon::after { width: 12px; height: 12px; }
+zen-folder[lima-workspace][lima-archiving] > .tab-group-label-container > .tab-group-folder-icon::after {
+  mask-image: url("resource://lima-ui/icons/folder.svg");
+  animation: lima-assistant-tap 1.5s ease-in-out infinite;
+}
+zen-folder[lima-archiving] > .tab-group-label-container { opacity: .7; }
 
 @media (prefers-reduced-motion: reduce) {
   .tabbrowser-tab[lima-ai] *,
   .tabbrowser-tab[lima-ai] > .tab-stack > .tab-background::before,
   .tabbrowser-tab[lima-ai] > .tab-stack > .tab-background::after,
   .tabbrowser-tab[lima-ai] .tab-icon-stack::after,
-  zen-folder[lima-workspace] .tab-group-folder-icon::after,
-  #lima-dock *, #lima-search * { animation: none !important; transition: none !important; }
+  zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon::after,
+  #lima-dock *, .lima-dock-rail *, #lima-search, #lima-search * { animation: none !important; transition: none !important; }
 }
 
 /* ── Dock: music, dictation, mic ────────────────────────────────────── */
 
 #lima-dock {
   display: flex;
-  align-items: flex-end;
-  gap: 6px;
-  margin: 6px 6px 2px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  margin: 5px 8px 2px;
   font: 12px/1.3 -apple-system, sans-serif;
 }
 #lima-dock-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-#lima-dock .lima-glyph {
+.lima-dock-rail { display: flex; flex: 1 1 auto; min-width: 0; align-items: center; justify-content: center; flex-wrap: wrap; gap: 1px; }
+.lima-dock-rail button {
+  appearance: none; color: inherit; padding: 0; border: none; background: transparent;
+  width: 28px; height: 28px; display: grid; place-items: center; position: relative; border-radius: 7px; flex: none;
+}
+.lima-dock-rail button:is(:hover, [aria-expanded="true"]) { background: var(--lima-hover); }
+.lima-dock-rail button:is([lima-unread], [lima-upcoming], [lima-reconnect])::after {
+  content: ""; position: absolute; inset: 3px 3px auto auto; width: 5px; height: 5px; border-radius: 50%; background: #a85b61;
+}
+.lima-dock-rail button[lima-reconnect]::after {
+  content: "!"; color: #a85b61; background: var(--lima-panel); width: 9px; height: 10px; font: 750 10px/1 system-ui;
+}
+.lima-services-notice {
+  padding: 7px 8px; border-radius: 9px; border: 1px solid var(--lima-line); background: var(--lima-bg);
+}
+.lima-services-notice[hidden] { display: none; }
+#lima-dock button:disabled { opacity: .4; }
+.lima-services-notice {
+  display: flex; align-items: center; gap: 5px; animation: lima-reminder-pop 240ms cubic-bezier(.2,.8,.25,1) both;
+}
+.lima-services-notice img { width: 33px; flex: none; }
+.lima-reminder-copy { display: grid; justify-items: start; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+#lima-dock .lima-reminder-copy button { font-size: 11px; text-decoration: underline; text-underline-offset: 2px; }
+@keyframes lima-reminder-pop {
+  from { opacity: 0; transform: translateY(6px) scale(.98); }
+  70% { transform: translateY(-1px); }
+}
+#lima-dock .lima-glyph, .lima-dock-rail .lima-glyph {
   width: 15px;
   height: 15px;
   background: currentColor;
@@ -132,31 +206,91 @@ zen-folder[lima-agent] > .tab-group-label-container > .tab-group-folder-icon::af
   height: 30px;
   display: grid;
   place-items: center;
-  border-radius: 2px !important;
+  border-radius: var(--lima-radius) !important;
   flex: none;
   opacity: 0.8;
 }
 #lima-mic:hover { opacity: 1; background: color-mix(in srgb, currentColor 10%, transparent) !important; }
-#lima-mic[data-recording] { opacity: 1; color: #fff !important; background: var(--lima-red) !important; }
+#lima-mic[data-recording] { opacity: 1; color: #fff !important; background: var(--lima-accent) !important; }
 
 #lima-music, #lima-dictation {
-  border-radius: 2px;
+  border-radius: 5px;
   border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
   overflow: hidden;
 }
-#lima-dictation { border-color: var(--lima-red); }
+#lima-dictation { border-color: var(--lima-accent); }
 #lima-music[hidden], #lima-dictation[hidden], #lima-music[data-covered] { display: none; }
-#lima-music { cursor: default; }
-.lima-music-row { display: flex; align-items: center; gap: 8px; padding: 5px 6px 5px 5px; }
-.lima-music-art {
+#lima-music { border-radius: 13px; background: var(--lima-bg); }
+#lima-settings-button {
+  margin-inline-start: auto;
+  appearance: none;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  border-radius: 8px;
   width: 28px;
   height: 28px;
-  border-radius: 1px !important;
-  flex: none;
-  background-size: cover !important;
-  background-position: center !important;
+  display: grid;
+  place-items: center;
+  align-self: center;
 }
-.lima-music-art[data-empty] { background: color-mix(in srgb, currentColor 14%, transparent) !important; }
+#lima-settings-button:hover { background: var(--lima-hover); }
+#lima-settings-button .lima-glyph { width: 16px; height: 16px; background: currentColor; mask: center / contain no-repeat; }
+#lima-spotify {
+  appearance: none; display: grid; place-items: center; width: 29px; height: 29px;
+  align-self: center; background: transparent; color: inherit; border: 0; border-radius: 7px;
+}
+#lima-spotify:is(:hover, [aria-expanded="true"]) { background: var(--lima-hover); }
+.lima-spotify-icon {
+  width: 16px; height: 16px; border-radius: 50%; display: block;
+  background: currentColor;
+  mask: url("resource://lima-ui/marks/spotify.svg") center / contain no-repeat;
+}
+#lima-dock .lima-music-row {
+  display: flex; align-items: center; gap: 7px; padding: 4px 8px; width: 100%; text-align: start;
+}
+#lima-dock #lima-music button, #lima-music input, #lima-music select {
+  transition: background-color 150ms ease, opacity 150ms ease, transform 150ms ease;
+}
+#lima-dock #lima-music button:hover { background: var(--lima-hover); }
+#lima-dock #lima-music button:active { transform: scale(.97); }
+.lima-dj-scene { position: relative; display: grid; width: 44px; height: 41px; flex: none; place-items: center; }
+.lima-dj-mascot { width: 44px; height: 41px; transform-origin: center 83%; }
+.lima-dj-record {
+  position: absolute;
+  top: 79%;
+  left: 25%;
+  width: 8px;
+  height: 3px;
+  border-radius: 50%;
+  background: #62556e;
+  display: grid;
+  place-items: center;
+}
+.lima-dj-record::after {
+  content: "";
+  display: block;
+  width: 5px;
+  height: 2px;
+  border-radius: 50%;
+  background: conic-gradient(#a89ab7 0 24%, #62556e 24% 58%, #c1afcc 58% 68%, #62556e 68%);
+}
+#lima-music[data-personality="off"] .lima-dj-scene { display: none; }
+#lima-music[data-playing][data-personality="full"] .lima-dj-mascot { animation: dj-groove 1.8s steps(24) infinite; }
+#lima-music[data-playing][data-personality="full"] .lima-dj-record { animation: dj-spin .9s linear infinite; }
+#lima-music[data-personality="full"][data-gesture] .lima-dj-mascot { animation: dj-cue 620ms steps(10) both; }
+@keyframes dj-groove {
+  10% { transform: translateY(-1px) rotate(4deg); }
+  25% { transform: translateY(1px) scale(1.015, .965); }
+  43% { transform: rotate(-3deg); }
+  64% { transform: translateY(1px) rotate(-4deg) scale(1.01, .975); }
+  82% { transform: translateY(-1px) rotate(2deg); }
+}
+@keyframes dj-spin {
+  from { transform: scaleY(.47) rotate(0deg) scaleY(2.1); }
+  to { transform: scaleY(.47) rotate(360deg) scaleY(2.1); }
+}
+@keyframes dj-cue { 35% { transform: translateY(1px) rotate(-9deg); } 65% { transform: translateY(-4px) rotate(5deg); } }
 .lima-music-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .lima-music-title, .lima-music-artist { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lima-music-title { font-weight: 600; }
@@ -166,44 +300,66 @@ zen-folder[lima-agent] > .tab-group-label-container > .tab-group-folder-icon::af
   height: 26px;
   display: grid;
   place-items: center;
-  border-radius: 2px !important;
+  border-radius: var(--lima-radius) !important;
   flex: none;
   transition: background-color 120ms cubic-bezier(.23, 1, .32, 1);
 }
 .lima-music-btn:active { transform: scale(.94); }
 .lima-music-btn:hover { background: color-mix(in srgb, currentColor 12%, transparent) !important; }
 .lima-music-btn.big { width: 32px; height: 32px; }
-/* Expanding is user-triggered and occasional: a short ease-out reveal. */
-.lima-music-expanded { display: none; padding: 0 10px 8px; }
-#lima-music[data-open] .lima-music-expanded { display: block; animation: lima-reveal 140ms cubic-bezier(.23, 1, .32, 1); }
+.lima-music-reveal { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 210ms cubic-bezier(.2,.8,.25,1); }
+.lima-music-expanded {
+  display: flex; flex-direction: column; gap: 3px; padding-inline: 9px; min-height: 0; overflow: hidden;
+  opacity: 0; transform: translateY(-4px); transition: opacity 140ms ease, transform 170ms ease;
+}
+#lima-music[data-open] .lima-music-reveal { grid-template-rows: 1fr; }
+#lima-music[data-open] .lima-music-expanded { padding-block-end: 8px; opacity: 1; transform: none; }
 @keyframes lima-reveal { from { opacity: 0; transform: translateY(-3px); } }
-#lima-music[data-open] .lima-music-row > .lima-music-btn { display: none; }
-.lima-music-progress { height: 3px; border-radius: 2px; background: color-mix(in srgb, currentColor 14%, transparent); overflow: hidden; }
-.lima-music-progress > i { display: block; height: 100%; width: 0; background: var(--lima-red); }
-.lima-music-times { display: flex; justify-content: space-between; font-size: 10px; opacity: 0.6; margin-top: 3px; font-variant-numeric: tabular-nums; }
-.lima-music-transport { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 4px; }
+.lima-music-timeline { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.lima-music-timeline[hidden] { display: none; }
+.lima-music-time { min-inline-size: 22px; color: var(--lima-muted); font-size: 9px; font-variant-numeric: tabular-nums; }
+.lima-music-time:last-child { text-align: end; }
+#lima-music input[type="range"] { flex: 1; inline-size: 0; min-inline-size: 0; margin: 0; accent-color: #55545a; }
+#lima-music input[type="range"]:hover { accent-color: #242429; }
+.lima-music-audio { display: flex; align-items: center; gap: 5px; min-inline-size: 0; }
+.lima-music-audio .lima-glyph { width: 12px; height: 12px; }
+#lima-music select {
+  flex: 0 1 82px;
+  max-inline-size: 50%;
+  min-inline-size: 0;
+  height: 21px;
+  padding-block: 0;
+  padding-inline: 4px;
+  color: inherit;
+  background: var(--lima-bg);
+  border: 1px solid var(--lima-border);
+  border-radius: 5px;
+  font-size: 10px;
+  text-overflow: ellipsis;
+}
+.lima-music-transport { display: flex; align-items: center; justify-content: center; gap: 5px; }
 .lima-music-dj {
+  display: inline-flex; align-items: center; gap: 4px;
   margin-left: 6px;
   padding: 3px 8px !important;
-  border-radius: 2px !important;
+  border-radius: var(--lima-radius) !important;
   font-size: 10px !important;
   font-weight: 700 !important;
   letter-spacing: 0.04em;
   border: 1px solid color-mix(in srgb, currentColor 18%, transparent) !important;
 }
-#lima-music[data-playing] .lima-music-art:not([data-empty]) { outline: 1px solid color-mix(in srgb, currentColor 14%, transparent); }
+.lima-music-dj img { width: 18px; height: 17px; }
 
 #lima-dictation { display: flex; align-items: center; gap: 7px; padding: 5px 5px 5px 10px; }
-.lima-dict-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--lima-red); flex: none; }
+.lima-dict-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--lima-accent); flex: none; }
 #lima-dictation[data-phase="transcribing"] .lima-dict-dot { background: var(--lima-ink-3); }
-#lima-dictation[data-phase="failed"] .lima-dict-dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--lima-red); }
+#lima-dictation[data-phase="failed"] .lima-dict-dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--lima-accent); }
 #lima-dictation:not([data-phase="recording"]) .lima-dict-level { display: none; }
 .lima-dict-level { display: flex; align-items: center; gap: 2px; height: 16px; }
-.lima-dict-level > i { display: block; width: 3px; height: 16px; border-radius: 2px; background: currentColor; opacity: 0.8; transform: scaleY(0.15); transition: transform 90ms linear; }
+.lima-dict-level > i { display: block; width: 3px; height: 16px; border-radius: 5px; background: currentColor; opacity: 0.8; transform: scaleY(0.15); transition: transform 90ms linear; }
 .lima-dict-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 
-/* ── Lima Search (⌘T): one dense module; group heads are small red tabs.
- * Keyboard-opened, so it appears instantly (no entrance motion). ──── */
+/* ── Lima Search (⌘T): compact keyboard result rows ───────────────── */
 
 #lima-search-scrim {
   position: fixed;
@@ -213,22 +369,23 @@ zen-folder[lima-agent] > .tab-group-label-container > .tab-group-folder-icon::af
   justify-content: center;
   align-items: flex-start;
   padding-top: 12vh;
-  background: rgb(0 0 0 / 0.08);
+  background: rgb(22 24 27 / 0.12);
 }
 #lima-search-scrim[hidden] { display: none; }
 #lima-search {
-  width: min(680px, 86vw);
+  width: min(610px, 86vw);
   max-height: 68vh;
   display: flex;
   flex-direction: column;
-  border-radius: 4px;
-  background: var(--lima-panel);
+  border-radius: var(--lima-panel-radius);
+  background: var(--lima-surface);
   color: var(--lima-ink);
   border: 1px solid var(--lima-line-strong);
   font: 13px/1.35 -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
-  box-shadow: 0 18px 50px rgb(0 0 0 / 0.22), 0 2px 6px rgb(0 0 0 / 0.08);
+  box-shadow: 0 10px 30px rgb(0 0 0 / .12);
+  animation: lima-search-in 155ms cubic-bezier(.2,.8,.28,1) both;
 }
-#lima-search-eyebrow { display: none; }
+@keyframes lima-search-in { from { opacity: 0; transform: translateY(-5px) scale(.988); } }
 #lima-search-field {
   display: flex;
   align-items: center;
@@ -243,7 +400,7 @@ zen-folder[lima-agent] > .tab-group-label-container > .tab-group-folder-icon::af
   height: 30px;
   flex: none;
   border: 0;
-  border-radius: 2px;
+  border-radius: 5px;
   background: url("resource://lima-ui/marks/star-prism.svg") center / 18px no-repeat;
   transition: background-color 120ms cubic-bezier(.23, 1, .32, 1);
 }
@@ -256,19 +413,30 @@ zen-folder[lima-agent] > .tab-group-label-container > .tab-group-folder-icon::af
   outline: 0;
   background: transparent;
   color: inherit;
-  caret-color: var(--lima-red);
+  caret-color: var(--lima-accent);
   font: 500 16px/1.2 -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
 }
 #lima-search-input::placeholder { color: var(--lima-ink-3); }
+#lima-search-esc {
+  appearance: none;
+  border: 0;
+  color: var(--lima-ink-2);
+  background: transparent;
+  border-radius: var(--lima-radius);
+  width: 25px;
+  height: 25px;
+  font: 19px/1 system-ui;
+}
+#lima-search-esc:hover { background: var(--lima-hover); color: var(--lima-ink); }
 #lima-search kbd {
   font: 600 10.5px/1 -apple-system, sans-serif;
   color: var(--lima-ink-2);
   padding: 3px 5px;
-  border-radius: 2px;
+  border-radius: 5px;
   border: 1px solid var(--lima-line-strong);
 }
-/* Loading: a static red hairline under the field, not a spinner. */
-#lima-search-spinner { width: 14px; height: 2px; background: var(--lima-red); }
+/* A static activity cue sits beside the field. */
+#lima-search-spinner { width: 14px; height: 2px; background: var(--lima-accent); }
 #lima-search-spinner[hidden] { display: none; }
 #lima-search-results { overflow-y: auto; min-height: 0; padding-bottom: 4px; }
 .lima-s-group {
@@ -276,9 +444,8 @@ zen-folder[lima-agent] > .tab-group-label-container > .tab-group-folder-icon::af
   align-items: center;
   height: 18px;
   margin: 8px 0 2px;
-  padding: 0 7px;
-  background: var(--lima-red);
-  color: #fff;
+  padding: 0 12px;
+  color: var(--lima-ink-2);
   font-size: 10.5px;
   font-weight: 650;
 }
@@ -287,13 +454,13 @@ zen-folder[lima-agent] > .tab-group-label-container > .tab-group-folder-icon::af
   align-items: center;
   gap: 10px;
   height: 34px;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--lima-line);
+  margin-inline: 5px;
+  padding: 0 7px;
+  border-radius: var(--lima-radius);
 }
-.lima-s-row:last-child { border-bottom: 0; }
 .lima-s-row[aria-selected="true"] { background: var(--lima-select); }
 .lima-s-icon { width: 16px; height: 16px; display: grid; place-items: center; flex: none; color: var(--lima-ink-2); }
-.lima-s-row[aria-selected="true"] .lima-s-icon { color: var(--lima-red); }
+.lima-s-row[aria-selected="true"] .lima-s-icon { color: var(--lima-accent); }
 .lima-s-glyph { width: 15px; height: 15px; background: currentColor; mask-size: contain; mask-repeat: no-repeat; mask-position: center; }
 .lima-s-text { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; }
 .lima-s-title { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
@@ -302,24 +469,236 @@ zen-folder[lima-agent] > .tab-group-label-container > .tab-group-folder-icon::af
 .lima-s-action {
   flex: none;
   font: 650 10.5px/1 -apple-system, sans-serif;
-  color: #fff;
-  background: var(--lima-red);
-  padding: 4px 7px;
-  border-radius: 2px;
+  color: var(--lima-ink-2);
+  padding: 4px 0;
 }
 .lima-s-empty { padding: 18px 12px; color: var(--lima-ink-3); }
-#lima-search-footer {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  height: 30px;
-  padding: 0 12px;
-  border-top: 1px solid var(--lima-line);
-  font-size: 11px;
-  color: var(--lima-ink-2);
-}
-.lima-s-hint { display: inline-flex; align-items: center; gap: 5px; }
-.lima-s-flex { flex: 1; }
 
 /* Lima menu items in Zen's menus use the shared icon set. */
 .lima-menuitem > .menu-icon { -moz-context-properties: fill, stroke; }
+
+/* Lima Assistant sits in the browser toolbar and keeps its chat alive when closed. */
+#lima-assistant-toggle {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  align-self: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--lima-radius);
+  color: inherit;
+  background: transparent;
+}
+#lima-assistant-toggle[floating] { position: fixed; left: 74px; top: 6px; z-index: 12; background: var(--lima-panel); color: var(--lima-ink); }
+#lima-assistant-toggle:hover,
+#lima-assistant-toggle[aria-expanded="true"] { background: var(--lima-hover); color: var(--lima-ink); }
+#lima-assistant-toggle:focus-visible { outline: 2px solid var(--lima-accent); outline-offset: -2px; }
+#lima-assistant-toggle > html|span {
+  width: 17px;
+  height: 17px;
+  background: currentColor;
+  mask: var(--lima-character) center / contain no-repeat;
+}
+#lima-assistant-toggle[data-activity] > html|span {
+  animation: lima-assistant-breathe 2s ease-in-out infinite;
+}
+#lima-assistant-toggle:is([data-activity="read"], [data-activity="tabs"]) > html|span {
+  animation-name: lima-assistant-glance;
+}
+#lima-assistant-toggle:is([data-activity="write"], [data-activity="terminal"], [data-activity="test"]) > html|span {
+  animation-name: lima-assistant-tap;
+}
+#lima-assistant-toggle[data-activity="delegate"] > html|span { animation-name: lima-assistant-hop; }
+#lima-assistant-toggle[lima-attention] > html|span,
+zen-folder[lima-workspace][lima-attention] > .tab-group-label-container > .tab-group-folder-icon::after {
+  mask: url("resource://lima-ui/marks/attention.svg") center / contain no-repeat !important;
+  color: #b55d67;
+  background: currentColor !important;
+  animation: none !important;
+}
+
+#lima-assistant-panel {
+  position: fixed;
+  z-index: 10;
+  top: var(--lima-assistant-top, 48px);
+  left: 8px;
+  width: min(362px, calc(100vw - 16px));
+  height: min(488px, calc(100vh - var(--lima-assistant-top, 48px) - 10px));
+  overflow: clip;
+  border: 1px solid var(--lima-line-strong);
+  border-radius: 16px;
+  background: var(--lima-bg);
+  box-shadow: 0 12px 38px rgb(0 0 0 / .14);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateX(-22px) scale(.985);
+  transform-origin: top left;
+  transition: opacity 190ms ease, transform 240ms cubic-bezier(.2,.75,.25,1), visibility 240ms;
+}
+#lima-assistant-panel[open] {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: none;
+}
+#lima-assistant-panel > browser { flex: 1; min-height: 0; width: 100%; height: 100%; }
+
+@keyframes lima-assistant-breathe { 42%, 62% { opacity: .68; transform: translateY(-1px) scale(.82); } }
+@keyframes lima-assistant-glance { 30%, 46% { transform: translateX(2px) rotate(12deg); } 72% { transform: translateX(-2px) rotate(-6deg); } }
+@keyframes lima-assistant-tap { 22%, 50% { transform: translateY(2px) scale(1.08, .79); } 34%, 68% { transform: none; } }
+@keyframes lima-assistant-hop { 40% { transform: translateY(-3px) scale(1.08); } 65% { transform: translateY(1px) scale(.95); } }
+
+@media (prefers-reduced-motion: reduce) {
+  #lima-assistant-toggle > html|span { animation: none !important; }
+  #lima-assistant-panel { transition: none; }
+}
+
+#lima-assistant-toggle[data-personality]:not([data-personality="full"]) > html|span { animation: none; }
+
+.lima-music-notes {
+  display: flex;
+  gap: 2px;
+  min-inline-size: 21px;
+  color: var(--lima-text-secondary, GrayText);
+  visibility: hidden;
+}
+#lima-music[data-playing]:not([data-personality="off"]) .lima-music-notes { visibility: visible; }
+#lima-music[data-playing][data-personality="full"] .lima-music-notes i {
+  animation: lima-note-lift 1.8s steps(12) infinite;
+}
+#lima-music[data-playing][data-personality="full"] .lima-music-notes i + i { animation-delay: -350ms; }
+@keyframes lima-note-lift {
+  40% { transform: translateY(-3px) rotate(7deg); opacity: .85; }
+  80% { transform: translateY(1px) rotate(-5deg); opacity: .55; }
+}
+
+zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon::after {
+  width: 18px;
+  height: 18px;
+  background: url("resource://lima-ui/marks/companion.svg") center / contain no-repeat;
+  mask: none;
+}
+zen-folder[lima-workspace]:is([lima-motion="read"], [lima-motion="tabs"]) > .tab-group-label-container > .tab-group-folder-icon::after {
+  animation: lima-assistant-glance 2.4s steps(16) infinite;
+}
+zen-folder[lima-workspace]:is([lima-motion="write"], [lima-motion="terminal"], [lima-motion="test"]) > .tab-group-label-container > .tab-group-folder-icon::after {
+  animation: lima-assistant-tap 1.5s steps(12) infinite;
+}
+zen-folder[lima-workspace][lima-motion="delegate"] > .tab-group-label-container > .tab-group-folder-icon::after {
+  animation: lima-assistant-hop 2s steps(14) infinite;
+}
+:root[lima-window] .lima-archive-panel {
+  --panel-background: var(--lima-bg);
+  --panel-color: var(--lima-fg);
+  --panel-border-color: var(--lima-border);
+}
+.lima-archive-content { width: min(328px, 80vw); padding: 16px; font: message-box; }
+.lima-archive-content > strong { font-size: 15px; }
+.lima-archive-content p { margin: 8px 0; overflow-wrap: anywhere; }
+.lima-archive-content p:empty { display: none; }
+.lima-archive-description, .lima-archive-path { color: var(--lima-secondary); }
+.lima-archive-path { font-size: 11px; }
+.lima-archive-actions { display: flex; justify-content: end; gap: 8px; margin-block-start: 16px; }
+.lima-archive-actions button {
+  padding: 5px 12px;
+  border: 1px solid var(--lima-border);
+  border-radius: var(--lima-radius);
+  background: var(--lima-bg);
+  color: var(--lima-fg);
+  cursor: pointer;
+}
+.lima-archive-actions .lima-archive-action { background: var(--lima-accent); color: var(--lima-accent-contrast); }
+.lima-archive-actions button:disabled { opacity: .55; cursor: wait; }
+
+:root[data-lima-personality]:not([data-lima-personality="full"]) zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon::after {
+  animation: none;
+}
+
+:root[lima-window] .tabbrowser-tab[lima-workspace-chat] { display: none !important; }
+zen-folder[lima-workspace] > .tab-group-label-container { cursor: pointer; }
+zen-folder[lima-workspace][lima-chat-selected] > .tab-group-label-container {
+  background: var(--lima-bg);
+  border-radius: 7px;
+}
+.lima-workspace-disclosure {
+  appearance: none;
+  width: 21px;
+  height: 22px;
+  flex: none;
+  margin-inline-start: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--lima-ink-2);
+}
+.lima-workspace-disclosure:hover { background: var(--lima-hover); }
+.lima-workspace-disclosure::before {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border: solid currentColor;
+  border-width: 0 1.5px 1.5px 0;
+  transform: translateY(-2px) rotate(45deg);
+}
+zen-folder[collapsed] > .tab-group-label-container > .lima-workspace-disclosure::before { transform: rotate(-45deg); }
+
+#lima-agent-pointer {
+  position: fixed;
+  z-index: 2147482990;
+  pointer-events: none;
+  color: #252525;
+}
+#lima-agent-pointer[data-action="click"]::before {
+  content: "";
+  display: block;
+  width: 20px;
+  height: 20px;
+  border-radius: 100%;
+  border: 2px solid #7761a2;
+  box-shadow: 0 0 0 1px #ffffff;
+  transform: translate(-50%, -50%);
+  animation: lima-agent-click 700ms ease-out both;
+}
+#lima-agent-pointer[data-action="click"]::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 14px;
+  height: 20px;
+  background: #53406e;
+  clip-path: polygon(0 0, 100% 57%, 59% 65%, 80% 92%, 60% 100%, 35% 70%, 0 91%);
+}
+#lima-agent-pointer[data-action="type"] {
+  transform: translate(-50%, calc(-100% - 9px));
+  background: #fff;
+  border: 1px solid #d5ccde;
+  border-radius: 7px;
+  padding: 4px 8px;
+  font: 600 11px system-ui;
+  box-shadow: 0 2px 4px #0002;
+}
+#lima-agent-pointer[data-action="type"]::after {
+  content: "";
+  display: inline-block;
+  vertical-align: -2px;
+  width: 2px;
+  height: 11px;
+  margin-inline-start: 4px;
+  background: #7761a2;
+  animation: lima-agent-typing 650ms steps(2, start) infinite;
+}
+@keyframes lima-agent-click {
+  from { transform: translate(-50%, -50%) scale(.68); }
+  to { transform: translate(-50%, -50%) scale(1.65); opacity: .15; }
+}
+@keyframes lima-agent-typing { to { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) {
+  #lima-agent-pointer::before, #lima-agent-pointer::after { animation: none !important; }
+}

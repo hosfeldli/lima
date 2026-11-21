@@ -3,6 +3,7 @@
 
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
+  LimaAssistant: "resource://lima/LimaAssistant.sys.mjs",
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
   LimaSidebar: "resource://lima/LimaSidebar.sys.mjs",
   LimaTabs: "resource://lima/LimaTabs.sys.mjs",
@@ -33,7 +34,15 @@ export const LimaWindow = {
   attach(win) {
     if (win.limaAttached) return;
     win.limaAttached = true;
+    win.document.documentElement.setAttribute("lima-window", "true");
     lazy.LimaSidebar.attach(win);
+    lazy.LimaAssistant.attach(win);
+    const applyPersonality = () => win.document.documentElement.dataset.limaPersonality =
+      Services.prefs.getStringPref("lima.personality", "full");
+    applyPersonality();
+    Services.prefs.addObserver("lima.personality", applyPersonality);
+    win.addEventListener("unload", () => Services.prefs.removeObserver("lima.personality", applyPersonality), { once: true });
+    win.gBrowser.tabContainer.addEventListener("TabGroupRemoved", event => lazy.LimaWorkspaces.onFolderRemoved(event));
     win.gBrowser.tabContainer.addEventListener("TabClose", event => lazy.LimaWorkspaces.onTabClose(event.target));
     attachContextRecorder(win);
     // Development/testing aid: open a Lima URL once the window has settled

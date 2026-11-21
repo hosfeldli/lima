@@ -67,12 +67,11 @@ class Panel {
     this.mark = el(doc, "button", { id: "lima-search-mark", title: "Ask AI in a new chat (⌘↩)", "aria-label": "Ask AI", onclick: () => this.ask() });
     this.spinner = el(doc, "span", { id: "lima-search-spinner", hidden: true });
     this.results = el(doc, "div", { id: "lima-search-results", role: "listbox" });
-    const hint = (keys, label) => el(doc, "span", { class: "lima-s-hint" }, el(doc, "kbd", { text: keys }), label);
     this.panel = el(doc, "div", { id: "lima-search", role: "dialog", "aria-label": "Lima Search" },
-      el(doc, "div", { id: "lima-search-field" }, this.mark, this.input, this.spinner, el(doc, "kbd", { id: "lima-search-esc", text: "esc" })),
-      this.results,
-      el(doc, "div", { id: "lima-search-footer" }, hint("↑↓", "Navigate"), hint("↩", "Open"), hint("⌘↩", "Ask AI"), el(doc, "span", { class: "lima-s-flex" }), hint("esc", "Close")));
-    this.scrim = el(doc, "div", { id: "lima-search-scrim", hidden: true, onmousedown: event => { if (event.target === this.scrim) this.close(); } }, this.panel);
+      el(doc, "div", { id: "lima-search-field" }, this.mark, this.input, this.spinner,
+        el(doc, "button", { id: "lima-search-esc", title: "Close search (Esc)", "aria-label": "Close search", onclick: () => this.close() }, "×")),
+      this.results);
+    this.scrim = el(doc, "div", { id: "lima-search-scrim", hidden: true, onpointerdown: event => { if (event.target === this.scrim) this.close(); } }, this.panel);
     doc.documentElement.append(this.scrim);
 
     this.input.addEventListener("input", () => this.query());
@@ -137,7 +136,7 @@ class Panel {
   topRows(text) {
     const rows = [];
     if (looksLikeURL(text)) {
-      const url = /^[a-z][\w+.-]*:/i.test(text) && !/^localhost:/i.test(text) ? text : `https://${text}`;
+      const url = /^https?:\/\//i.test(text) ? text : /^(localhost|127\.0\.0\.1)(?=[:/]|$)/i.test(text) ? `http://${text}` : `https://${text}`;
       rows.push({ key: `nav:${url}`, icon: "external", title: text, subtitle: "Open website", action: "Open", run: () => this.openURL(url) });
     }
     rows.push({ key: "web", icon: "search", title: text, subtitle: `Search with ${this.engineName ?? "your search engine"}`, action: "Search", run: () => this.webSearch(text) });
@@ -148,14 +147,22 @@ class Panel {
   }
 
   async limaRows(text) {
-    const response = await lazy.LimaBridge.request("search.query", { query: text, limit: 12 });
-    return response.results
+    if (lazy.PrivateBrowsingUtils.isWindowPrivate(this.win)) return [];
+    const [response, workspaces] = await Promise.all([
+      lazy.LimaBridge.request("search.query", { query: text, limit: 18 }),
+      lazy.LimaBridge.request("workspace.list").catch(() => []),
+    ]);
+    const query = text.toLowerCase();
+    const projects = workspaces.filter(workspace => !workspace.parentID && workspace.conversationID && workspace.name.toLowerCase().includes(query))
+      .map(workspace => ({ key: `workspace:${workspace.id}`, icon: "workspace", title: workspace.name, subtitle: "Workspace",
+        action: "Open chat", run: () => lazy.LimaTabs.openOrFocus(this.win, `about:lima?chat=${encodeURIComponent(workspace.conversationID)}`) }));
+    return [...projects, ...response.results
       .filter(r => !["web", "tab"].includes(r.source) && !["agentAsk", "quickAsk", "webSearch", "navigate", "switchTab"].includes(r.action.type))
       .map(r => ({
         key: `lima:${r.key}`, icon: r.action.type === "runCapability" ? "bolt" : SOURCE_ICONS[r.source] ?? "search",
         title: r.title, subtitle: r.subtitle, action: r.action.type === "openApp" ? "Launch" : r.action.type === "runCapability" ? "Run" : "Open",
         run: () => this.runLima(r),
-      }));
+      }))];
   }
 
   tabRows(text) {
@@ -181,6 +188,7 @@ class Panel {
   }
 
   async historyRows(text) {
+    if (lazy.PrivateBrowsingUtils.isWindowPrivate(this.win)) return [];
     const db = await lazy.PlacesUtils.promiseDBConnection();
     const like = `%${text.replace(/[\\%_]/g, c => `\\${c}`)}%`;
     const rows = await db.executeCached(
@@ -198,6 +206,7 @@ class Panel {
 
   /** Empty query: what you were last doing in Lima. */
   recent(add) {
+    if (lazy.PrivateBrowsingUtils.isWindowPrivate(this.win)) return;
     Promise.all([lazy.LimaBridge.request("notes.list"), lazy.LimaBridge.request("chat.list")]).then(([notes, chats]) => {
       const rows = [
         ...notes.filter(n => !n.trashed).map(n => ({ when: n.modifiedAt, key: `note:${n.id}`, icon: n.kind === "canvas" ? "canvas" : "note", title: n.title || "Untitled",
@@ -212,6 +221,7 @@ class Panel {
   // MARK: Actions
 
   openURL(url) {
+    if (!/^https?:\/\//i.test(url)) return;
     const gBrowser = this.win.gBrowser;
     const tab = gBrowser.addTab(url, { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal() });
     gBrowser.selectedTab = tab;
@@ -276,7 +286,7 @@ class Panel {
         el(doc, "span", { class: "lima-s-text" }, el(doc, "span", { class: "lima-s-title", text: item.title }), item.subtitle ? el(doc, "span", { class: "lima-s-sub", text: item.subtitle }) : null),
         selected ? el(doc, "span", { class: "lima-s-action", text: `↩ ${item.action}` }) : null));
     }
-    if (!nodes.length) nodes.push(el(doc, "div", { class: "lima-s-empty", text: "Search the web, your tabs and Lima. Press ⌘↩ or click ✦ to ask AI instead." }));
+    if (!nodes.length) nodes.push(el(doc, "div", { class: "lima-s-empty", text: this.input.value.trim() ? "No matches" : "Search tabs, notes, workspaces, and the web" }));
     this.results.replaceChildren(...nodes);
     this.results.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
   }

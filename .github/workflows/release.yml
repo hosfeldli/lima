@@ -1,0 +1,101 @@
+name: Release
+run-name: Lima ${{ inputs.tag }}${{ inputs.publish && ' (publish)' || ' (stage)' }}
+
+# Builds an existing annotated vX.Y.Z tag on main. Signing keys come from GCP
+# Secret Manager through OIDC (no GitHub secrets) and live only on the
+# disposable runner. Staging never changes what installs see; publishing is
+# a separate job behind its own approval and needs no signing keys.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag, e.g. v5.0.1
+        required: true
+        type: string
+      publish:
+        description: Publish to the update feed after staging
+        required: true
+        default: false
+        type: boolean
+      critical:
+        description: Mark as a security update (shown more prominently)
+        required: true
+        default: false
+        type: boolean
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build, sign and stage
+    runs-on: macos-15
+    timeout-minutes: 90
+    environment: release
+    permissions:
+      contents: write   # draft release + assets
+      id-token: write   # GCP Workload Identity Federation
+    env:
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      LIMA_CRITICAL_UPDATE: ${{ inputs.critical }}
+      LIMA_UPDATE_BUCKET: ${{ vars.LIMA_UPDATE_BUCKET }}
+      LIMA_ARCHIVE_BUCKET: ${{ vars.LIMA_ARCHIVE_BUCKET }}
+    steps:
+      - name: Validate input
+        run: '[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]'
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_RELEASE_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - name: Prepare ephemeral signing
+        run: browser/scripts/release/ci_signing.sh prepare
+      - name: Preflight
+        run: browser/scripts/release/release.sh preflight --tag "$TAG"
+      - name: Build and verify
+        env:
+          LIMA_RELEASE_SKIP_PREFLIGHT: "1"
+        run: browser/scripts/release/release.sh build --tag "$TAG"
+      - name: Remove signing material before upload
+        if: always()
+        run: browser/scripts/release/ci_signing.sh cleanup
+      - name: Stage (draft release, archive, versioned downloads)
+        run: browser/scripts/release/release.sh stage --tag "$TAG"
+
+  publish:
+    name: Publish to the update feed
+    needs: build
+    if: inputs.publish
+    runs-on: macos-15
+    timeout-minutes: 20
+    environment: release-publish
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      LIMA_UPDATE_BUCKET: ${{ vars.LIMA_UPDATE_BUCKET }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_PUBLISH_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - name: Publish
+        run: browser/scripts/release/release.sh publish --tag "$TAG" --yes

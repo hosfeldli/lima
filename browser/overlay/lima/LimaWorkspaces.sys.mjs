@@ -13,15 +13,18 @@
 
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
+  PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
   BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.sys.mjs",
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
   SessionStore: "moz-src:///browser/components/sessionstore/SessionStore.sys.mjs",
 });
 
+import { lastVisibleTool, replyActivity } from "resource://lima/ui/tool-activity.sys.mjs";
+
 const MAP_PREF = "lima.workspaces.sidebar";
 const BOOKMARK_ROOT_PREF = "lima.workspaces.bookmarkRoot";
-const STAR = "resource://lima-ui/marks/star-prism.svg";
+const MASCOT = "resource://lima-ui/marks/companion.svg";
 const TERMINAL_ICON = "resource://lima-ui/icons/terminal.svg";
 const NOTE_ICON = "resource://lima-ui/icons/note.svg";
 
@@ -54,6 +57,10 @@ class Workspaces {
   #queue = Promise.resolve();
   #workspaces = new Map();
   #focus = new Map();
+  #deleting = new Set();
+  #archived = new Set();
+  #prompts = new Map();
+  #chatMotion = new Map();
 
   start() {
     if (this.#started) return;
@@ -63,16 +70,49 @@ class Workspaces {
       switch (message.event) {
         case "workspace.created":
         case "workspace.updated":
+          if (this.#archived.has(data.id)) break;
           this.#workspaces.set(data.id, data);
-          this.#enqueue(() => this.reconcile(data));
+          this.#enqueue(() => this.reconcile(this.#workspaces.get(data.id)));
           break;
-        case "workspace.deleted":
+        case "workspace.deleted": {
+          const workspace = this.#workspaces.get(data.id);
+          this.#archived.add(data.id);
           this.#workspaces.delete(data.id);
-          this.#enqueue(() => this.remove(data.id, data.parentId));
+          this.#focus.delete(data.id);
+          this.#chatMotion.delete(data.id);
+          this.#enqueue(() => this.remove(data.id, data.parentId, workspace));
+          break;
+        }
+        case "chat.updated": {
+          const workspace = this.workspaces.find(item => item.conversationID === data.id);
+          if (!workspace) break;
+          const message = data.messages?.findLast(item => item.role === "assistant");
+          const motion = replyActivity(message, { tool: lastVisibleTool(message?.tools), provider: data.provider })?.motion;
+          this.#chatMotion.set(workspace.id, motion);
+          this.#paintFocus(workspace.id);
+          break;
+        }
+        case "workspace.tabClosed":
+          this.#enqueue(() => {
+            const win = this.#win();
+            const folder = this.folderFor(data.id, "folder", win);
+            const tab = folder && this.#allTabs(folder).find(item => this.workspaceForTab(item) === data.id && sameURL(tabURL(item), data.url));
+            if (tab) win.gBrowser.removeTab(tab, { animate: true });
+          });
           break;
         case "workspace.activity":
           this.#focus.set(data.id, data);
           this.#paintFocus(data.id);
+          break;
+        case "prompt.opened":
+          this.#prompts.set(data.id, data.workspaceId);
+          this.#paintFocus(data.workspaceId);
+          this.#paintFocus(this.#workspaces.get(data.workspaceId)?.parentID);
+          break;
+        case "prompt.closed":
+          this.#prompts.delete(data.id);
+          this.#paintFocus(data.workspaceId);
+          this.#paintFocus(this.#workspaces.get(data.workspaceId)?.parentID);
           break;
         case "workspace.browserRequest":
           this.#answer(data);
@@ -80,12 +120,13 @@ class Workspaces {
       }
     });
     this.#enqueue(async () => {
-      const all = await lazy.LimaBridge.request("workspace.list");
-      for (const workspace of all) this.#workspaces.set(workspace.id, workspace);
+      for (const prompt of await lazy.LimaBridge.request("workspace.prompts").catch(() => [])) this.#prompts.set(prompt.id, prompt.workspaceId);
+      const all = (await lazy.LimaBridge.request("workspace.list")).filter(workspace => !this.#archived.has(workspace.id));
+      for (const workspace of all) if (!this.#workspaces.has(workspace.id)) this.#workspaces.set(workspace.id, workspace);
       // Parents before helpers, so Agents folders have somewhere to go.
-      for (const workspace of all.filter(w => !w.parentID)) await this.reconcile(workspace);
-      for (const workspace of all.filter(w => w.parentID)) await this.reconcile(workspace);
-      this.#prune(all);
+      for (const workspace of all.filter(w => !w.parentID)) await this.reconcile(this.#workspaces.get(workspace.id));
+      for (const workspace of all.filter(w => w.parentID)) await this.reconcile(this.#workspaces.get(workspace.id));
+      await this.#prune();
       const activity = await lazy.LimaBridge.request("workspace.activity").catch(() => ({}));
       for (const [id, state] of Object.entries(activity)) { this.#focus.set(id, { id, ...state }); this.#paintFocus(id); }
     });
@@ -110,7 +151,7 @@ class Workspaces {
   }
 
   #win() {
-    const win = lazy.BrowserWindowTracker.getTopWindow();
+    const win = lazy.BrowserWindowTracker.getTopWindow({ private: false });
     return win?.gZenFolders ? win : null;
   }
 
@@ -122,6 +163,7 @@ class Workspaces {
 
   /** The workspace a tab belongs to (nearest workspace folder). */
   workspaceForTab(tab) {
+    if (tab?.hasAttribute?.("lima-helper-chat")) return tab.getAttribute("lima-helper-chat");
     const folder = tab?.closest?.("zen-folder[lima-workspace]");
     return folder ? folder.getAttribute("lima-workspace") : null;
   }
@@ -129,15 +171,18 @@ class Workspaces {
   // MARK: Reconcile
 
   async reconcile(workspace) {
-    const win = this.#win();
+    if (!workspace || this.#deleting.has(workspace.id)) return;
+    const win = lazy.BrowserWindowTracker.orderedWindows.find(window => this.folderFor(workspace.id, "folder", window)) ?? this.#win();
     if (win) this.#reconcileFolder(win, workspace);
     if (!workspace.parentID) await this.#reconcileBookmarks(workspace);
   }
 
   #makeTab(win, workspace, entry) {
+    const live = entry.url.startsWith("about:lima?");
     const tab = win.gBrowser.addTab(entry.url, {
-      triggeringPrincipal: system(), inBackground: true, createLazyBrowser: true, lazyTabTitle: entry.title, skipAnimation: true,
+      triggeringPrincipal: system(), inBackground: true, lazyTabTitle: entry.title, skipAnimation: true,
     });
+    if (live) tab.setAttribute("undiscardable", "true");
     tab.setAttribute("lima-url", entry.url);
     tab.setAttribute("lima-title", entry.title);
     try {
@@ -167,15 +212,15 @@ class Workspaces {
     win.setTimeout(apply, 2000);
   }
 
-  #createFolder(win, tabs, label, parent = null) {
-    const options = { label, collapsed: false };
+  #createFolder(win, tabs, label, parent = null, collapsed = false) {
+    const options = { label, collapsed };
     if (parent) options.insertAfter = parent.groupContainer.lastElementChild;
     return win.gZenFolders.createFolder(tabs, options);
   }
 
   #coreEntries(workspace) {
     const entries = [];
-    if (workspace.conversationID) entries.push({ url: `about:lima?chat=${workspace.conversationID}`, title: "Chat", icon: STAR });
+    if (workspace.conversationID) entries.push({ url: `about:lima?chat=${workspace.conversationID}`, title: "Chat", icon: MASCOT });
     if (workspace.terminalID) entries.push({ url: `about:lima?terminal=${workspace.terminalID}`, title: "Terminal", icon: TERMINAL_ICON });
     for (const tab of workspace.tabs.filter(t => t.url.startsWith("about:lima"))) entries.push({ url: tab.url, title: tab.title, icon: NOTE_ICON });
     return entries;
@@ -191,13 +236,14 @@ class Workspaces {
       if (!parentFolder) return; // parent not shown yet; reconciled again with it
     }
 
+    const agentsWereCollapsed = parentFolder?.collapsed;
     let folder = this.folderFor(workspace.id, "folder", win);
     const core = this.#coreEntries(workspace);
     const web = workspace.tabs.filter(t => !t.url.startsWith("about:lima")).map(t => ({ url: t.url, title: t.title }));
 
     if (!folder) {
-      const tabs = core.map(e => this.#makeTab(win, workspace, e));
-      folder = this.#createFolder(win, tabs, workspace.name, parentFolder);
+      const tabs = core.filter(e => !helper || !parentFolder.tabs.some(tab => tabURL(tab) === e.url)).map(e => this.#makeTab(win, workspace, e));
+      folder = this.#createFolder(win, tabs, workspace.name, parentFolder, helper);
       this.#label(win, tabs);
       entry.folder = folder.id;
       map[workspace.id] = entry;
@@ -208,23 +254,50 @@ class Workspaces {
     if (helper) folder.setAttribute("lima-agent", "true");
     if (folder.label !== workspace.name) folder.label = workspace.name;
 
+    const chatURL = workspace.conversationID && `about:lima?chat=${workspace.conversationID}`;
+    const detached = helper && [...parentFolder.tabs].find(tab => tab.group === parentFolder && tabURL(tab) === chatURL);
+    if (detached) {
+      folder.addTabs([detached]);
+      detached.removeAttribute("lima-helper-chat");
+      if (agentsWereCollapsed) parentFolder.collapsed = true;
+    }
+    const label = folder.querySelector(":scope > .tab-group-label-container");
+    if (label && !label.querySelector(".lima-workspace-disclosure")) {
+      const disclosure = win.document.createElementNS("http://www.w3.org/1999/xhtml", "button");
+      disclosure.className = "lima-workspace-disclosure";
+      disclosure.title = "Toggle workspace items";
+      disclosure.setAttribute("aria-label", disclosure.title);
+      for (const type of ["mousedown", "mouseup", "click"]) disclosure.addEventListener(type, event => {
+        event.stopPropagation();
+        if (event.type === "click") folder.collapsed = !folder.collapsed;
+      });
+      label.append(disclosure);
+    }
+
     // Core tabs: add missing ones, drop terminals/chats the workspace replaced.
     const wanted = new Set([...core, ...web].map(e => e.url));
+    let replaceSelectedTerminal = false;
     for (const tab of folder.tabs) {
       if (tab.group !== folder) continue;
       const url = tabURL(tab);
-      if (/^about:lima\?(terminal|chat)=/.test(url) && !wanted.has(url)) win.gBrowser.removeTab(tab, { animate: false });
+      if (/^about:lima\?(terminal|chat|workspace)=/.test(url) && !wanted.has(url)) {
+        replaceSelectedTerminal ||= tab.selected && url.startsWith("about:lima?terminal=");
+        win.gBrowser.removeTab(tab, { animate: false });
+      }
     }
-    const allTabs = () => this.#allTabs(folder);
+    const allTabs = () => this.#allTabs(folder).filter(tab => this.workspaceForTab(tab) === workspace.id);
     const present = () => new Set(allTabs().map(tabURL));
     const missingCore = core.filter(e => !present().has(e.url));
     if (missingCore.length) {
       const added = missingCore.map(e => this.#makeTab(win, workspace, e));
       folder.addTabs(added);
+      const terminal = replaceSelectedTerminal && added.find(tab => tabURL(tab).startsWith("about:lima?terminal="));
+      if (terminal) win.gBrowser.selectedTab = terminal;
       // Chat first, then Terminal, then notes, then sub-folders.
       this.#orderCore(win, folder);
       win.setTimeout(() => this.#orderCore(win, folder), 700);
       this.#label(win, added);
+      added.filter(tab => tabURL(tab).startsWith("about:lima?note=")).forEach(tab => this.#animateTab(tab));
     }
 
     // Web pages: helpers keep theirs directly; workspaces use a Tabs folder.
@@ -243,14 +316,24 @@ class Workspaces {
         } else tabsFolder.addTabs(added);
       }
       this.#label(win, added);
+      added.forEach(tab => this.#animateTab(tab));
     }
     this.folderFor(workspace.id, "tabs", win)?.setAttribute("lima-tabs", workspace.id);
     this.#orderCore(win, folder);
     // Restored lazy tabs come back without our icons.
-    for (const tab of this.#allTabs(folder)) {
-      if (!tab.hasAttribute("pending") || tab.getAttribute("image")) continue;
+    for (const tab of allTabs()) {
       const url = tabURL(tab);
-      const icon = url.startsWith("about:lima?chat=") ? STAR : url.startsWith("about:lima?terminal=") ? TERMINAL_ICON : url.startsWith("about:lima?note=") ? NOTE_ICON : null;
+      tab.toggleAttribute("lima-workspace-chat", url === chatURL);
+      if (url?.startsWith("about:lima?")) {
+        tab.setAttribute("undiscardable", "true");
+        if (tab.hasAttribute("pending") && !tab.hasAttribute("lima-reactivating")) {
+          tab.setAttribute("lima-reactivating", "true");
+          win.gBrowser.insertBrowser(tab);
+          tab.linkedBrowser.loadURI(Services.io.newURI(url), { triggeringPrincipal: system(), loadFlags: Ci.nsIWebNavigation.LOAD_FLAGS_REPLACE_HISTORY });
+        }
+      }
+      if (!tab.hasAttribute("pending") || tab.getAttribute("image")) continue;
+      const icon = url?.startsWith("about:lima?chat=") ? MASCOT : url?.startsWith("about:lima?terminal=") ? TERMINAL_ICON : url?.startsWith("about:lima?note=") ? NOTE_ICON : null;
       if (icon) { tab.setAttribute("lima-icon", icon); try { win.gBrowser.setIcon(tab, icon); } catch {} }
     }
     this.#paintFocus(workspace.id);
@@ -260,12 +343,12 @@ class Workspaces {
   #orderCore(win, folder) {
     const rank = tab => {
       const url = tabURL(tab);
-      return url.startsWith("about:lima?chat=") ? 0 : url.startsWith("about:lima?terminal=") ? 1 : url.startsWith("about:lima?note=") ? 2 : 3;
+      return url?.startsWith("about:lima?chat=") ? 1 : url?.startsWith("about:lima?terminal=") ? 2 : url?.startsWith("about:lima?note=") ? 3 : 4;
     };
     const children = [...folder.groupContainer.children].filter(node => !node.hasAttribute?.("zen-empty-tab") && (node.isZenFolder || node.localName === "tab"));
     const firstFolder = children.find(node => node.isZenFolder);
     if (!firstFolder) return;
-    const core = children.filter(node => node.localName === "tab" && rank(node) < 3);
+    const core = children.filter(node => node.localName === "tab" && rank(node) < 4);
     const sorted = [...core].sort((a, b) => rank(a) - rank(b));
     const inOrder = sorted.every((tab, i) => tab === core[i]) && core.every(tab => children.indexOf(tab) < children.indexOf(firstFolder));
     if (inOrder) return;
@@ -282,8 +365,11 @@ class Workspaces {
     const parent = this.folderFor(parentID, "folder", win);
     if (!parent) return null;
     let agents = this.folderFor(parentID, "agents", win);
-    if (agents && agents.group === parent) return agents;
-    agents = this.#createFolder(win, [], "Agents", parent);
+    if (agents && agents.group === parent) {
+      agents.setAttribute("lima-agents", parentID);
+      return agents;
+    }
+    agents = this.#createFolder(win, [], "Agents", parent, true);
     agents.setAttribute("lima-agents", parentID);
     map[parentID] = { ...(map[parentID] ?? {}), agents: agents.id };
     this.#saveMap(map);
@@ -291,36 +377,189 @@ class Workspaces {
   }
 
   /** Forget folders of workspaces that no longer exist. */
-  #prune(all) {
-    const ids = new Set(all.map(w => w.id));
-    const map = this.#map();
-    for (const id of Object.keys(map)) {
-      if (!ids.has(id)) { this.folderFor(id)?.delete(); delete map[id]; }
+  async #prune() {
+    for (const id of Object.keys(this.#map())) {
+      if (!this.#workspaces.has(id)) await this.remove(id);
     }
+  }
+
+  async remove(id, parentID, workspace) {
+    const map = this.#map();
+    const urls = new Set([`about:lima?workspace=${id}`]);
+    if (workspace?.conversationID) urls.add(`about:lima?chat=${workspace.conversationID}`);
+    if (workspace?.terminalID) urls.add(`about:lima?terminal=${workspace.terminalID}`);
+    for (const win of lazy.BrowserWindowTracker.orderedWindows) {
+      if (!win.gBrowser || lazy.PrivateBrowsingUtils.isWindowPrivate(win)) continue;
+      const folder = this.folderFor(id, "folder", win);
+      if (folder) {
+        // Sidebar nesting is organizational. Keep any independently owned
+        // workspace folders when deleting their surrounding folder.
+        for (const child of folder.querySelectorAll("zen-folder[lima-workspace]:not([lima-agent])")) {
+          if (child.parentElement.closest("zen-folder[lima-workspace]") !== folder) continue;
+          folder.before(child);
+        }
+        win.gBrowser.tabContainer._invalidateCachedTabs();
+        await folder.delete();
+      }
+      // A workspace tab may have been detached before its folder was removed.
+      // Close Lima's own surfaces while leaving detached web pages independent.
+      const tabs = [...(win.gZenWorkspaces?.allStoredTabs ?? win.gBrowser.tabs)];
+      for (const tab of tabs) {
+        const owner = lazy.SessionStore.getCustomTabValue(tab, "lima-workspace");
+        const current = tab.linkedBrowser?.currentURI?.spec;
+        const url = current && current !== "about:blank" ? current : tabURL(tab);
+        if (urls.has(url) || (owner === id && /^about:lima\?(workspace|chat|terminal)=/.test(url))) {
+          win.gBrowser.removeTab(tab, { animate: true });
+        }
+      }
+      if (parentID) {
+        const agents = this.folderFor(parentID, "agents", win);
+        if (agents && !agents.allItems.some(item => item.isZenFolder)) {
+          await agents.delete();
+          delete map[parentID]?.agents;
+        }
+      }
+    }
+    delete map[id];
     this.#saveMap(map);
   }
 
-  async remove(id, parentID) {
-    const map = this.#map();
-    this.folderFor(id)?.delete();
-    delete map[id];
-    this.#saveMap(map);
-    if (parentID) {
-      const agents = this.folderFor(parentID, "agents");
-      if (agents && !agents.allItems.some(item => item.isZenFolder)) {
-        await agents.delete();
-        delete map[parentID]?.agents;
-        this.#saveMap(map);
-      }
+  onFolderRemoved(event) {
+    const folder = event.target;
+    const id = folder.getAttribute?.("lima-workspace");
+    if (!id || event.detail?.adopting || this.#deleting.has(id)) return;
+    const workspace = this.#workspaces.get(id);
+    if (!workspace || this.#deleting.has(workspace.parentID)) return;
+    const win = folder.ownerDocument.defaultView;
+    if (!win || win.closed) return;
+    // Zen emits this before closing. The same group can be reinserted or
+    // adopted as part of a move. Check after the DOM removal animation.
+    const check = () => win.setTimeout(() => {
+      if (this.#deleting.has(id) || !this.#workspaces.has(id)) return;
+      if (lazy.BrowserWindowTracker.orderedWindows.some(window => this.folderFor(id, "folder", window))) return;
+      this.archive(win, id, { removedFolder: folder });
+    }, 0);
+    folder.addEventListener("TabGroupRemovedFromDOM", check, { once: true });
+  }
+
+  async archive(win, id, { removedFolder } = {}) {
+    const workspace = this.#workspaces.get(id);
+    if (!workspace || this.#deleting.has(id)) return;
+    this.#deleting.add(id);
+    const folder = this.folderFor(id, "folder", win);
+    let archived = false;
+    const perform = async () => {
+      folder?.setAttribute("lima-archiving", "true");
+      try {
+        const result = await lazy.LimaBridge.request("workspace.delete", { id });
+        archived = true;
+        return result;
+      } finally { folder?.removeAttribute("lima-archiving"); }
+    };
+    try {
+      await this.#archivePanel(win, workspace, folder, perform);
+    } finally {
+      this.#deleting.delete(id);
+      if (!archived && removedFolder) this.#enqueue(() => this.reconcile(this.#workspaces.get(id)));
     }
+  }
+
+  #archivePanel(win, workspace, folder, perform) {
+    const doc = win.document;
+    const panel = doc.createXULElement("panel");
+    panel.className = "lima-archive-panel";
+    panel.setAttribute("type", "arrow");
+    panel.setAttribute("noautohide", "true");
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-label", workspace.parentID ? "Dismiss agent" : "Archive workspace");
+    const element = (tag, className, text) => {
+      const node = doc.createElementNS("http://www.w3.org/1999/xhtml", tag);
+      node.className = className;
+      if (text) node.textContent = text;
+      return node;
+    };
+    const heading = element("strong", "", workspace.parentID ? "Dismiss agent" : "Archive workspace");
+    const description = element("p", "lima-archive-description", workspace.parentID
+      ? `Close ${workspace.name} and its tabs?`
+      : `Close ${workspace.name} and verify a ZIP of its files. Linked or shared folders keep their originals.`);
+    const path = element("p", "lima-archive-path", workspace.parentID ? "" : workspace.directory);
+    const status = element("p", "lima-archive-status");
+    status.setAttribute("role", "status");
+    const cancel = element("button", "", "Cancel");
+    const action = element("button", "lima-archive-action", workspace.parentID ? "Dismiss" : "Archive");
+    const controls = element("div", "lima-archive-actions");
+    controls.append(cancel, action);
+    const content = element("div", "lima-archive-content");
+    content.append(heading, description, path, status, controls);
+    panel.append(content);
+    (doc.getElementById("mainPopupSet") ?? doc.documentElement).append(panel);
+    let busy = false;
+    cancel.onclick = () => panel.hidePopup();
+    panel.addEventListener("keydown", event => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!busy) panel.hidePopup();
+      }
+    });
+    action.onclick = async () => {
+      if (busy) return;
+      busy = action.disabled = cancel.disabled = true;
+      status.textContent = workspace.parentID ? "Dismissing agent…" : "Creating and verifying the ZIP…";
+      try {
+        const result = await perform();
+        heading.textContent = workspace.parentID ? "Agent dismissed" : "Workspace archived";
+        description.textContent = result?.recoveryPath ? `A recovery copy remains at ${result.recoveryPath}` : "";
+        path.textContent = result?.archivePath ?? "";
+        status.textContent = result?.directoryKept && !workspace.parentID ? "The original folder is still available." : "";
+        action.hidden = true;
+        cancel.textContent = "Done";
+      } catch (error) {
+        status.textContent = error.message;
+        action.textContent = "Retry";
+      } finally {
+        busy = action.disabled = cancel.disabled = false;
+        (action.hidden ? cancel : action).focus();
+      }
+    };
+    return new Promise(resolve => {
+      const finish = () => { win.removeEventListener("unload", finish); panel.remove(); resolve(); };
+      panel.addEventListener("popuphidden", finish, { once: true });
+      win.addEventListener("unload", finish, { once: true });
+      panel.addEventListener("popupshown", () => cancel.focus(), { once: true });
+      // Use a stable toolbar anchor so closing the folder doesn't close the confirmation.
+      const anchor = doc.getElementById("lima-settings-button") ?? folder ?? doc.getElementById("navigator-toolbox");
+      panel.openPopup(anchor, "before_start");
+    });
+  }
+
+  #animateTab(tab) {
+    if (tab.ownerDocument.defaultView.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    tab.querySelector(".tab-content")?.animate(
+      [{ opacity: 0.55, transform: "translateX(-5px)" }, { opacity: 1, transform: "translateX(0)" }],
+      { duration: 220, easing: "cubic-bezier(.2,.8,.2,1)" },
+    );
   }
 
   /** User closed a page the agent had opened: drop it from desired state. */
   onTabClose(tab) {
     const id = this.workspaceForTab(tab);
     const url = tabURL(tab);
+    const folder = tab.closest("zen-folder[lima-workspace]");
     if (!id || !url || url.startsWith("about:lima")) return;
-    lazy.LimaBridge.request("workspace.closeTab", { id, url }).catch(() => {});
+    tab.ownerDocument.defaultView.setTimeout(() => {
+      const workspace = this.#workspaces.get(id);
+      if (!workspace || this.#deleting.has(id) || this.#deleting.has(workspace.parentID) || !folder?.isConnected) return;
+      lazy.LimaBridge.request("workspace.closeTab", { id, url }).catch(() => {});
+    }, 0);
+  }
+
+  onTabSelect(win) {
+    const selected = win.gBrowser.selectedTab;
+    const id = this.workspaceForTab(selected);
+    for (const folder of win.document.querySelectorAll("zen-folder[lima-workspace]")) {
+      folder.toggleAttribute("lima-chat-selected", folder.getAttribute("lima-workspace") === id && selected.hasAttribute("lima-workspace-chat"));
+    }
   }
 
   /** The folder's ✦ opens its chat. */
@@ -343,29 +582,37 @@ class Workspaces {
   // MARK: Prism: where the agent is
 
   #paintFocus(id) {
+    if (!id) return;
     const win = this.#win();
     const folder = win && this.folderFor(id, "folder", win);
     if (!folder) return;
     const state = this.#focus.get(id) ?? { surface: "idle" };
     const workspace = this.#workspaces.get(id);
-    const own = this.#allTabs(folder).filter(tab => this.workspaceForTab(tab) === id);
-    for (const tab of own) tab.removeAttribute("lima-ai");
-    folder.removeAttribute("lima-ai");
+    const own = this.#allTabs(workspace?.parentID && folder.group?.isZenFolder ? folder.group : folder).filter(tab => this.workspaceForTab(tab) === id);
     const chatURL = workspace?.conversationID && `about:lima?chat=${workspace.conversationID}`;
-    const find = url => own.find(tab => sameURL(tabURL(tab), url));
-    switch (state.surface) {
-      case "chat":
-        folder.setAttribute("lima-ai", "thinking");
-        find(chatURL)?.setAttribute("lima-ai", "thinking");
-        break;
-      case "tab":
-        find(state.url)?.setAttribute("lima-ai", "here");
-        folder.setAttribute("lima-ai", "working");
-        break;
-      case "terminal":
-        find(`about:lima?terminal=${workspace?.terminalID}`)?.setAttribute("lima-ai", "here");
-        folder.setAttribute("lima-ai", "working");
-        break;
+    const activeURL = { chat: chatURL, tab: state.url, terminal: `about:lima?terminal=${workspace?.terminalID}` }[state.surface];
+    folder.toggleAttribute("lima-chat-selected", own.some(tab => tab.selected && tabURL(tab) === chatURL));
+    for (const tab of own) {
+      const next = sameURL(tabURL(tab), activeURL) ? (state.surface === "chat" ? "thinking" : "here") : "";
+      if (!next) tab.removeAttribute("lima-ai");
+      else if (tab.getAttribute("lima-ai") !== next) {
+        tab.setAttribute("lima-ai", next);
+        if (next === "here") this.#animateTab(tab);
+      }
+    }
+    const motion = { terminal: "terminal", tab: "tabs", chat: this.#chatMotion.get(id) || "think" }[state.surface];
+    if (motion) folder.setAttribute("lima-motion", motion); else folder.removeAttribute("lima-motion");
+    const nextFolder = { chat: "thinking", tab: "working", terminal: "working" }[state.surface];
+    if (nextFolder) folder.setAttribute("lima-ai", nextFolder);
+    else folder.removeAttribute("lima-ai");
+    folder.toggleAttribute("lima-attention", [...this.#prompts.values()].some(owner => owner === id || this.#workspaces.get(owner)?.parentID === id));
+    const tabs = this.folderFor(id, "tabs", win);
+    if (tabs && state.surface === "tab") {
+      tabs.collapsed = false;
+      tabs.setAttribute("lima-ai-opened", "true");
+    } else if (tabs?.hasAttribute("lima-ai-opened")) {
+      tabs.removeAttribute("lima-ai-opened");
+      tabs.collapsed = true;
     }
   }
 
@@ -375,13 +622,28 @@ class Workspaces {
     const reply = (result, error) => lazy.LimaBridge.request("workspace.browserReply", error ? { requestId: request.requestId, error } : { requestId: request.requestId, result }).catch(() => {});
     try {
       const win = this.#win();
-      if (!win) throw new Error("no Lima window is open");
+      if (!win || lazy.PrivateBrowsingUtils.isWindowPrivate(win)) throw new Error("Open a regular Lima window.");
+      if (request.kind === "location") return reply(await this.#approximateLocation(win));
       if (request.kind === "listTabs") return reply(this.#pages(win, request.workspaceId).map(tab => ({ url: tabURL(tab), title: tab.label, selected: tab.selected })));
+      if (request.kind === "action") return reply(await this.#act(win, request));
       if (request.kind === "readTab") return reply(await this.#read(win, request.workspaceId, request.url));
       throw new Error(`unknown request ${request.kind}`);
     } catch (error) {
       reply(null, String(error.message ?? error));
     }
+  }
+
+  #approximateLocation(win) {
+    return new Promise((resolve, reject) => {
+      const service = win.navigator.geolocation;
+      if (!service) { reject(new Error("Location Services are unavailable.")); return; }
+      service.getCurrentPosition(({ coords }) => {
+        const round = value => Math.round(value * 100) / 100;
+        resolve({ latitude: round(coords.latitude), longitude: round(coords.longitude),
+          accuracyMeters: Math.max(1500, Math.ceil(coords.accuracy / 100) * 100) });
+      }, failure => reject(new Error(failure.code === 1 ? "Location access is off for Lima." : "Lima couldn’t get a location estimate.")),
+      { enableHighAccuracy: false, maximumAge: 0, timeout: 16000 });
+    });
   }
 
   /** Web pages the agent may work in: its Tabs folder, or a helper's own folder. */
@@ -390,6 +652,64 @@ class Workspaces {
     const container = workspace?.parentID ? this.folderFor(id, "folder", win) : this.folderFor(id, "tabs", win);
     if (!container) return [];
     return this.#allTabs(container).filter(tab => /^https?:/.test(tabURL(tab)) && (!workspace?.parentID || tab.group === container));
+  }
+
+  async #act(win, request) {
+    let tab = this.#pages(win, request.workspaceId).find(item => sameURL(tabURL(item), request.url));
+    for (let retry = 0; !tab && retry < 30; retry++) {
+      await new Promise(resolve => win.setTimeout(resolve, 100));
+      tab = this.#pages(win, request.workspaceId).find(item => sameURL(tabURL(item), request.url));
+    }
+    if (!tab) throw new Error("The workspace tab is unavailable.");
+    const browser = await this.#loaded(win, tab, request.url, false);
+    const origin = new URL(request.url).origin;
+    const global = browser.browsingContext?.currentWindowGlobal;
+    if (!global || new URL(global.documentURI.spec).origin !== origin) throw new Error("The page left its authorized origin.");
+    if (request.paths && !request.paths.includes(new URL(browser.currentURI.spec).pathname)) {
+      throw new Error("This path is outside the approved plan. Inspect the current page and request approval if the new path is needed.");
+    }
+    if (request.action === "screenshot") {
+      const width = Math.max(1, browser.clientWidth), height = Math.max(1, browser.clientHeight);
+      const image = await global.drawSnapshot(new win.DOMRect(0, 0, width, height), Math.min(1, 960 / width, 780 / height), "#0d0e10");
+      const canvas = win.document.createElementNS("http://www.w3.org/1999/xhtml", "canvas");
+      canvas.width = image.width;
+      canvas.height = image.height;
+      canvas.getContext("2d").drawImage(image, 0, 0);
+      image.close();
+      return { jpeg: canvas.toDataURL("image/jpeg", 0.76).split(",")[1] };
+    }
+    const data = { origin, paths: request.paths, action: request.action, options: request.options };
+    let result;
+    try {
+      result = await global.getActor("LimaPage").sendQuery("action", data);
+    } catch (error) {
+      const live = browser.browsingContext?.currentWindowGlobal;
+      if (!live || live === global || request.action !== "inspect") throw error;
+      result = await live.getActor("LimaPage").sendQuery("action", data);
+    }
+    if (result.pointer) this.#showAction(win, browser, result.pointer, request.action);
+    return result;
+  }
+
+  #showAction(win, browser, pointer, action) {
+    if (!["click", "type"].includes(action) || win.gBrowser.selectedBrowser !== browser) return;
+    const { x, y } = pointer;
+    const bounds = browser.getBoundingClientRect();
+    const zoom = browser.fullZoom || 1;
+    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x * zoom > bounds.width || y * zoom > bounds.height) return;
+    const doc = win.document;
+    doc.getElementById("lima-agent-pointer")?.remove();
+    const marker = doc.createElementNS("http://www.w3.org/1999/xhtml", "span");
+    marker.id = "lima-agent-pointer";
+    marker.dataset.action = action;
+    marker.setAttribute("aria-hidden", "true");
+    marker.style.left = `${bounds.left + x * zoom}px`;
+    marker.style.top = `${bounds.top + y * zoom}px`;
+    marker.textContent = action === "type" ? "Typing" : "";
+    (doc.getElementById("browser") ?? doc.documentElement).append(marker);
+    const clear = () => { marker.remove(); win.gBrowser.tabContainer.removeEventListener("TabSelect", clear); };
+    win.gBrowser.tabContainer.addEventListener("TabSelect", clear, { once: true });
+    win.setTimeout(clear, action === "type" ? 1450 : 760);
   }
 
   async #read(win, id, url) {
@@ -413,16 +733,17 @@ class Workspaces {
   }
 
   /** Make sure a (possibly lazy) tab has loaded its page, without selecting it. */
-  async #loaded(win, tab, url) {
+  async #loaded(win, tab, url, settle = true) {
     const gBrowser = win.gBrowser;
-    if (!tab.linkedPanel) (gBrowser.insertBrowser ?? gBrowser._insertBrowser).call(gBrowser, tab);
+    const pending = tab.hasAttribute("pending");
+    if (!tab.linkedPanel) gBrowser.insertBrowser(tab);
     const browser = tab.linkedBrowser;
-    if (!browser.currentURI || browser.currentURI.spec === "about:blank") {
+    if (pending || !browser.currentURI || browser.currentURI.spec === "about:blank") {
       browser.loadURI(Services.io.newURI(tabURL(tab) || url), { triggeringPrincipal: system() });
     }
     for (let i = 0; i < 150; i++) {
       const doc = browser.browsingContext?.currentWindowGlobal?.documentURI?.spec ?? "";
-      if (/^https?:/.test(doc) && !browser.webProgress?.isLoadingDocument) break;
+      if (/^https?:/.test(doc) && (!settle || !browser.webProgress?.isLoadingDocument)) break;
       await new Promise(resolve => win.setTimeout(resolve, 100));
     }
     return browser;

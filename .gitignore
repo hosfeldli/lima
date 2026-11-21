@@ -8,3 +8,5 @@ browser/overlay/lima/ui/bundle.js
 browser/overlay/lima/ui/icons.js
 .impeccable/build/
 .impeccable/reference/
+/dist/
+__pycache__/

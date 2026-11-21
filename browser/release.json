@@ -1,0 +1,17 @@
+{
+  "comment": "Lima release policy. Public values only: the private signing key and update key live in GCP Secret Manager. See docs/RELEASING.md.",
+  "schemaVersion": 1,
+  "signing": {
+    "mode": "self-signed",
+    "identity": "RayPlacement Local Code Signing",
+    "certificateSHA256": "3dfe6a7f48bff98946a3b309f733c58b515d026daca0cfe63bf03f6a09142f12"
+  },
+  "updates": {
+    "channel": "stable",
+    "feedURL": "https://storage.googleapis.com/lima-updates-940267100054/stable/latest.json",
+    "publicKey": "O2fFs9p79WG2BbLM+Dqsr4ZkXc4eOB9ogRQwLhiWLb4="
+  },
+  "github": {
+    "repository": "hosfeldli/lima"
+  }
+}

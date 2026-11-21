@@ -21,6 +21,19 @@ function hostPath() {
   return file.path;
 }
 
+/* Marionette or the remote agent can run chrome-privileged script on behalf
+ * of whoever started the browser with --marionette / --remote-debugging-port.
+ * Release builds refuse to hand such a session the user's runtime. */
+function remoteControlled() {
+  if (!Services.prefs.getBoolPref("lima.release.hardened", false)) return false;
+  try { if (Services.marionette?.running) return true; } catch {}
+  try {
+    const agent = Cc["@mozilla.org/remote/agent;1"]?.getService(Ci.nsIRemoteAgent);
+    if (agent?.running) return true;
+  } catch {}
+  return false;
+}
+
 class Bridge {
   #proc = null;
   #starting = null;
@@ -29,6 +42,7 @@ class Bridge {
   #listeners = new Set();
   #restarts = 0;
   #buffer = new Uint8Array(0);
+  #startupError = null;
   status = "stopped";
 
   async request(method, params) {
@@ -50,7 +64,7 @@ class Bridge {
           this.#pending.delete(id);
           reject(new Error(`lima-host: ${method} timed out`));
         },
-        REQUEST_TIMEOUT_MS,
+        ["workspace.delete", "assistant.plan", "assistant.delegate"].includes(method) ? 600000 : method === "integrations.google.refresh" ? 30000 : REQUEST_TIMEOUT_MS,
         Ci.nsITimer.TYPE_ONE_SHOT
       );
       this.#pending.set(id, handle);
@@ -69,22 +83,32 @@ class Bridge {
 
   async #ensureStarted() {
     if (this.#proc) return;
-    if (this.status === "failed") throw new Error("lima-host crashed repeatedly; restart Lima to retry");
+    if (this.status === "failed") throw this.#startupError ?? new Error("Lima’s runtime exited repeatedly. Reopen Lima to retry.");
     this.#starting ??= this.#start().finally(() => (this.#starting = null));
     await this.#starting;
   }
 
   async #start() {
+    if (remoteControlled()) {
+      this.status = "failed";
+      this.#startupError = new Error("Lima’s runtime is unavailable while the browser is under remote control.");
+      throw this.#startupError;
+    }
     this.status = "starting";
+    this.#startupError = null;
     this.#proc = await lazy.Subprocess.call({
       command: hostPath(),
       arguments: ["--stdio"],
       stderr: "pipe",
     });
     this.status = "running";
-    this.#readLoop(this.#proc);
-    this.#drainStderr(this.#proc);
-    this.#proc.wait().then(({ exitCode }) => this.#onExit(exitCode));
+    const process = this.#proc;
+    const output = this.#readLoop(process).catch(error => Cu.reportError(error));
+    this.#drainStderr(process);
+    process.wait().then(async ({ exitCode }) => {
+      await output;
+      this.#onExit(exitCode);
+    });
   }
 
   async #readLoop(proc) {
@@ -117,7 +141,13 @@ class Bridge {
 
   #dispatch(message) {
     if (message.event) {
-      for (const listener of this.#listeners) listener(message);
+      if (message.event === "host.unavailable" && typeof message.data === "string") {
+        this.#startupError = new Error(message.data);
+      }
+      for (const listener of this.#listeners) {
+        try { listener(message); }
+        catch (error) { Cu.reportError(error); }
+      }
       return;
     }
     const handle = this.#pending.get(message.id);
@@ -133,7 +163,7 @@ class Bridge {
     this.#buffer = new Uint8Array(0);
     for (const handle of this.#pending.values()) {
       handle.timer.cancel();
-      handle.reject(new Error(`lima-host exited (${exitCode})`));
+      handle.reject(this.#startupError ?? new Error(`Lima’s runtime exited (${exitCode})`));
     }
     this.#pending.clear();
     this.status = this.#restarts < MAX_RESTARTS ? "stopped" : "failed";

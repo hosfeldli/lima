@@ -1,5 +1,5 @@
 /* Notes: index (organized by the bookmark tree), classic editor and canvas. */
-import { bar, bridge, call, debounce, el, errorText, icon, markdown, onEvent, relativeTime, setPage } from "./lib.js";
+import { bar, bridge, call, debounce, el, errorText, icon, markdown, noteEmbed, onEvent, relativeTime, setPage } from "./lib.js";
 
 const attachmentCache = new Map();
 function attachmentURL(id) {
@@ -87,7 +87,6 @@ export async function renderIndex(app) {
               if (confirm(`Permanently delete “${n.title}”? This cannot be undone.`)) { await call("notes.purge", { id: n.id }); load(); }
             } }, "Delete forever"))))));
       }
-      content.push(el("p", { class: "muted", style: { marginTop: "12px", fontSize: "12px" }, text: "Sections here are the Notebook folder in the sidebar; drag pages between sections there. Content stays encrypted by Lima." }));
       body.replaceChildren(...content);
     } catch (error) {
       body.replaceChildren(el("p", { class: "error", text: errorText(error) }));
@@ -159,6 +158,8 @@ export function toMarkdown(root) {
   const block = node => {
     if (node.nodeType === Node.TEXT_NODE) { if (node.textContent.trim()) out.push(node.textContent.trim(), ""); return; }
     if (node.nodeType !== Node.ELEMENT_NODE) return;
+    if (node.dataset.noteEmbed) { out.push("::embed " + node.dataset.noteEmbed, ""); return; }
+    if (node.dataset.artifact) { out.push("```" + node.dataset.artifact, node.dataset.artifactSource, "```", ""); return; }
     const tag = node.localName;
     if (/^h[1-6]$/.test(tag)) out.push(`${"#".repeat(Number(tag[1]))} ${inline(node).trim()}`, "");
     else if (tag === "ul" || tag === "ol") { list(node, 0); out.push(""); }
@@ -168,7 +169,8 @@ export function toMarkdown(root) {
     else if (tag === "table") {
       const rows = [...node.querySelectorAll("tr")].map(tr => [...tr.children].map(c => inline(c).trim().replace(/\|/g, "\\|")));
       if (rows.length) {
-        out.push(`| ${rows[0].join(" | ")} |`, `|${rows[0].map(() => " --- ").join("|")}|`, ...rows.slice(1).map(r => `| ${r.join(" | ")} |`), "");
+        const rules = [...node.rows[0].cells].map(cell => ({ right: "---:", center: ":---:" }[cell.style.textAlign] ?? "---"));
+        out.push(`| ${rows[0].join(" | ")} |`, `| ${rules.join(" | ")} |`, ...rows.slice(1).map(r => `| ${r.join(" | ")} |`), "");
       }
     } else if (tag === "div" && node.classList.contains("md")) { for (const child of node.childNodes) block(child); }
     else {
@@ -199,6 +201,13 @@ async function renderClassic(app, note) {
     tool("{}", "Code", () => wrapCode()),
     el("i", { class: "sep" }),
     tool(icon("list"), "Bulleted list", exec("insertUnorderedList")), tool("1.", "Numbered list", exec("insertOrderedList")), tool(icon("checkbox"), "To-do", () => insertTodo()),
+    tool(icon("globe"), "Insert an interactive embed", () => {
+      const value = window.prompt("Paste an HTTPS or local preview URL");
+      if (!value) return;
+      const card = noteEmbed(value.trim());
+      if (!card) { status.textContent = "Enter an HTTPS or local preview URL."; return; }
+      body.append(card, el("p", {}, el("br")));
+    }),
     el("i", { class: "sep" }),
     tool(icon("mic"), "Dictate (⌃⌥D)", () => bridge.browser("dictate", { noteId: note.id })),
     el("span", { class: "spacer" }), status,
@@ -212,7 +221,7 @@ async function renderClassic(app, note) {
   document.execCommand("defaultParagraphSeparator", false, "p");
 
   function paint() {
-    const rendered = markdown(note.markdown, { onTaskToggle: () => { dirty = true; save(); }, attachments: attachmentURL });
+    const rendered = markdown(note.markdown, { onTaskToggle: () => { dirty = true; save(); }, attachments: attachmentURL, embeds: true });
     for (const box of rendered.querySelectorAll("input[type=checkbox]")) box.disabled = false;
     body.replaceChildren(...rendered.childNodes);
     body.classList.toggle("empty", !note.markdown.trim());
@@ -399,6 +408,7 @@ async function renderCanvas(app, note) {
       el("button", { onclick: () => add("text") }, "+ Text"),
       el("button", { onclick: () => add("code") }, "+ Code"),
       el("button", { onclick: () => add("flow") }, "+ Node"),
+      el("button", { onclick: addEmbed }, "+ Embed"),
       el("button", { onclick: () => { connectFrom = selected; status.textContent = selected ? "Click another block to connect" : "Select a block first"; } }, "Connect"),
       el("button", { onclick: diagram }, "Diagram from text"),
       el("button", { onclick: cleanup }, "Clean up layout"),
@@ -437,6 +447,17 @@ async function renderCanvas(app, note) {
       id: crypto.randomUUID(), type, x, y, width: type === "flow" ? 200 : 260, height: type === "flow" ? 72 : 140, z: note.blocks.length,
       content: type === "code" ? "// code" : type === "flow" ? "Step" : "Text",
     };
+    apply([{ addBlock: { _0: block } }]);
+  }
+
+  function addEmbed() {
+    const value = window.prompt("Paste an HTTPS or local preview URL");
+    if (!value) return;
+    const card = noteEmbed(value.trim());
+    if (!card) { status.textContent = "Enter an HTTPS or local preview URL."; return; }
+    const { x, y } = nextPosition();
+    const block = { id: crypto.randomUUID(), type: "text", x, y, width: 520, height: 420, z: note.blocks.length,
+      content: "::embed " + card.dataset.noteEmbed };
     apply([{ addBlock: { _0: block } }]);
   }
 
@@ -489,7 +510,7 @@ async function renderCanvas(app, note) {
       attachmentURL(block.content).then(url => { img.src = url; });
       node.append(img);
     } else if (block.type === "text") {
-      node.append(markdown(block.content));
+      node.append(markdown(block.content, { embeds: true }));
     } else {
       node.textContent = block.content;
     }
@@ -497,7 +518,7 @@ async function renderCanvas(app, note) {
     node.append(handle);
 
     node.addEventListener("pointerdown", event => {
-      if (node.isContentEditable) return;
+      if (node.isContentEditable || event.target.closest(".note-embed")) return;
       if (connectFrom && connectFrom !== block.id) {
         apply([{ connect: { _0: { id: crypto.randomUUID(), from: connectFrom, to: block.id } } }], "Connected");
         connectFrom = null;

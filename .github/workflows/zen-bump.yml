@@ -1,0 +1,98 @@
+name: Zen bump
+
+# Daily: if Zen shipped a new release (which is how Firefox security fixes
+# reach Lima), verify its signature and notarization, repack and verify Lima
+# against it, and open a pull request. Nothing is released automatically.
+# The daily check runs on Linux; the macOS job starts only for a new release.
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Zen tag (default latest)
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: zen-bump
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      needed: ${{ steps.check.outputs.needed }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REQUESTED: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Look for a new Zen release
+        id: check
+        run: |
+          set +e
+          latest="$(browser/scripts/bump-zen.sh --check ${REQUESTED:+"$REQUESTED"})"
+          status=$?
+          set -e
+          [[ "$latest" =~ ^[0-9A-Za-z._-]+$ ]] || { echo "unexpected tag: $latest"; exit 1; }
+          echo "tag=$latest" >> "$GITHUB_OUTPUT"
+          [[ $status == 0 || $status == 10 ]] || exit "$status"
+          open=0
+          if [[ $status == 10 ]]; then
+            open="$(gh pr list --head "zen-bump/$latest" --state open --json number --jq length)"
+          fi
+          if [[ $status == 10 && "$open" == 0 ]]; then echo "needed=true"; else echo "needed=false"; fi >> "$GITHUB_OUTPUT"
+          echo "Zen latest: $latest (pinned is current: $([[ $status == 0 ]] && echo yes || echo no), open PRs: $open)"
+
+  bump:
+    needs: check
+    if: needs.check.outputs.needed == 'true'
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ZEN_TAG: ${{ needs.check.outputs.tag }}
+      REPOSITORY: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: true
+          persist-credentials: false
+      - name: Bump, repack and verify
+        run: |
+          browser/scripts/bump-zen.sh "$ZEN_TAG" | tee "$RUNNER_TEMP/bump.txt"
+          swift test --package-path native
+          browser/scripts/repack.sh
+      - name: Open pull request
+        run: |
+          branch="zen-bump/$ZEN_TAG"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add browser/lima.lock.json browser/zen-upstream
+          git commit -m "Bump Zen to $ZEN_TAG"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git" "HEAD:refs/heads/$branch"
+          {
+            echo "Automated Zen bump. Zen ships Firefox security fixes, so review and release promptly."
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/bump.txt"
+            echo '```'
+            echo
+            echo "Verified in this run: Zen Developer ID team and notarization, DMG digest, native tests, repack with hardened-runtime signing and entitlement policy."
+            echo "Still needed: \`make run\` smoke test, then \`release.sh prepare --bump patch\` and a release with critical=true if Firefox changed."
+          } > "$RUNNER_TEMP/body.md"
+          gh pr create --head "$branch" --base main --title "Bump Zen to $ZEN_TAG" --body-file "$RUNNER_TEMP/body.md"

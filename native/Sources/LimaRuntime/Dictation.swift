@@ -32,22 +32,30 @@ final class DictationService: NSObject, @unchecked Sendable, AVAudioRecorderDele
 
     // MARK: Engine discovery
 
+    /// whisper-cli runs only from this app bundle and only when it is signed
+    /// like lima-host: anything found in a user-writable folder would run with
+    /// Lima's microphone permission. The model is data, so it may also come
+    /// from the Lima 4 install the user already has.
     static func engine(environment: [String: String] = ProcessInfo.processInfo.environment) -> Engine? {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        var roots: [URL] = []
-        if let dir = environment["LIMA_WHISPER_DIR"] { roots.append(URL(fileURLWithPath: dir)) }
-        if let exe = Bundle.main.executableURL?.resolvingSymlinksInPath() {
-            roots.append(exe.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Resources/Whisper"))
+        var codeRoots: [URL] = []
+        #if DEBUG
+        if let dir = environment["LIMA_WHISPER_DIR"] { codeRoots.append(URL(fileURLWithPath: dir)) }
+        #endif
+        if let contents = CodeTrust.bundleContents {
+            codeRoots.append(contents.appendingPathComponent("Resources/Whisper"))
         }
-        roots += [
+        let modelRoots = codeRoots + [
             home.appendingPathComponent("Library/Application Support/Lima Browser/Whisper"),
             home.appendingPathComponent("Library/Application Support/Lima/Whisper"),
             home.appendingPathComponent("Applications/Lima.app/Contents/Resources/Whisper"),
             URL(fileURLWithPath: "/Applications/Lima.app/Contents/Resources/Whisper"),
         ]
         let fm = FileManager.default
-        let executable = roots.map { $0.appendingPathComponent("runtime/whisper-cli") }.first { fm.isExecutableFile(atPath: $0.path) }
-        let model = roots.flatMap { [$0.appendingPathComponent("model/ggml-small.en-tdrz.bin"), $0.appendingPathComponent("model/ggml-small.en.bin")] }
+        let executable = codeRoots.map { $0.appendingPathComponent("runtime/whisper-cli") }.first {
+            fm.isExecutableFile(atPath: $0.path) && CodeTrust.isSignedLikeSelf(path: $0.path)
+        }
+        let model = modelRoots.flatMap { [$0.appendingPathComponent("model/ggml-small.en-tdrz.bin"), $0.appendingPathComponent("model/ggml-small.en.bin")] }
             .first { fm.fileExists(atPath: $0.path) }
         guard let executable, let model else { return nil }
         return Engine(executable: executable, model: model)

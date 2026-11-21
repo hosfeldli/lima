@@ -1,0 +1,63 @@
+:root {
+  --page: #ffffff;
+  --surface: #f7f7f7;
+  --border: #dedede;
+  --text: #242424;
+  --secondary: #515151;
+  --muted: #646464;
+  --action: #383838;
+  --action-text: #ffffff;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #1c1c1c;
+    --surface: #242424;
+    --border: #3a3a3a;
+    --text: #ececec;
+    --secondary: #bdbdbd;
+    --muted: #a0a0a0;
+    --action: #ececec;
+    --action-text: #1c1c1c;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--text);
+  font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+main { width: 100%; max-width: 620px; margin: 0 auto; padding: 72px 20px 48px; flex: 1; }
+.mark { display: block; width: 96px; height: 96px; margin-bottom: 20px; }
+h1 { font-size: 40px; line-height: 1.1; letter-spacing: -0.02em; margin: 0 0 12px; font-weight: 650; }
+.lede { font-size: 19px; color: var(--secondary); margin: 0 0 32px; text-wrap: pretty; }
+.download { padding-bottom: 36px; margin-bottom: 36px; border-bottom: 1px solid var(--border); }
+.button {
+  display: inline-block;
+  background: var(--action);
+  color: var(--action-text);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 15px;
+  padding: 12px 22px;
+  border-radius: 8px;
+  transition: opacity 120ms ease;
+}
+.button:hover { opacity: 0.88; }
+.button:focus-visible { outline: 2px solid var(--action); outline-offset: 3px; }
+.button[aria-disabled="true"], .button:not([href]) { opacity: 0.45; pointer-events: none; }
+.meta { margin: 12px 0 0; font-size: 13px; color: var(--muted); }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; margin: 0 0 10px; }
+section { margin-bottom: 28px; }
+section p, li { color: var(--secondary); }
+ol { padding-left: 20px; margin: 0; }
+li { margin-bottom: 8px; }
+code { font: 14px ui-monospace, "SF Mono", Menlo, monospace; background: var(--surface); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; }
+a { color: var(--text); }
+footer { text-align: center; font-size: 12px; color: var(--muted); padding: 24px 20px 32px; }
+@media (prefers-reduced-motion: reduce) { .button { transition: none; } }

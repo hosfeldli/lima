@@ -1,6 +1,7 @@
 /* Shared helpers for about:lima pages. `window.lima` is the only bridge to
  * the native runtime (installed by the LimaChild actor). */
 import { ICONS } from "./icons.js";
+import { artifactFromBlock, markdownCells, markdownTableAt } from "./rich-content.js";
 
 function requestBridge() {
   // Ask the LimaChild actor to install window.lima (dispatch is synchronous).
@@ -74,6 +75,49 @@ export function errorText(error) {
   return error?.message ?? String(error);
 }
 
+export function activityStatus() {
+  const indicator = el("span", { class: "activity-indicator", "aria-hidden": "true" });
+  const label = el("span", { class: "activity-label" });
+  const detail = el("span", { class: "activity-detail" });
+  const elapsed = el("time", { class: "activity-time", hidden: true, "aria-hidden": "true" });
+  const node = el("div", { class: "activity-status" }, indicator,
+    el("span", { class: "activity-copy", role: "status", "aria-atomic": "true" }, label, detail), elapsed);
+  let since;
+  let timer;
+  function tick() {
+    if (!node.isConnected) { clearInterval(timer); timer = undefined; return; }
+    const seconds = Math.max(0, Math.floor((Date.now() - since) / 1000));
+    elapsed.textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+  }
+  function update({ state, label: title, detail: description = "", icon: glyph = "", motion, startedAt }) {
+    node.dataset.activity = state;
+    indicator.dataset.motion = motion ?? "";
+    if (indicator.dataset.glyph !== glyph) {
+      indicator.dataset.glyph = glyph;
+      indicator.replaceChildren(...(glyph ? [icon(glyph, "icon tool-glyph")] : []));
+    }
+    if (label.textContent !== title) label.textContent = title;
+    if (detail.textContent !== description) detail.textContent = description;
+    detail.hidden = !description;
+    elapsed.hidden = !startedAt;
+    if (startedAt !== since) {
+      clearInterval(timer);
+      timer = undefined;
+      since = startedAt;
+    }
+    if (since && timer === undefined) {
+      timer = setInterval(tick, 1000);
+      tick();
+    }
+  }
+  return { node, update };
+}
+
+export function filesPrivacyButton(onError) {
+  return el("button", { class: "ghost", onclick: () => bridge.browser("filesPrivacySettings", {}).catch(onError) },
+    "Open Files & Folders settings");
+}
+
 /** Glass page header: icon chip, title, then actions. */
 export function bar(title, ...actions) {
   const chip = el("span", { class: "title-icon", style: { "--hue": currentHue } }, icon(currentIcon));
@@ -117,7 +161,32 @@ export const prefs = {
 
 /** Small, safe Markdown renderer: everything is escaped; links are limited
  * to http(s) and about:lima; images to data:/lima attachments. */
-export function markdown(source, { onTaskToggle, attachments } = {}) {
+export function noteEmbed(value) {
+  let url;
+  try { url = new URL(value); } catch { return null; }
+  const local = url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  if ((url.protocol !== "https:" && !local) || url.username || url.password) return null;
+  const source = new URL(url);
+  if (url.hostname === "open.spotify.com" && /^\/(track|episode|album|playlist|artist)\//.test(url.pathname)) {
+    source.pathname = "/embed" + url.pathname;
+    source.search = "";
+  }
+  const video = ["www.youtube.com", "youtube.com", "youtu.be"].includes(url.hostname)
+    ? (url.hostname === "youtu.be" ? url.pathname.slice(1) : url.searchParams.get("v")) : null;
+  if (video && /^[\w-]{11}$/.test(video)) source.href = "https://www.youtube-nocookie.com/embed/" + video;
+  const card = el("figure", { class: "note-embed", contenteditable: "false", "data-note-embed": url.href });
+  const load = el("button", { class: "ghost", onclick: () => {
+    const iframe = el("iframe", { src: source.href, title: `Embed from ${url.hostname}`, sandbox: "allow-scripts",
+      referrerpolicy: "strict-origin-when-cross-origin", loading: "lazy" });
+    card.append(iframe, el("small", { class: "muted", text: "If the site blocks embedded access, choose Open in tab." }));
+    load.remove();
+  } }, "Load interactive content");
+  const open = el("button", { class: "ghost", onclick: () => bridge.openTab(url.href) }, "Open in tab");
+  card.append(el("figcaption", {}, el("strong", { text: url.hostname }), load, open));
+  return card;
+}
+
+export function markdown(source, { onTaskToggle, attachments, embeds = false } = {}) {
   const root = el("div", { class: "md" });
   const lines = String(source ?? "").replace(/\r\n/g, "\n").split("\n");
   let i = 0;
@@ -126,25 +195,37 @@ export function markdown(source, { onTaskToggle, attachments } = {}) {
 
   while (i < lines.length) {
     const line = lines[i];
-    if (/^```/.test(line)) {
+    const frame = embeds && /^\s*(?:::embed\s+(\S+)|<iframe\s+[^>]*?\bsrc\s*=\s*["']([^"']+)["'][^>]*>\s*<\/iframe>)\s*$/i.exec(line);
+    if (frame) {
+      const card = noteEmbed(frame[1] ?? frame[2]);
+      if (card) { closeList(); root.append(card); i++; continue; }
+    }
+    if (/^\s*```/.test(line)) {
       closeList();
+      const kind = line.trim().slice(3).trim().toLowerCase();
       const code = [];
       i++;
-      while (i < lines.length && !/^```/.test(lines[i])) code.push(lines[i++]);
+      while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) code.push(lines[i++]);
+      const closed = i < lines.length;
       i++;
-      root.append(el("pre", {}, el("code", { text: code.join("\n") })));
+      const data = code.join("\n");
+      root.append((closed && artifactFromBlock(kind, data, el)) || el("pre", {}, el("code", { text: data })));
       continue;
     }
     const heading = /^(#{1,6})\s+(.*)$/.exec(line);
     if (heading) { closeList(); root.append(inline(el(`h${heading[1].length}`), heading[2], attachments)); i++; continue; }
     if (/^\s*>\s?/.test(line)) { closeList(); root.append(inline(el("blockquote"), line.replace(/^\s*>\s?/, ""), attachments)); i++; continue; }
     if (/^\s*(---|\*\*\*)\s*$/.test(line)) { closeList(); root.append(el("hr")); i++; continue; }
-    if (/^\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\|[\s:-|]+\|\s*$/.test(lines[i + 1])) {
+    const tableSpec = markdownTableAt(lines, i);
+    if (tableSpec) {
       closeList();
-      const cells = row => row.trim().replace(/^\||\|$/g, "").split("|").map(c => c.trim());
-      const table = el("table", {}, el("tr", {}, cells(line).map(c => inline(el("th"), c, attachments))));
+      const row = (cells, tag) => el("tr", {}, tableSpec.headers.map((_, column) =>
+        inline(el(tag, { style: { textAlign: tableSpec.alignment[column] } }), cells[column] ?? "", attachments)));
+      const table = el("table", {}, el("thead", {}, row(tableSpec.headers, "th")));
+      const body = el("tbody");
       i += 2;
-      while (i < lines.length && /^\|.*\|\s*$/.test(lines[i])) table.append(el("tr", {}, cells(lines[i++]).map(c => inline(el("td"), c, attachments))));
+      while (i < lines.length && lines[i].includes("|") && !markdownTableAt(lines, i)) body.append(row(markdownCells(lines[i++]), "td"));
+      table.append(body);
       root.append(table);
       continue;
     }
@@ -168,7 +249,7 @@ export function markdown(source, { onTaskToggle, attachments } = {}) {
     closeList();
     const para = [line];
     i++;
-    while (i < lines.length && lines[i].trim() && !/^(#{1,6}\s|```|\s*[-*+]\s|\s*\d+\.\s|\s*>)/.test(lines[i])) para.push(lines[i++]);
+    while (i < lines.length && lines[i].trim() && !markdownTableAt(lines, i) && !/^(#{1,6}\s|\s*```|\s*[-*+]\s|\s*\d+\.\s|\s*>|\s*::embed\s|\s*<iframe\s)/i.test(lines[i])) para.push(lines[i++]);
     root.append(inline(el("p"), para.join(" "), attachments));
   }
   return root;

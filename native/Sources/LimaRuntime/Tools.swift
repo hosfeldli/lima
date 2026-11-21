@@ -16,11 +16,21 @@ enum ModelCatalog {
         case .claude:
             entries += [Entry(id: "sonnet", label: "Sonnet"), Entry(id: "opus", label: "Opus"), Entry(id: "haiku", label: "Haiku")]
         case .codex:
-            let config = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/config.toml")
+            let location = ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0) }
+                ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
+            let config = location.appendingPathComponent("config.toml")
             if let text = try? String(contentsOf: config, encoding: .utf8),
                let line = text.split(separator: "\n").first(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("model ") || $0.hasPrefix("model=") }),
                let value = line.split(separator: "=", maxSplits: 1).last?.trimmingCharacters(in: CharacterSet(charactersIn: " \"'")) {
                 entries.append(Entry(id: value, label: "\(value) (config)"))
+            }
+            if let data = try? Data(contentsOf: location.appendingPathComponent("models_cache.json")),
+               let cache = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let models = cache["models"] as? [[String: Any]] {
+                entries += models.compactMap { model in
+                    guard let id = model["slug"] as? String, model["visibility"] as? String != "hide" else { return nil }
+                    return Entry(id: id, label: model["display_name"] as? String ?? id)
+                }
             }
         case .opencode:
             if let path = CLIDiscovery().locate(.opencode) {
@@ -38,7 +48,8 @@ enum ModelCatalog {
                 }
             }
         }
-        return entries
+        var seen = Set<String>()
+        return entries.filter { seen.insert($0.id).inserted }
     }
 }
 

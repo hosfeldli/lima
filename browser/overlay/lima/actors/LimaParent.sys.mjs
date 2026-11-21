@@ -3,13 +3,16 @@
 
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
+  BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.sys.mjs",
+  PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
+  tabURL: "resource://lima/LimaWorkspaces.sys.mjs",
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
   LimaNotesBookmarks: "resource://lima/LimaNotesBookmarks.sys.mjs",
 });
 
 const ALLOWED_PREFIXES = [
   "notes.", "chat.", "terminal.", "search.", "context.", "capture.", "audio.", "media.", "tools.",
-  "agents.", "integrations.", "mcp.grants.", "storage.", "background.", "capabilities.", "workspace.", "agent.", "agents.", "fs.", "dictation.",
+  "assistant.", "agents.", "integrations.", "mcp.grants.", "storage.", "background.", "capabilities.", "workspace.", "agent.", "agents.", "fs.", "dictation.",
 ];
 const ALLOWED_METHODS = new Set(["quickAsk", "auth.approve", "auth.evaluate", "system.openApp", "host.hello"]);
 
@@ -92,7 +95,104 @@ export class LimaParent extends JSWindowActorParent {
 
   /** Browser-profile operations the UI needs (bookmark folders for notes). */
   async #browserRequest(kind, payload) {
+    const win = this.browsingContext.topChromeWindow;
+    const browser = this.browsingContext.top.embedderElement;
     switch (kind) {
+      case "filesPrivacySettings": {
+        const page = Services.io.newURI("x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders");
+        Cc["@mozilla.org/uriloader/external-protocol-service;1"]
+          .getService(Ci.nsIExternalProtocolService)
+          .loadURI(page, Services.scriptSecurityManager.getSystemPrincipal());
+        return null;
+      }
+      case "accessibilitySettings": {
+        const page = Services.io.newURI("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
+        Cc["@mozilla.org/uriloader/external-protocol-service;1"].getService(Ci.nsIExternalProtocolService)
+          .loadURI(page, Services.scriptSecurityManager.getSystemPrincipal());
+        return null;
+      }
+      case "personalityChanged": {
+        if (["full", "subtle", "off"].includes(payload?.value)) {
+          Services.prefs.setStringPref("lima.personality", payload.value);
+          broadcastToLimaPages("ui.personality", payload.value);
+        }
+        return null;
+      }
+      case "agentPreferences": {
+        const providers = ["claude", "codex", "opencode"];
+        return {
+          provider: Services.prefs.getStringPref("lima.agent.provider", "claude"),
+          models: Object.fromEntries(providers.map(provider => [provider, Services.prefs.getStringPref("lima.agent.model." + provider, "default")])),
+          personality: Services.prefs.getStringPref("lima.personality", "full"),
+        };
+      }
+      case "rememberAgent": {
+        const { provider, model } = payload;
+        if (lazy.PrivateBrowsingUtils.isWindowPrivate(win)) return null;
+        if (!["claude", "codex", "opencode"].includes(provider) || typeof model !== "string" || model.length > 160) return null;
+        Services.prefs.setStringPref("lima.agent.provider", provider);
+        Services.prefs.setStringPref("lima.agent.model." + provider, model);
+        await lazy.LimaBridge.request("integrations.grammar.provider", { provider, model }).catch(() => {});
+        return null;
+      }
+      case "googleEssentialStatus":
+        return win.limaGoogleEssentialStatus ?? {};
+      case "sidebarShortcuts": {
+        try { return JSON.parse(Services.prefs.getStringPref("lima.sidebar.shortcuts", "{}")); } catch { return {}; }
+      }
+      case "saveSidebarShortcuts": {
+        if (lazy.PrivateBrowsingUtils.isWindowPrivate(win)) return null;
+        const ids = ["inbox", "calendar", "spotify", "mic", "grammar"];
+        const list = key => [...new Set((Array.isArray(payload?.[key]) ? payload[key] : []).filter(value => ids.includes(value)))];
+        Services.prefs.setStringPref("lima.sidebar.shortcuts", JSON.stringify({ order: list("order"), hidden: list("hidden") }));
+        return null;
+      }
+      case "assistantTabs":
+      case "assistantReadTab": {
+        const tabs = [];
+        if (lazy.PrivateBrowsingUtils.isWindowPrivate(win)) return kind === "assistantTabs" ? [] : null;
+        for (const window of lazy.BrowserWindowTracker.orderedWindows) {
+          if (lazy.PrivateBrowsingUtils.isWindowPrivate(window)) continue;
+          for (const tab of window.gZenWorkspaces?.allStoredTabs ?? window.gBrowser.tabs) {
+            const url = tab.hasAttribute("pending") ? lazy.tabURL(tab) : tab.linkedBrowser.currentURI?.spec;
+            if (!/^https?:/.test(url ?? "")) continue;
+            const id = lazy.BrowserWindowTracker.getIdForBrowser?.(tab.linkedBrowser) ?? tab.linkedBrowser.browserId;
+            tabs.push({ id, title: tab.label, url, live: !!tab.linkedPanel && !tab.hasAttribute("pending"), tab });
+          }
+        }
+        if (kind === "assistantTabs") return tabs.map(({ tab, ...reference }) => reference);
+        const reference = tabs.find(tab => tab.id === payload?.id && tab.url === payload?.url);
+        if (!reference) throw new Error("This tab is unavailable.");
+        const tab = reference.tab;
+        const owner = tab.ownerGlobal;
+        if (!reference.live) {
+          if (!tab.linkedPanel) owner.gBrowser.insertBrowser(tab);
+          tab.linkedBrowser.loadURI(Services.io.newURI(reference.url), { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal() });
+          for (let attempt = 0; attempt < 100; attempt++) {
+            if (!tab.isConnected || (tab.linkedBrowser.browsingContext?.currentWindowGlobal?.documentURI?.spec === reference.url &&
+                !tab.linkedBrowser.webProgress?.isLoadingDocument)) break;
+            await new Promise(resolve => owner.setTimeout(resolve, 100));
+          }
+        }
+        const global = tab.linkedBrowser.browsingContext?.currentWindowGlobal;
+        if (global?.documentURI?.spec !== reference.url) throw new Error("This tab navigated. Refresh the tab list.");
+        const page = await global.getActor("PageExtractor").getText();
+        if (global !== tab.linkedBrowser.browsingContext?.currentWindowGlobal) throw new Error("This tab navigated.");
+        return String(page?.text ?? "").slice(0, 6000);
+      }
+      case "closeAssistant":
+        if (browser?.parentNode?.id === "lima-assistant-panel") win.dispatchEvent(new win.CustomEvent("LimaAssistantClose"));
+        return null;
+      case "assistantAttention":
+        if (browser?.parentNode?.id === "lima-assistant-panel" || browser?.currentURI?.spec === "about:lima") {
+          win.dispatchEvent(new win.CustomEvent("LimaAssistantAttention", { detail: payload?.pending === true }));
+        }
+        return null;
+      case "closeTerminalTab": {
+        const tab = browser && win.gBrowser.getTabForBrowser(browser);
+        if (tab && browser.currentURI.spec.startsWith("about:lima?terminal=")) win.gBrowser.removeTab(tab, { animate: true });
+        return null;
+      }
       case "noteFolders":
         return lazy.LimaNotesBookmarks.folderTree();
       case "createNote":
@@ -110,6 +210,13 @@ export class LimaParent extends JSWindowActorParent {
         const { LimaWorkspaces } = ChromeUtils.importESModule("resource://lima/LimaWorkspaces.sys.mjs");
         const tab = this.browsingContext.top.embedderElement && this.browsingContext.topChromeWindow.gBrowser.getTabForBrowser(this.browsingContext.top.embedderElement);
         return tab ? LimaWorkspaces.workspaceForTab(tab) : null;
+      }
+      case "openWorkspacePage": {
+        const { LimaWorkspaces } = ChromeUtils.importESModule("resource://lima/LimaWorkspaces.sys.mjs");
+        const folder = LimaWorkspaces.folderFor(payload.id, "folder", win);
+        const tab = folder?.allItemsRecursive.find(item => item.localName === "tab" && lazy.tabURL(item) === payload.url);
+        if (tab) win.gBrowser.selectedTab = tab;
+        return !!tab;
       }
       case "openChat": {
         const { LimaWorkspaces } = ChromeUtils.importESModule("resource://lima/LimaWorkspaces.sys.mjs");

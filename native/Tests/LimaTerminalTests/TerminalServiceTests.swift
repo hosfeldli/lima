@@ -9,7 +9,7 @@ final class EventLog: @unchecked Sendable {
     func record(_ event: TerminalEvent) {
         lock.lock(); defer { lock.unlock() }
         switch event {
-        case .output(_, let data): output.append(data)
+        case .output(_, let data, _): output.append(data)
         case .command(_, let command): commands.append(command.command)
         case .state: break
         }
@@ -90,4 +90,18 @@ func makeService(_ log: EventLog) -> TerminalService {
     #expect(final.state == .exited && final.exitCode == 3)
     let (_, scrollback) = try await service.attach(info.id)
     #expect(String(decoding: scrollback, as: UTF8.self).contains("before-exit"))
+}
+
+@Test func invalidDirectoryDoesNotRunAShellSomewhereElse() async throws {
+    let integration = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let service = TerminalService(integrationDirectory: integration) { _ in }
+    defer { try? FileManager.default.removeItem(at: integration) }
+    let missing = integration.appendingPathComponent("missing").path
+    do {
+        _ = try await service.create(cwd: missing, shell: "/bin/zsh")
+        Issue.record("Started a shell despite the missing working directory")
+    } catch TerminalServiceError.spawnFailed(let code) {
+        #expect(code == ENOENT)
+    }
+    #expect(await service.list().isEmpty)
 }

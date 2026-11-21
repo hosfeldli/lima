@@ -1,6 +1,7 @@
 /* Smaller Lima surfaces, each its own tab. */
 import { bar, bridge, call, el, errorText, icon, markdown, onEvent, prefs, relativeTime, setPage } from "./lib.js";
 import { resultView } from "./components.js";
+import { agentControls, PROVIDERS } from "./composer.js";
 
 const page = (...children) => el("div", { class: "page narrow" }, ...children);
 const card = (title, ...children) => el("section", { class: "card" }, title ? el("h2", { text: title }) : null, ...children);
@@ -168,18 +169,67 @@ export function renderAudioOutputs(node, items) {
 
 // MARK: Integrations & settings
 
-export async function renderIntegrations(app) {
+export async function renderIntegrations(app, section) {
   setPage("Integrations & Settings", "integrations");
-  const services = el("div"), mcp = el("div"), storage = el("div"), github = el("div");
-  app.replaceChildren(bar("Integrations & Settings"), el("div", { class: "prism-rule" }),
-    page(card("Services", services, github), el("div", { class: "pack" }, card("MCP server for external agents", mcp), card("Encrypted storage", storage)),
+  const services = el("div"), mcp = el("div"), storage = el("div");
+  const personality = el("select", { "aria-label": "Companion illustrations", onchange: event => {
+    prefs.set("personality", event.target.value);
+    bridge.browser("personalityChanged", { value: event.target.value }).catch(() => {});
+  } }, ["Full", "Subtle", "Off"].map(label => el("option", { value: label.toLowerCase(), text: label })));
+  personality.value = prefs.get("personality", "full");
+  bridge.browser("agentPreferences", {}).then(data => { if (data?.personality) personality.value = data.personality; }).catch(() => {});
+  const groups = [
+    ["general", "General", "appearance animation search index preferences", [
+      card("Appearance", el("label", { class: "row" }, "Companion illustrations", personality)),
       card("Search", el("button", { onclick: async () => { await call("search.resetLearning"); alert("Learned ranking reset."); } }, "Reset learned ranking"),
-        " ", el("button", { onclick: async () => { const n = await call("search.rebuild", { source: "app" }); alert(`Index rebuilt (${n} items).`); } }, "Rebuild app index"))));
+        " ", el("button", { onclick: async () => { const n = await call("search.rebuild", { source: "app" }); alert(`Index rebuilt (${n} items).`); } }, "Rebuild app index")),
+    ]],
+    ["sidebar", "Sidebar", "dock shortcuts edit order spotify music calendar mail dictation", [card("Sidebar shortcuts", sidebarSettings())]],
+    ["agents", "AI providers", "claude codex opencode sign in install default model setup", [card("AI providers", providerSettings())]],
+    ["writing", "Writing tools", "grammar accessibility global shortcut ai replace", [card("Grammar checker", grammarSettings())]],
+    ["connections", "Integrations", "gmail google calendar oauth github reminders login spotify automation", [
+      card("Gmail & Google Calendar", googleSettings()), card("GitHub", services),
+    ]],
+    ["data", "Data & permissions", "backup recovery encryption MCP storage grants permission", [
+      card("MCP for external agents", mcp), card("Encrypted storage", storage),
+    ]],
+  ];
+  const aliases = { google: "connections", grammar: "writing" };
+  let active = aliases[section] ?? (groups.some(([id]) => id === section) ? section : "general");
+  const search = el("input", { type: "search", placeholder: "Search settings", "aria-label": "Search settings" });
+  const nav = el("nav", { class: "settings-nav", "aria-label": "Settings categories" });
+  const empty = el("p", { class: "muted", hidden: true, text: "No settings match your search." });
+  const panes = groups.map(([id, label, words, cards]) => {
+    const pane = el("section", { class: "settings-pane", "aria-label": label }, el("h1", { text: label }), cards);
+    const button = el("button", { class: "ghost", onclick: () => { active = id; search.value = ""; paint(); } }, label);
+    nav.append(button);
+    return { id, label, words, pane, button };
+  });
+  function paint() {
+    const terms = search.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    for (const { id, label, words, pane, button } of panes) {
+      const index = `${label} ${words} ${pane.textContent}`.toLowerCase();
+      pane.hidden = terms.length ? !terms.every(term => index.includes(term)) : id !== active;
+      button.setAttribute("aria-current", String(id === active && !terms.length));
+    }
+    empty.hidden = panes.some(item => !item.pane.hidden);
+  }
+  search.addEventListener("input", paint);
+  app.replaceChildren(el("header", { class: "settings-header" }, el("strong", { text: "Settings" }), search),
+    el("div", { class: "settings-layout" }, nav, el("div", { class: "settings-content" }, ...panes.map(item => item.pane), empty)));
+  paint();
 
-  call("integrations.status").then(list => (services.closest(".card").querySelector("h2").textContent = `Services · ${list.filter(x => x.state === "connected").length}/${list.length} connected`, services.replaceChildren(el("ul", { class: "list" }, list.map(s => el("li", {},
-    el("strong", { text: s.name, style: { minWidth: "220px" } }), el("span", { class: "grow muted", text: s.detail }),
-    el("span", { class: `badge ${s.state === "connected" ? "ok" : s.state === "needs_setup" ? "warn" : ""}`, text: s.state.replaceAll("_", " ") }),
-    s.id === "github" && s.state === "connected" ? el("button", { onclick: () => bridge.openTab("about:lima?tool=github.inbox") }, "Open inbox") : null)))))).catch(e => fail(services, e));
+  call("integrations.status").then(list => {
+    const github = list.find(service => service.id === "github");
+    const connected = github?.state === "connected";
+    services.replaceChildren(
+      el("div", { class: "integration-service row" },
+        el("div", { class: "grow" }, el("strong", { text: connected ? "Connected" : "Sign-in required" }),
+          el("p", { class: "muted", text: "Review pull requests using the GitHub CLI account on this Mac." })),
+        connected ? el("button", { class: "ghost", onclick: () => bridge.openTab("about:lima?tool=github.inbox") }, "Open inbox") : null),
+      connected ? null : el("details", {}, el("summary", {}, "Set up GitHub"), el("code", { text: "gh auth login" }),
+        el("button", { class: "ghost", onclick: () => bridge.copy("gh auth login") }, "Copy command")));
+  }).catch(error => fail(services, error));
 
   async function drawMCP() {
     const scopes = new Set(await call("mcp.grants.get"));
@@ -210,5 +260,212 @@ export async function renderIntegrations(app) {
       } }, "Export recovery key")));
   }
   drawStorage().catch(e => fail(storage, e));
-  void github;
+}
+
+function sidebarSettings() {
+  const node = el("div", { class: "settings-shortcuts" });
+  const names = { inbox: "Gmail", calendar: "Calendar", spotify: "Spotify", mic: "Dictation", grammar: "Grammar settings" };
+  async function draw() {
+    const saved = await bridge.browser("sidebarShortcuts", {});
+    const order = [...new Set([...(saved.order ?? []), ...Object.keys(names)])].filter(id => Object.hasOwn(names, id));
+    const hidden = new Set(saved.hidden ?? ["grammar"]);
+    async function save(next) {
+      await bridge.browser("saveSidebarShortcuts", { order: next, hidden: [...hidden] });
+      await draw();
+    }
+    node.replaceChildren(...order.map((id, index) => {
+      const move = delta => {
+        const next = [...order];
+        [next[index], next[index + delta]] = [next[index + delta], next[index]];
+        save(next);
+      };
+      return el("div", { class: "row" }, toggle(names[id], !hidden.has(id), visible => {
+        if (visible) hidden.delete(id); else hidden.add(id);
+        save(order);
+      }), el("span", { class: "spacer" }),
+      el("button", { class: "ghost icon-only", disabled: index === 0, "aria-label": "Move up " + names[id], onclick: () => move(-1) }, "↑"),
+      el("button", { class: "ghost icon-only", disabled: index === order.length - 1, "aria-label": "Move down " + names[id], onclick: () => move(1) }, "↓"));
+    }));
+  }
+  draw().catch(error => fail(node, error));
+  return node;
+}
+
+function setupAction(id, label, approval, finished) {
+  const row = el("div", { class: "settings-setup" });
+  const start = el("button", { class: "primary", onclick: () => { confirm.hidden = false; } }, label);
+  const feedback = el("span", { class: "muted", role: "status" });
+  const open = el("button", { class: "primary", hidden: true }, "Continue in browser");
+  const confirm = el("div", { class: "notice", hidden: true }, el("p", { text: approval }),
+    el("div", { class: "row" }, el("button", { class: "primary", onclick: run }, "Approve"),
+      el("button", { class: "ghost", onclick: () => { confirm.hidden = true; } }, "Cancel")));
+  let previous;
+  function show(state) {
+    if (state?.id !== id) return;
+    start.disabled = ["running", "consent"].includes(state.phase);
+    feedback.textContent = state.message ?? ({ running: "Working…", consent: "Waiting for your sign-in.", done: "Completed." }[state.phase] ?? "");
+    open.hidden = state.phase !== "consent" || !state.url;
+    open.onclick = () => bridge.openTab(state.url);
+    if (state.phase === "done" && previous && previous !== "done") finished?.();
+    previous = state.phase;
+  }
+  async function run() {
+    confirm.hidden = true;
+    start.disabled = true;
+    try { show(await call("integrations.setup.start", { id })); }
+    catch (error) { feedback.textContent = errorText(error); start.disabled = false; }
+  }
+  const off = onEvent(({ event, data }) => {
+    if (!row.isConnected) { off(); return; }
+    if (event === "integrations.setup.updated") show(data);
+  });
+  window.addEventListener("pagehide", off, { once: true });
+  call("integrations.setup.status", { id }).then(show).catch(() => {});
+  row.append(el("div", { class: "row" }, start, open, feedback), confirm);
+  return row;
+}
+
+function providerSettings() {
+  const node = el("div");
+  const items = el("div");
+  const controls = agentControls();
+  const mappings = {
+    claude: ["brew install --cask claude-code", "https://code.claude.com/docs/en/setup"],
+    codex: ["npm install -g @openai/codex", "https://github.com/openai/codex#quickstart"],
+    opencode: ["brew install anomalyco/tap/opencode-v2", "https://opencode.ai/docs/providers"],
+  };
+  async function draw() {
+    const [providers, configured] = await Promise.all([call("agents.discover"), call("agents.configured")]);
+    await controls.refresh();
+    items.replaceChildren(...providers.map(provider => {
+      const id = provider.provider;
+      const name = PROVIDERS[id];
+      const [command, docs] = mappings[id];
+      const installed = provider.status === "available";
+      const ready = configured.includes(id);
+      return el("article", { class: "settings-provider" },
+        el("div", { class: "row" }, el("strong", { text: name }), el("span", { class: "spacer" }),
+          el("span", { class: "badge", text: ready ? "Connected" : installed ? "Needs sign-in" : "Needs installation" })),
+        provider.executablePath ? el("code", { text: provider.executablePath, title: provider.installations?.[0]?.resolvedPath }) : null,
+        !installed ? setupAction("install." + id, "Install", "Run " + command + " on this Mac?", draw) : null,
+        installed && !ready && id !== "opencode" ? setupAction(id, "Sign in", "Start " + name + " sign-in?", draw) : null,
+        !ready ? el("button", { class: "ghost", onclick: () => bridge.openTab(docs) }, "Setup guide") : null);
+    }));
+  }
+  node.append(el("div", { class: "row" }, el("strong", { text: "Default AI" }), controls.provider, controls.model,
+    el("button", { class: "ghost", onclick: () => draw().catch(error => fail(items, error)) }, "Check again")), items);
+  draw().catch(error => fail(items, error));
+  return node;
+}
+
+function googleSettings() {
+  const node = el("div", { id: "google-settings" });
+  const detail = el("div");
+  const progress = el("p", { class: "muted", role: "status" });
+  node.append(detail, progress);
+  const install = "npm install -g @googleworkspace/cli";
+  function action(label, handler, primary = false) {
+    return el("button", { class: primary ? "primary" : "ghost", onclick: async event => {
+      event.currentTarget.disabled = true;
+      const button = event.currentTarget;
+      progress.textContent = "";
+      try { await handler(); }
+      catch (error) { progress.textContent = errorText(error); }
+      finally { button.disabled = false; }
+    } }, label);
+  }
+  async function refresh() {
+    progress.textContent = "Checking Google Workspace…";
+    try { draw(await call("integrations.google.refresh", { force: true })); }
+    finally { progress.textContent = ""; }
+  }
+  let displayed, current;
+  let essentials = {};
+  function draw(value) {
+    current = value;
+    const state = JSON.stringify([value.installed, value.enabled, value.mail, value.calendar, value.mailReconnect,
+      value.calendarReconnect, value.mailIssue, value.calendarIssue, essentials.mail, essentials.calendar]);
+    if (state === displayed) return;
+    displayed = state;
+    const connected = value.mail === "connected" && value.calendar === "connected";
+    function row(title, service, api) {
+      const state = value[service];
+      const issue = value[`${service}Issue`];
+      const status = state === "connected" ? "Connected"
+        : issue === "apiDisabled" ? "API disabled"
+        : value[`${service}Reconnect`] ? "Reconnect needed"
+        : state === "unavailable" ? "Couldn’t verify" : "Not connected";
+      return el("div", { class: "integration-service google-service" },
+        el("strong", { class: "grow", text: title }),
+        essentials[service] && state !== "connected" ? el("span", { class: "badge", text: "Via Essentials" }) : null,
+        el("span", { class: `badge ${state === "connected" ? "ok" : issue ? "warn" : ""}`, text: status }),
+        issue === "apiDisabled" ? el("div", { class: "google-service-help" },
+          action("Open API settings", () => bridge.openTab(`https://console.cloud.google.com/apis/library/${api}.googleapis.com`))) : null);
+    }
+    const needsSignIn = ["mail", "calendar"].some(service => value[service] === "setup" && value[`${service}Issue`] !== "apiDisabled");
+    const firstStep = !value.installed
+      ? setupAction("install.google", "Install Google Workspace CLI", "Install the Google Workspace CLI on this Mac?", () => call("integrations.google.status").then(draw))
+      : !value.enabled ? action("Connect Google Workspace", async () => {
+        await call("integrations.google.configure", { enabled: true });
+        await refresh();
+      }, true)
+      : needsSignIn ? setupAction("google", value.mailReconnect || value.calendarReconnect ? "Sign in again" : "Sign in with Google",
+        "Allow read-only Google sign-in for unread mail and upcoming meetings?", refresh)
+      : !connected ? action("Check connection", refresh, true) : null;
+    detail.replaceChildren(
+      el("p", { class: "muted", text: "Summary counts and upcoming meetings appear in the sidebar. Gmail and Calendar tabs in Essentials can also supply reminders." }),
+      row("Gmail", "mail", "gmail"), row("Google Calendar", "calendar", "calendar"),
+      firstStep,
+      el("details", { class: "integration-help" }, el("summary", {}, connected ? "Connection options" : "Setup help"),
+        el("p", { class: "muted", text: value.installed
+          ? "Lima checks for an existing Google Workspace CLI login first. If Google asks for an OAuth client, use the setup guide."
+          : "The Google Workspace CLI is required for account access outside Essentials." }),
+        el("div", { class: "row" },
+          action("Check connection", refresh),
+          value.installed ? action("Google sign-in guide", () => bridge.openTab("https://github.com/googleworkspace/cli#authentication"))
+            : action("Copy install command", () => bridge.copy(install)),
+          value.enabled ? action("Turn off account access", async () => draw(await call("integrations.google.configure", { enabled: false }))) : null)));
+  }
+  function readEssentials() {
+    bridge.browser("googleEssentialStatus", {}).then(result => {
+      essentials = result ?? {};
+      if (current) draw(current);
+    }).catch(() => {});
+  }
+  call("integrations.google.status").then(value => {
+    draw(value);
+    if (value.enabled) return call("integrations.google.refresh").then(draw);
+  }).catch(error => { progress.textContent = errorText(error); });
+  readEssentials();
+  window.addEventListener("focus", readEssentials);
+  const off = onEvent(({ event, data }) => { if (event === "integrations.google.updated" && data) draw(data); });
+  window.addEventListener("pagehide", off, { once: true });
+  return node;
+}
+
+function grammarSettings() {
+  const node = el("div", { id: "grammar-settings" });
+  const status = el("p", { class: "muted", role: "status" });
+  const control = el("input", { type: "checkbox", disabled: true });
+  function draw(value) {
+    control.checked = value.enabled;
+    status.textContent = !value.enabled ? "" : value.running ? "Global shortcut is enabled." : "Lima could not register ⌘G. Turn it off and on to retry.";
+  }
+  control.addEventListener("change", async () => {
+    const enabled = control.checked;
+    control.disabled = true;
+    try {
+      await call("integrations.grammar.configure", { enabled });
+      await new Promise(resolve => setTimeout(resolve, 350));
+      draw(await call("integrations.grammar.status"));
+    } catch (error) { status.textContent = errorText(error); control.checked = !enabled; }
+    finally { control.disabled = false; }
+  });
+  node.append(el("p", { class: "muted", text: "Select text and press ⌘G to check it with your default AI. Lima sends only the selection when you use the shortcut. Choose Replace to apply the suggestion." }),
+    el("label", { class: "toggle" }, control, "Enable ⌘G"),
+    el("button", { class: "ghost", onclick: () => bridge.browser("accessibilitySettings", {}) }, "Accessibility settings"),
+    el("p", { class: "muted", text: "Allow Lima’s grammar helper in macOS Accessibility to read and replace your selection." }), status);
+  call("integrations.grammar.status").then(draw).catch(error => { status.textContent = errorText(error); })
+    .finally(() => { control.disabled = false; });
+  return node;
 }

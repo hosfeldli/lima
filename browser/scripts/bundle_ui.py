@@ -11,9 +11,9 @@ import re
 import sys
 from pathlib import Path
 
-ORDER = ["icons.js", "lib.js", "components.js", "notes.js", "terminal.js", "chat.js", "studio.js", "views.js", "home.js", "app.js"]
+ORDER = ["icons.js", "rich-content.js", "lib.js", "composer.js", "companion.js", "tool-activity.sys.mjs", "components.js", "workspace-prompts.js", "notes.js", "terminal.js", "chat.js", "assistant.js", "workspace.js", "studio.js", "views.js", "home.js", "app.js"]
 
-SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#8b9cff" '
+SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#383838" '
        'stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="{d}"/></svg>\n')
 
 def main(src: Path, out: Path) -> None:
@@ -30,7 +30,7 @@ def main(src: Path, out: Path) -> None:
     parts = []
     for name in ORDER:
         text = (src / name).read_text()
-        var = "__" + re.sub(r"\W", "_", name[:-3])
+        var = "__" + re.sub(r"\W", "_", Path(name).stem)
         def rewrite_import(match):
             names = match.group(1)
             module = "__" + re.sub(r"\W", "_", Path(match.group(2)).stem)

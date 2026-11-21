@@ -51,12 +51,20 @@ import LimaAuthorization
     #expect(runtime.focus.state(id) == .init(surface: .tab, url: "https://swift.org"))
 
     _ = try await runtime.terminals.waitForPrompt(workspace.terminalID!, timeout: 15)
-    _ = await call(runtime, "workspace.run", ["command": .string("true")], origin: .chat, workspace: id)
+    let command = Task { await call(runtime, "workspace.run", ["command": .string("sleep 0.4\npwd")], origin: .chat, workspace: id) }
+    for _ in 0..<30 {
+        if runtime.focus.state(id).surface == .terminal { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
     #expect(runtime.focus.state(id).surface == .terminal)
 
     // Streamed text brings it back to chat; whitespace alone doesn't.
     runtime.trackConversation(.delta(conversationID: workspace.conversationID!, messageID: "m", text: "  "))
     #expect(runtime.focus.state(id).surface == .terminal)
+    let executed = await command.value
+    #expect(executed.result?["exitStatus"] == .number(0))
+    #expect(executed.result?["output"]?.stringValue?.contains(workspace.directory) == true)
+    #expect(runtime.focus.state(id).surface == .chat)
     runtime.trackConversation(.delta(conversationID: workspace.conversationID!, messageID: "m", text: "Here is what I found"))
     #expect(runtime.focus.state(id).surface == .chat)
 
@@ -73,6 +81,36 @@ import LimaAuthorization
     #expect(runtime.focus.state(id).surface == .tab)
     #expect(try await runtime.notes.get(noteID).markdown.contains("Findings"))
     try await runtime.terminals.close(workspace.terminalID!)
+}
+
+@Test(.timeLimit(.minutes(1))) func webInteractionRequiresAnApprovedSessionForTheBoundWorkspace() async throws {
+    let (runtime, dir) = try await workspaceRuntime()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let id = try #require(await call(runtime, "workspace.create", ["name": .string("Browser Approval")]).result?["id"]?.stringValue)
+    let url = JSONValue.string("http://localhost:3000/")
+    _ = await call(runtime, "workspace.openTab", ["url": url], origin: .chat, workspace: id)
+    let click = await call(runtime, "workspace.browserAction", ["url": url, "action": .string("click")], origin: .chat, workspace: id)
+    #expect(click.error?.code == .confirmationRequired)
+    let waiting = Task { await call(runtime, "workspace.browserPlan", [
+        "url": url, "goal": .string("Try the controls"), "plan": .string("Click the visible test button."), "actions": .string("click"), "paths": .string("/details, /search"),
+    ], origin: .chat, workspace: id) }
+    var prompt: JSONValue?
+    for _ in 0..<40 {
+        prompt = await runtime.workspacePrompts.list().arrayValue?.first
+        if prompt != nil { break }
+        try await Task.sleep(for: .milliseconds(15))
+    }
+    let request = try #require(prompt?["id"]?.stringValue)
+    #expect(prompt?["approval"]?.boolValue == true)
+    let fromAgent = await call(runtime, "workspace.promptReply", ["id": .string(request), "approved": .bool(true)], origin: .chat, workspace: id)
+    #expect(fromAgent.error?.code == .notAuthorized)
+    let fromUser = await call(runtime, "workspace.promptReply", ["id": .string(request), "approved": .bool(true)])
+    #expect(fromUser.ok)
+    let token = try #require(await waiting.value.result?["session"]?.stringValue)
+    #expect(await runtime.workspacePrompts.permittedPaths(token, workspace: id, url: "http://localhost:3000/", action: "click") == Set(["/", "/details", "/search"]))
+    #expect(await runtime.workspacePrompts.permittedPaths(token, workspace: id, url: "http://localhost:3000/", action: "type") == nil)
+    #expect(await runtime.workspacePrompts.permittedPaths(token, workspace: "another", url: "http://localhost:3000/", action: "click") == nil)
+    await runtime.terminals.closeAll()
 }
 
 @Test(.timeLimit(.minutes(1))) func browserAnswersTabRequestsForTheAgent() async throws {
@@ -131,4 +169,57 @@ import LimaAuthorization
     defer { try? FileManager.default.removeItem(at: wav) }
     let text = try await DictationService().transcribe(wav)
     #expect(text.lowercased().contains("dictation"))
+}
+
+@Test(.timeLimit(.minutes(1))) func workspaceQuestionReturnsTypedReservationFields() async throws {
+    let (runtime, dir) = try await workspaceRuntime()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let created = await call(runtime, "workspace.create", ["name": .string("Reservation form")])
+    let id = try #require(created.result?["id"]?.stringValue)
+    let fields: JSONValue = .array([
+        .object(["id": .string("date"), "label": .string("Date"), "type": .string("date")]),
+        .object(["id": .string("time"), "label": .string("Time"), "type": .string("time")]),
+        .object(["id": .string("partySize"), "label": .string("Guests"), "type": .string("number"), "min": .number(1)]),
+    ])
+    let waiting = Task { await call(runtime, "workspace.askUser", ["question": .string("Reservation details"), "fields": fields], origin: .chat, workspace: id) }
+    var prompt: JSONValue?
+    for _ in 0..<40 {
+        prompt = await runtime.workspacePrompts.list().arrayValue?.first
+        if prompt != nil { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    let request = try #require(prompt?["id"]?.stringValue)
+    #expect(prompt?["fields"] == fields)
+    var answers: [String: JSONValue] = ["date": .string("2028-02-30"), "time": .string("19:00"), "partySize": .number(4)]
+    let badDate = await call(runtime, "workspace.promptReply", ["id": .string(request), "approved": .bool(true), "values": .object(answers)])
+    #expect(badDate.error?.code == .badRequest)
+    #expect(await runtime.workspacePrompts.list().arrayValue?.count == 1)
+    answers["date"] = .string("2028-02-29")
+    let sent = await call(runtime, "workspace.promptReply", ["id": .string(request), "approved": .bool(true), "values": .object(answers)])
+    #expect(sent.ok)
+    #expect(await waiting.value.result?["values"] == .object(answers))
+    #expect(await runtime.workspacePrompts.list().arrayValue?.isEmpty == true)
+    if let terminal = created.result?["terminalID"]?.stringValue { try await runtime.terminals.close(terminal) }
+}
+
+@Test(.timeLimit(.minutes(1))) func locationRequestDoesNotQueryTheBrowserWithoutApproval() async throws {
+    let (runtime, dir) = try await workspaceRuntime()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let created = await call(runtime, "workspace.create", ["name": .string("Location consent")])
+    let id = try #require(created.result?["id"]?.stringValue)
+    let waiting = Task { await call(runtime, "workspace.location", ["purpose": .string("Find nearby cafés")], origin: .chat, workspace: id) }
+    var prompt: JSONValue?
+    for _ in 0..<40 {
+        prompt = await runtime.workspacePrompts.list().arrayValue?.first
+        if prompt != nil { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    let request = try #require(prompt?["id"]?.stringValue)
+    #expect(prompt?["actionLabel"] == .string("Share once"))
+    #expect(runtime.browserCalls.pendingIDs.isEmpty)
+    let declined = await call(runtime, "workspace.promptReply", ["id": .string(request), "approved": .bool(false)])
+    #expect(declined.ok)
+    #expect(await waiting.value.result == .object(["approved": .bool(false)]))
+    #expect(runtime.browserCalls.pendingIDs.isEmpty)
+    if let terminal = created.result?["terminalID"]?.stringValue { try await runtime.terminals.close(terminal) }
 }

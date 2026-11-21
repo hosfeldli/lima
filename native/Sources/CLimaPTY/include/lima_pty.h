@@ -1,6 +1,7 @@
 #ifndef LIMA_PTY_H
 #define LIMA_PTY_H
 #include <sys/types.h>
+#include <stddef.h>
 
 /// Spawns `path` on a new pseudo-terminal as a session leader with the PTY as
 /// its controlling terminal. All child-side work happens in C between fork and
@@ -13,5 +14,7 @@ int lima_pty_resize(int master, unsigned short cols, unsigned short rows);
 
 /// Foreground process group of the terminal, or -1.
 pid_t lima_pty_foreground(int master);
+
+int lima_pty_cwd(pid_t pid, char *buffer, size_t capacity);
 
 #endif

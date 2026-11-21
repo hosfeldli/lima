@@ -42,3 +42,34 @@ func parsesVersions(output: String, expected: String) {
     let manifest = await CLIDiscovery(searchPaths: [dir.path], probeTimeout: 0.5).discover(.codex)
     #expect(manifest.status == .versionProbeFailed)
 }
+
+@Test func macOSDiscoveryPreservesPathOrderAndReportsResolvedInstallations() async throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("lima-discovery-\(UUID())")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let bun = root.appendingPathComponent(".bun/bin")
+    let local = root.appendingPathComponent(".local/bin")
+    let brew = root.appendingPathComponent("homebrew/bin")
+    let package = root.appendingPathComponent(".bun/install/global/node_modules/@openai/codex/bin/codex.js")
+    let native = root.appendingPathComponent(".local/share/claude/versions/2.1.329")
+    let cellar = root.appendingPathComponent("homebrew/Cellar/opencode/2.3.2/bin/opencode")
+    let fm = FileManager.default
+    for (file, version) in [(package, "0.190.0"), (local.appendingPathComponent("codex"), "0.187.0"), (native, "2.1.329"), (cellar, "2.3.2")] {
+        try fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "#!/bin/sh\necho \(version)\n".write(to: file, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
+    }
+    try fm.createDirectory(at: bun, withIntermediateDirectories: true)
+    try fm.createDirectory(at: brew, withIntermediateDirectories: true)
+    try fm.createSymbolicLink(at: bun.appendingPathComponent("codex"), withDestinationURL: package)
+    try fm.createSymbolicLink(at: local.appendingPathComponent("claude"), withDestinationURL: native)
+    try fm.createSymbolicLink(at: brew.appendingPathComponent("opencode"), withDestinationURL: cellar)
+    let paths = CLIDiscovery.defaultSearchPaths(environment: ["HOME": root.path, "PATH": "\(bun.path):\(local.path):\(brew.path)"])
+    let discovery = CLIDiscovery(searchPaths: paths)
+    let codex = await discovery.discover(.codex)
+    #expect(codex.executablePath == bun.appendingPathComponent("codex").path)
+    #expect(codex.version == "0.190.0")
+    #expect(codex.installations?.count == 2)
+    #expect(codex.installations?.first?.resolvedPath == package.resolvingSymlinksInPath().path)
+    #expect(await discovery.discover(.claude).version == "2.1.329")
+    #expect(await discovery.discover(.opencode).installations?.first?.resolvedPath == cellar.resolvingSymlinksInPath().path)
+}

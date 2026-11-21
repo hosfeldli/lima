@@ -12,6 +12,7 @@ public struct ChatMessage: Codable, Equatable, Sendable {
     public var status: Status
     public var error: AgentFailure?
     public var tools: [String]
+    public var progress: AgentProgress? = nil
 }
 
 public struct Conversation: Codable, Equatable, Sendable {
@@ -26,6 +27,20 @@ public struct Conversation: Codable, Equatable, Sendable {
     public var updatedAt: Double
     /// Set for a workspace's agent conversation.
     public var workspaceID: String?
+    public var mascot: ChatMascot? = nil
+}
+
+public enum ChatMascot: String, Codable, Sendable {
+    case classic, builder, explorer, artist, analyst
+
+    public static func suggested(for text: String) -> Self {
+        let words = Set(text.lowercased().split { !$0.isLetter }.map(String.init))
+        if !words.isDisjoint(with: ["research", "sources", "compare", "investigate", "browse"]) { return .explorer }
+        if !words.isDisjoint(with: ["chart", "data", "analyze", "report", "statistics"]) { return .analyst }
+        if !words.isDisjoint(with: ["design", "art", "draw", "write", "story"]) { return .artist }
+        if !words.isDisjoint(with: ["build", "code", "fix", "debug", "terminal", "test"]) { return .builder }
+        return .classic
+    }
 }
 
 public struct ConversationSummary: Codable, Equatable, Sendable {
@@ -34,6 +49,10 @@ public struct ConversationSummary: Codable, Equatable, Sendable {
     public var provider: CLIProvider
     public var updatedAt: Double
     public var running: Bool
+    public var workspaceID: String?
+    public var lastStatus: ChatMessage.Status?
+    public var lastErrorKind: AgentFailureKind?
+    public var lastProgress: AgentProgress?
 }
 
 public enum ConversationEvent: Sendable {
@@ -69,7 +88,6 @@ public actor ConversationService {
     private var conversations: [String: Conversation] = [:]
     private var running: [String: AgentRun] = [:]
     private var queues: [String: [String]] = [:] // conversationID → queued user message IDs
-    private var executables: [CLIProvider: String] = [:]
     private let emit: @Sendable (ConversationEvent) -> Void
     /// Supplies per-conversation CLI extras (workspace MCP config, preamble).
     public typealias RunConfigurator = @Sendable (Conversation) async -> (arguments: [String], environment: [String: String], preamble: String?)
@@ -93,8 +111,11 @@ public actor ConversationService {
     }
 
     public func list() -> [ConversationSummary] {
-        conversations.values.sorted { $0.updatedAt > $1.updatedAt }.map {
-            ConversationSummary(id: $0.id, title: $0.title, provider: $0.provider, updatedAt: $0.updatedAt, running: running[$0.id] != nil)
+        conversations.values.sorted { $0.updatedAt > $1.updatedAt }.map { conversation in
+            let reply = conversation.messages.last { $0.role == .assistant }
+            return ConversationSummary(id: conversation.id, title: conversation.title, provider: conversation.provider,
+                updatedAt: conversation.updatedAt, running: running[conversation.id] != nil, workspaceID: conversation.workspaceID,
+                lastStatus: reply?.status, lastErrorKind: reply?.error?.kind, lastProgress: reply?.progress)
         }
     }
 
@@ -137,8 +158,17 @@ public actor ConversationService {
         return conversation
     }
 
+    public func setMascot(_ id: String, to mascot: ChatMascot) async throws -> Conversation {
+        var conversation = try get(id)
+        guard conversation.mascot != mascot else { return conversation }
+        conversation.mascot = mascot
+        try await save(conversation)
+        return conversation
+    }
+
     public func send(_ id: String, text: String) async throws -> Conversation {
         var conversation = try get(id)
+        if conversation.mascot == nil { conversation.mascot = ChatMascot.suggested(for: text) }
         let message = ChatMessage(id: UUID().uuidString, role: .user, text: text, createdAt: Self.now(),
                                   status: running[id] == nil ? .complete : .queued, error: nil, tools: [])
         conversation.messages.append(message)
@@ -190,6 +220,11 @@ public actor ConversationService {
         }
         let request = AgentRunRequest(provider: provider, prompt: prompt, model: model, workingDirectory: FileManager.default.temporaryDirectory, mode: .quickAsk)
         let run = AgentRun(request: request, executable: executable, searchPath: discovery.searchPaths)
+        let deadline = Task {
+            try? await Task.sleep(for: .seconds(45))
+            if !Task.isCancelled { run.cancel() }
+        }
+        defer { deadline.cancel() }
         var text = ""
         for await event in run.events {
             switch event {
@@ -219,15 +254,16 @@ public actor ConversationService {
         }
 
         // Without a resumable CLI session, give the CLI the transcript.
+        let requestText = Self.providerPrompt(conversation.messages[userIndex].text)
         let prompt: String
         if conversation.cliSessionID == nil, userIndex > 0 {
             let transcript = conversation.messages[..<userIndex]
                 .filter { $0.status == .complete && !$0.text.isEmpty }
                 .map { "\($0.role == .user ? "User" : "Assistant"): \($0.text)" }
                 .joined(separator: "\n\n")
-            prompt = "Conversation so far:\n\n\(transcript)\n\nUser: \(conversation.messages[userIndex].text)"
+            prompt = "Conversation so far:\n\n\(transcript)\n\nUser: \(requestText)"
         } else {
-            prompt = conversation.messages[userIndex].text
+            prompt = requestText
         }
 
         var request = AgentRunRequest(
@@ -239,7 +275,7 @@ public actor ConversationService {
             let extras = await configurator(conversation)
             request.extraArguments = extras.arguments
             request.extraEnvironment = extras.environment
-            if let preamble = extras.preamble, conversation.cliSessionID == nil { request.prompt = preamble + "\n\n" + request.prompt }
+            if let preamble = extras.preamble { request.prompt = preamble + "\n\n" + request.prompt }
         }
         let run = AgentRun(request: request, executable: executable, searchPath: discovery.searchPaths)
         running[id] = run
@@ -254,7 +290,14 @@ public actor ConversationService {
         switch event {
         case .session(let session):
             conversation.cliSessionID = session
+            conversation.messages[index].progress = .connected
             conversations[id] = conversation
+            emit(.updated(conversation))
+        case .progress(let progress):
+            guard conversation.messages[index].progress != progress else { return }
+            conversation.messages[index].progress = progress
+            conversations[id] = conversation
+            emit(.updated(conversation))
         case .delta(let text):
             conversation.messages[index].text += text
             conversations[id] = conversation
@@ -283,6 +326,7 @@ public actor ConversationService {
             break
         }
         running[id] = nil
+        conversation.messages[index].progress = nil
         try await save(conversation)
 
         if var queue = queues[id], !queue.isEmpty {
@@ -293,10 +337,7 @@ public actor ConversationService {
     }
 
     private func executable(for provider: CLIProvider) async -> String? {
-        if let cached = executables[provider], FileManager.default.isExecutableFile(atPath: cached) { return cached }
-        let found = discovery.locate(provider)
-        executables[provider] = found
-        return found
+        discovery.locate(provider)
     }
 
     private func save(_ conversation: Conversation) async throws {
@@ -308,6 +349,14 @@ public actor ConversationService {
     }
 
     static func now() -> Double { (Date().timeIntervalSince1970 * 1000).rounded() }
+
+    static func providerPrompt(_ text: String) -> String {
+        guard let first = text.split(whereSeparator: \.isWhitespace).first,
+              first.first == "/", first.count > 1,
+              first.dropFirst().allSatisfy({ $0.isLetter || $0.isNumber || "-_:.".contains($0) }),
+              !["/skills", "/mcp", "/settings"].contains(first) else { return text }
+        return "Invoke your \(first) skill or command for the following request. If this provider cannot load it, report that directly.\n\n\(text)"
+    }
 
     static func title(from text: String) -> String {
         let line = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text

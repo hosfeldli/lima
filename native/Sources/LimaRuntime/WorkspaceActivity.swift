@@ -125,26 +125,28 @@ extension Runtime {
 
     // MARK: File tree (Orca-style explorer beside the terminal)
 
-    /// The user's file tree: folders inside the home directory (or any
-    /// workspace directory), never Library or credential folders. Browser only.
-    private func readableURL(_ path: String) async throws -> URL {
+    /// Browser-only paths within home, a workspace, or the attached shell’s current directory.
+    private func readableURL(_ path: String, terminalID: String?) async throws -> URL {
         let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL.resolvingSymlinksInPath()
         let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.resolvingSymlinksInPath().path
         let roots = [home] + (await workspaces.list().map { URL(fileURLWithPath: $0.directory).resolvingSymlinksInPath().path })
-        guard let root = roots.first(where: { url.path == $0 || url.path.hasPrefix($0 + "/") }) else {
-            throw BridgeError(.notAuthorized, "only folders in your home directory or a workspace can be browsed")
+        func contains(_ root: String) -> Bool {
+            root == "/" || url.path == root || url.path.hasPrefix(root + "/")
         }
-        if root == home {
+        if contains(home) {
             let first = url.path.dropFirst(home.count + 1).split(separator: "/").first.map(String.init) ?? ""
             guard !["Library", ".ssh", ".gnupg", ".aws"].contains(first) else { throw BridgeError(.notAuthorized, "\(first) is private") }
         }
-        return url
+        if roots.contains(where: contains) { return url }
+        if let terminalID, let terminal = try? await terminals.info(terminalID),
+           contains(URL(fileURLWithPath: terminal.cwd).resolvingSymlinksInPath().path) { return url }
+        throw BridgeError(.notAuthorized, "the path is outside your home, workspace, or current terminal directory")
     }
 
     private func registerFiles() {
         register("fs.list") { [unowned self] params, context in
             guard context.origin == .browser else { throw BridgeError(.notAuthorized, "the file tree is for the user") }
-            let url = try await self.readableURL(try params.string("path"))
+            let url = try await self.readableURL(try params.string("path"), terminalID: params.optionalString("terminalId"))
             let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey]
             let entries = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: keys, options: [])) ?? []
             let hidden: Set<String> = [".git", ".DS_Store", "node_modules", ".build", "__pycache__"]
@@ -159,9 +161,35 @@ extension Runtime {
                 return (a["name"]?.stringValue ?? "").localizedStandardCompare(b["name"]?.stringValue ?? "") == .orderedAscending
             })
         }
+        register("fs.changes") { [unowned self] params, context in
+            guard context.origin == .browser else { throw BridgeError(.notAuthorized, "the change tree is for the user") }
+            let url = try await self.readableURL(try params.string("path"), terminalID: params.optionalString("terminalId"))
+            return try await Task.detached(priority: .utility) { try Self.gitChanges(at: url) }.value
+        }
+        register("fs.gitFile") { [unowned self] params, context in
+            guard context.origin == .browser else { throw BridgeError(.notAuthorized, "Git review is a Lima interface action.") }
+            let id = try params.string("terminalId")
+            let terminal = try await self.terminals.info(id)
+            let directory = try await self.readableURL(terminal.cwd, terminalID: id)
+            let path = try params.string("path")
+            _ = try await self.readableURL(path, terminalID: id)
+            let action = params.optionalString("action") ?? "diff"
+            return try await Task.detached(priority: .utility) {
+                try Self.gitFile(at: directory, path: path, previous: params.optionalString("previous"), action: action)
+            }.value
+        }
+        register("fs.gitBranch") { [unowned self] params, context in
+            guard context.origin == .browser else { throw BridgeError(.notAuthorized, "Git branch is shown in the workspace interface.") }
+            let directory = try await self.readableURL(try params.string("path"), terminalID: nil)
+            return try await Task.detached(priority: .utility) {
+                guard let data = try Self.git(["branch", "--show-current"], in: directory) else { return .null as JSONValue }
+                let branch = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .newlines)
+                return branch.isEmpty ? .null : .string(branch)
+            }.value
+        }
         register("fs.read") { [unowned self] params, context in
             guard context.origin == .browser else { throw BridgeError(.notAuthorized, "the file tree is for the user") }
-            let url = try await self.readableURL(try params.string("path"))
+            let url = try await self.readableURL(try params.string("path"), terminalID: params.optionalString("terminalId"))
             let handle = try FileHandle(forReadingFrom: url)
             defer { try? handle.close() }
             let limit = 256 * 1024
@@ -170,5 +198,89 @@ extension Runtime {
             return .object(["path": .string(url.path), "truncated": .bool(data.count > limit), "binary": .bool(binary),
                             "text": .string(binary ? "" : String(decoding: data.prefix(limit), as: UTF8.self))])
         }
+    }
+
+    private static func git(_ arguments: [String], in directory: URL, diffStatus: Bool = false) throws -> Data? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["--no-optional-locks", "--literal-pathspecs", "-C", directory.path] + arguments
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let result = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return process.terminationStatus == 0 || (diffStatus && process.terminationStatus == 1) ? result : nil
+    }
+
+    private static func gitFile(at directory: URL, path: String, previous: String?, action: String) throws -> JSONValue {
+        guard let data = try git(["rev-parse", "--show-toplevel"], in: directory) else {
+            throw BridgeError(.badRequest, "This terminal is outside a Git repository.")
+        }
+        let root = String(decoding: data.dropLast(data.last == 10 ? 1 : 0), as: UTF8.self)
+        let repository = URL(fileURLWithPath: root, isDirectory: true)
+        func normalized(_ value: String) -> String {
+            let path = URL(fileURLWithPath: value).standardizedFileURL.path
+            return path.replacingOccurrences(of: #"^/private(?=/(?:var|tmp|etc)(?:/|$))"#, with: "", options: .regularExpression)
+        }
+        let rootPrefix = normalized(root) + "/"
+        func relative(_ value: String) throws -> String {
+            let path = normalized(value)
+            guard path.hasPrefix(rootPrefix), path.count > rootPrefix.count else {
+                throw BridgeError(.notAuthorized, "The selected file is outside this repository.")
+            }
+            return String(path.dropFirst(rootPrefix.count))
+        }
+        let file = try relative(path)
+        let paths = try [file] + (previous.map { [try relative($0)] } ?? [])
+        switch action {
+        case "stage", "unstage":
+            let hasHead = try git(["rev-parse", "--verify", "HEAD"], in: repository) != nil
+            let command = action == "stage" ? ["add"] : hasHead ? ["restore", "--staged"] : ["rm", "--cached"]
+            guard try git(command + ["--"] + paths, in: repository) != nil else {
+                throw BridgeError(.badRequest, "Git could not update the index for this file.")
+            }
+            return .null
+        case "diff":
+            let flags = ["--no-ext-diff", "--no-textconv", "--no-color"]
+            var unstaged = try git(["diff"] + flags + ["--"] + paths, in: repository) ?? Data()
+            let staged = try git(["diff", "--cached"] + flags + ["--"] + paths, in: repository) ?? Data()
+            if unstaged.isEmpty, staged.isEmpty,
+               let status = try git(["status", "--short", "--", file], in: repository),
+               status.starts(with: Data("?? ".utf8)) {
+                unstaged = try git(["diff", "--no-index"] + flags + ["--", "/dev/null", file], in: repository, diffStatus: true) ?? Data()
+            }
+            let limit = 96 * 1024
+            return .object(["staged": .string(String(decoding: staged.prefix(limit), as: UTF8.self)),
+                            "unstaged": .string(String(decoding: unstaged.prefix(limit), as: UTF8.self)),
+                            "truncated": .bool(staged.count > limit || unstaged.count > limit)])
+        default:
+            throw BridgeError(.badRequest, "Unknown Git action.")
+        }
+    }
+
+    private static func gitChanges(at directory: URL) throws -> JSONValue {
+        guard let root = try git(["rev-parse", "--show-toplevel"], in: directory) else { return .null }
+        let rootPath = String(decoding: root.dropLast(root.last == 10 ? 1 : 0), as: UTF8.self)
+        guard let status = try git(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."], in: directory) else {
+            throw BridgeError(.badRequest, "Git could not read changes for this folder")
+        }
+        let fields = status.split(separator: 0)
+        var changes: [JSONValue] = []
+        var index = 0
+        while index < fields.count, changes.count < 500 {
+            let record = fields[index]
+            index += 1
+            guard record.count >= 4 else { continue }
+            let state = String(decoding: record.prefix(2), as: UTF8.self)
+            let path = rootPath + "/" + String(decoding: record.dropFirst(3), as: UTF8.self)
+            let previous: JSONValue
+            if (state.contains("R") || state.contains("C")), index < fields.count {
+                previous = .string(rootPath + "/" + String(decoding: fields[index], as: UTF8.self))
+                index += 1
+            } else { previous = .null }
+            changes.append(.object(["path": .string(path), "status": .string(state), "previous": previous]))
+        }
+        return .object(["files": .array(changes), "directory": .string(directory.path), "truncated": .bool(index < fields.count)])
     }
 }

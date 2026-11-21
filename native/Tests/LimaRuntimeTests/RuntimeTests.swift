@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import LimaRuntime
@@ -36,4 +37,29 @@ import Testing
     #expect(search.result?["results"]?.arrayValue?.first?["source"]?.stringValue == "note")
     let unknown = await runtime.handle(BridgeRequest(id: "5", method: "nope"), context: browser)
     #expect(unknown.error?.code == .unknownMethod)
+}
+
+
+@Test func aSlowSocketPeerDoesNotBlockRuntimeEventDelivery() throws {
+    var pair = [Int32](repeating: -1, count: 2)
+    #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0)
+    guard pair.allSatisfy({ $0 >= 0 }) else { return }
+    // This peer never reads. The first multi-megabyte frame fills its socket.
+    var noSigPipe: Int32 = 1
+    setsockopt(pair[0], SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+    let slowPeer = ClientConnection(fd: pair[0])
+    let unreadReceiver = pair[1]
+    defer {
+        slowPeer.close()
+        Darwin.close(unreadReceiver)
+    }
+    let finished = DispatchSemaphore(value: 0)
+    let frame = Data(repeating: 1, count: BridgeFrame.maximumPayloadBytes)
+    DispatchQueue.global().async {
+        slowPeer.send(frame)
+        slowPeer.send(frame)
+        slowPeer.send(frame)
+        finished.signal()
+    }
+    #expect(finished.wait(timeout: .now() + .seconds(1)) == .success)
 }

@@ -26,12 +26,11 @@ each agent is doing.
 ## Positioning
 
 Agents operate in real browser tabs and a shared terminal inside the user's own browser, and the sidebar shows
-where each one is working (prism on the tab, rotating ✦ while it writes). Neither a chat app nor an IDE agent
-panel puts agent activity inside the browser's own tab structure.
+where each one is working with an activity mark on the active tab. Companion hands work to those workspace agents and reports their state.
 
 ## Operating Context
 
-- Zen Browser fork (Firefox engine) on macOS, Apple Silicon first; light and dark mode follow the system.
+- Zen Browser fork (Firefox engine) on macOS, Apple Silicon first. Regular windows use the Lima light theme.
 - Agents: Claude Code, Codex and OpenCode CLIs, driven through Lima's MCP tools.
 - Daily rituals: ⌘T search, workspace chat, terminal with file tree, notes (OneNote-like Notebook), dictation
   (⌃⌥D), music control from the sidebar, weekly Friday reports.
@@ -52,11 +51,10 @@ panel puts agent activity inside the browser's own tab structure.
 ## Brand Commitments
 
 - Product name: Lima.
-- Prismatic AI-activity effects are binding: a moving prism on the tab or terminal an agent is working in, and a
-  rotating prismatic ✦ while it writes.
+- Lima uses white content surfaces, a light gray sidebar, and graphite actions. The original companion illustration reflects agent events and can be disabled.
 - Zen + Orca structure is binding: everything is a tab or folder in Zen's sidebar (no dashboards or card grids);
   the terminal is Orca-style with a file tree beside the shell.
-- The Lima 4 triangle mark and the 4.x launcher layout are not binding and may be redesigned.
+- The Lima 5 app icon depicts the folded-cap companion in a graphite-outlined terminal.
 
 ## Evidence on Hand
 
@@ -69,4 +67,4 @@ panel puts agent activity inside the browser's own tab structure.
 2. One tab, one job: a page does its task and nothing decorative.
 3. Show the agent's work where it happens, not in a separate dashboard.
 4. Keyboard first, and fast: frequent actions are instant.
-5. Calm by default; color and motion are reserved for agent activity and the user's own actions.
+5. Keep work surfaces calm and use motion for agent activity and user actions.

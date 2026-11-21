@@ -16,6 +16,7 @@ make bootstrap   # fetch pinned Zen source
 make test        # native tests
 make run         # build/Lima.app from the pinned Zen release + Lima overlay, launch with a dev profile
 ```
-See `docs/architecture/build.md` for how the dev repack works and the path to source builds.
+See `docs/architecture/build.md` for how the repack works and why it isn't a source build, and
+`docs/RELEASING.md` for signing, the update feed and the release workflow.
 
 Third-party: Zen Browser (MPL-2.0), Firefox (MPL-2.0); Orca (MIT) informs the agent-runtime design.

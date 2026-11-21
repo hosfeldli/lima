@@ -121,10 +121,8 @@ public final class CapabilityRegistry: @unchecked Sendable {
         }
     }
 
-    /// Same broker decision for every origin. A direct user gesture in Lima's
-    /// own UI is the confirmation for `confirm`-level actions; agents, MCP
-    /// clients and automations need an explicit single-use approval, and MCP
-    /// additionally needs the capability's scope grant.
+    /// Lima's UI authorizes direct user actions. Agents and automations use
+    /// the broker's approval flow for confirmation-level operations.
     func authorize(_ definition: CapabilityDefinition, input: String, context: CallContext, approvalDigest: String?) throws {
         if context.origin == .mcp {
             guard let scope = definition.mcpScope else {
@@ -253,9 +251,9 @@ public final class CapabilityRegistry: @unchecked Sendable {
                 return CapabilityResult.notice(title)
             }
         }
-        add("media.dj", "Spotify DJ", "Open DJ in Spotify", category: "media", icon: "spark", keywords: ["music", "spotify"], risk: .systemControl, rank: 35) { _, _, _ in
-            MediaControl.openDJ()
-            return CapabilityResult.notice("Opening Spotify DJ")
+        add("media.dj", "Spotify DJ", "Start DJ playback in the running Spotify app", category: "media", icon: "spark", keywords: ["music", "spotify"], risk: .systemControl, rank: 35) { _, _, _ in
+            try MediaControl.playDJ()
+            return CapabilityResult.notice("Requested Spotify DJ playback")
         }
         add("display.sleep", "Sleep Displays", "Turn displays off now", category: "system", icon: "moon", risk: .systemControl, rank: 36) { _, _, _ in
             _ = try? Process.run(URL(fileURLWithPath: "/usr/bin/pmset"), arguments: ["displaysleepnow"])

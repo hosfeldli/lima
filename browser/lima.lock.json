@@ -1,12 +1,13 @@
 {
-  "comment": "Pinned upstream inputs for Lima Browser. Update via scripts/bump-zen.sh, never by hand-editing one field.",
+  "comment": "Pinned upstream inputs for Lima Browser. Update with browser/scripts/bump-zen.sh, never by hand-editing one field.",
   "zen": {
-    "tag": "1.24.2b",
-    "commit": "0057b295aee4a1ff00e0bd24e1150b7bc1a28503",
-    "firefoxVersion": "160.0",
+    "tag": "1.24.3b",
+    "commit": "300f9292ddbaaebf24626b4a7451e5426a11d3d8",
+    "firefoxVersion": "160.0.1",
+    "signingTeam": "9V5K9TP787",
     "macosDmg": {
       "asset": "zen.macos-universal.dmg",
-      "sha256": "04ee33c2e906b52f90f73384aa50e80a92530ae4b3414fb26a0a982e257f172c"
+      "sha256": "86f6a01e786095d7661c68357396a00cd3e169d6ae5e176245077bb701af8b65"
     }
   },
   "lima": {

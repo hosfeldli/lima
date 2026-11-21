@@ -24,7 +24,11 @@ extension Runtime {
             ])
         }
         register("host.ping") { _, _ in .object(["pong": .bool(true), "time": .number(Date().timeIntervalSince1970)]) }
-        register("host.shutdown") { [unowned self] _, _ in
+        register("host.shutdown") { [unowned self] _, context in
+            // Build replacement and updates come from lima-host itself; agents can't stop the runtime.
+            guard context.origin == .browser || context.client?.peerIsLimaHost == true else {
+                throw BridgeError(.notAuthorized, "Only Lima can stop its runtime.")
+            }
             await self.terminals.closeAll()
             DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { exit(0) }
             return .bool(true)
@@ -69,9 +73,10 @@ extension Runtime {
             try JSONValue.from(try await self.terminals.create(cwd: params.optionalString("cwd"), cols: params.int("cols", default: 100), rows: params.int("rows", default: 30)))
         }
         register("terminal.list") { [unowned self] _, _ in try JSONValue.from(await self.terminals.list()) }
+        register("terminal.info") { [unowned self] params, _ in try JSONValue.from(try await self.terminals.info(try params.string("id"))) }
         register("terminal.attach") { [unowned self] params, _ in
-            let (info, scrollback) = try await self.terminals.attach(try params.string("id"))
-            return .object(["info": try JSONValue.from(info), "scrollback": .string(scrollback.base64EncodedString())])
+            let (info, scrollback, offset) = try await self.terminals.attachWithOffset(try params.string("id"))
+            return .object(["info": try JSONValue.from(info), "scrollback": .string(scrollback.base64EncodedString()), "offset": .number(Double(offset))])
         }
         register("terminal.write") { [unowned self] params, _ in
             guard let data = Data(base64Encoded: try params.string("data")) else { throw BridgeError(.badRequest, "data must be base64") }
@@ -106,24 +111,9 @@ extension Runtime {
             let handle = try params.decode("handle", as: InputLeaseHandle.self)
             let command = try params.string("command")
             let info = try await self.terminals.info(id)
-            let words = ShellWords.split(command)
-            let operation = ActionOperation(kind: .runBuildOrTest, origin: context.origin, targets: [info.cwd],
-                                            executable: words.first, arguments: Array(words.dropFirst()))
-            let broker = AuthorizationBroker(projectRoots: [URL(fileURLWithPath: info.cwd)])
-            let verdict = await broker.evaluate(operation)
-            if verdict.decision != .allow {
-                let approved = params.optionalString("approvalDigest") == (try? ApprovalLedger.shared.digest(operation))
-                guard approved, ApprovalLedger.shared.consume(operation) else {
-                    throw BridgeError(verdict.decision == .block ? .notAuthorized : .confirmationRequired,
-                                      "\(verdict.effectiveKind.rawValue): \(verdict.reasons.joined(separator: "; "))")
-                }
-            }
+            try await Self.authorizeTerminalCommand(command, cwd: info.cwd, context: context, approvalDigest: params.optionalString("approvalDigest"))
             let result = try await self.terminals.agentRunCommand(id, command: command, handle: handle, timeout: params.double("timeout", default: 120))
-            return .object([
-                "timedOut": .bool(result.timedOut),
-                "exitStatus": result.exitStatus.map { .number(Double($0)) } ?? .null,
-                "output": .string(String(decoding: result.output.suffix(64 * 1024), as: UTF8.self))
-            ])
+            return Self.terminalCommandResult(result)
         }
         register("auth.approve") { params, context in
             // The browser UI records an explicit user approval for one exact operation.
@@ -135,23 +125,64 @@ extension Runtime {
 
     // MARK: Chat
 
+    static func authorizeTerminalCommand(_ command: String, cwd: String, context: CallContext, approvalDigest: String?) async throws {
+        let words = ShellWords.split(command)
+        let operation = ActionOperation(kind: .runBuildOrTest, origin: context.origin, targets: [cwd],
+                                        executable: words.first, arguments: Array(words.dropFirst()))
+        let broker = AuthorizationBroker(projectRoots: [URL(fileURLWithPath: cwd)])
+        let verdict = await broker.evaluate(operation)
+        if verdict.decision != .allow {
+            let approved = approvalDigest == (try? ApprovalLedger.shared.digest(operation))
+            guard approved, ApprovalLedger.shared.consume(operation) else {
+                throw BridgeError(verdict.decision == .block ? .notAuthorized : .confirmationRequired,
+                                  "\(verdict.effectiveKind.rawValue): \(verdict.reasons.joined(separator: "; "))")
+            }
+        }
+    }
+
+    static func terminalCommandResult(_ result: (timedOut: Bool, exitStatus: Int?, output: Data)) -> JSONValue {
+        .object([
+            "timedOut": .bool(result.timedOut),
+            "exitStatus": result.exitStatus.map { .number(Double($0)) } ?? .null,
+            "output": .string(String(decoding: result.output.suffix(64 * 1024), as: UTF8.self))
+        ])
+    }
+
     func registerChat() {
-        register("chat.list") { [unowned self] _, _ in try JSONValue.from(await self.conversations.list()) }
+        register("chat.list") { [unowned self] _, _ in try JSONValue.from(await self.visibleConversations()) }
         register("chat.get") { [unowned self] params, _ in try JSONValue.from(try await self.conversations.get(try params.string("id"))) }
+        register("chat.mascot") { [unowned self] params, context in
+            guard context.origin == .browser, let mascot = ChatMascot(rawValue: try params.string("mascot")) else {
+                throw BridgeError(.badRequest, "Choose an available mascot.")
+            }
+            return try JSONValue.from(await self.conversations.setMascot(try params.string("id"), to: mascot))
+        }
         register("chat.create") { [unowned self] params, _ in
             let provider = CLIProvider(rawValue: params.optionalString("provider") ?? "claude") ?? .claude
             return try JSONValue.from(try await self.conversations.create(provider: provider, model: params.optionalString("model"), workingDirectory: params.optionalString("cwd")))
         }
         register("chat.configure") { [unowned self] params, _ in
             let provider = CLIProvider(rawValue: try params.string("provider")) ?? .claude
-            return try JSONValue.from(try await self.conversations.configure(try params.string("id"), provider: provider, model: params.optionalString("model")))
+            let id = try params.string("id")
+            if let workspaceID = try await self.conversations.get(id).workspaceID,
+               try await self.workspaces.get(workspaceID).browserTestURL != nil, provider != .claude {
+                throw BridgeError(.notAuthorized, "Browser-only helpers use Claude with built-in tools disabled.")
+            }
+            return try JSONValue.from(try await self.conversations.configure(id, provider: provider, model: params.optionalString("model")))
         }
         register("chat.send") { [unowned self] params, _ in try JSONValue.from(try await self.conversations.send(try params.string("id"), text: try params.string("text"))) }
         register("chat.retry") { [unowned self] params, _ in try JSONValue.from(try await self.conversations.retry(try params.string("id"), assistantMessageID: try params.string("messageId"))) }
         register("chat.edit") { [unowned self] params, _ in
             try JSONValue.from(try await self.conversations.edit(try params.string("id"), messageID: try params.string("messageId"), text: try params.string("text")))
         }
-        register("chat.cancel") { [unowned self] params, _ in await self.conversations.cancel(try params.string("id")); return .null }
+        register("chat.cancel") { [unowned self] params, _ in
+            let id = try params.string("id")
+            await self.conversations.cancel(id)
+            if let workspace = try await self.conversations.get(id).workspaceID {
+                await self.workspacePrompts.clear(self, workspace: workspace)
+            }
+            return .null
+        }
         register("chat.delete") { [unowned self] params, _ in
             let id = try params.string("id")
             try await self.conversations.delete(id)
@@ -350,10 +381,15 @@ extension Runtime {
     // MARK: System
 
     func registerSystem() {
+        register("agents.configured") { [unowned self] _, context in
+            try Self.requireLocalSettings(context)
+            return try JSONValue.from(await self.discovery.configuredProviders())
+        }
         register("background.status") { _, _ in try JSONValue.from(BackgroundAgent.status()) }
-        register("background.install") { params, context in
+        register("background.install") { _, context in
             guard context.origin == .browser else { throw BridgeError(.notAuthorized, "installing the background agent requires the user") }
-            return try JSONValue.from(try BackgroundAgent.install(executable: params.optionalString("executable") ?? CommandLine.arguments[0]))
+            // Always this lima-host: launchd runs whatever path is written here at every login.
+            return try JSONValue.from(try BackgroundAgent.install(executable: CodeTrust.selfExecutable))
         }
         register("background.uninstall") { _, context in
             guard context.origin == .browser else { throw BridgeError(.notAuthorized, "requires the user") }

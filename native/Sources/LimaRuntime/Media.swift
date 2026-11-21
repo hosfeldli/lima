@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import CoreAudio
 import Foundation
 import LimaContext
@@ -125,7 +126,9 @@ struct NowPlaying: Codable, Sendable {
 /// Spotify and Music post track metadata as distributed notifications; no
 /// audio is captured and nothing beyond metadata is stored (spec v2 §8).
 final class NowPlayingMonitor: @unchecked Sendable {
-    private(set) var current: NowPlaying?
+    private let lock = NSLock()
+    private var tracks: [String: NowPlaying] = [:]
+    private var current: NowPlaying? { lock.withLock { tracks.values.max { $0.updatedAt < $1.updatedAt } } }
     private var lastRecordedKey: String?
     private let onChange: @Sendable (NowPlaying, Bool) -> Void
 
@@ -152,7 +155,7 @@ final class NowPlayingMonitor: @unchecked Sendable {
             artworkURL: current?.player == player && current?.title == (info["Name"] as? String ?? "") ? current?.artworkURL : nil,
             positionMs: (info["Playback Position"] as? NSNumber).map { $0.doubleValue * 1000 }
         )
-        current = item
+        lock.withLock { tracks[player] = item }
         if player == "Spotify", item.artworkURL == nil, !item.title.isEmpty { fetchArtwork(for: item) }
         let key = "\(player)|\(item.title)|\(item.artist)"
         let isNewTrack = item.state == "Playing" && !item.title.isEmpty && key != lastRecordedKey
@@ -168,22 +171,26 @@ extension NowPlayingMonitor {
         DispatchQueue.global().async { [weak self] in
             guard let url = MediaControl.query("Spotify", "artwork url of current track"), url.hasPrefix("https://") else { return }
             DispatchQueue.main.async {
-                guard let self, var current = self.current, current.title == item.title, current.player == item.player else { return }
-                current.artworkURL = url
-                self.replace(current)
+                guard let self else { return }
+                let updated = self.lock.withLock { () -> NowPlaying? in
+                    guard var current = self.tracks[item.player], current.title == item.title, current.artist == item.artist else { return nil }
+                    current.artworkURL = url
+                    self.tracks[item.player] = current
+                    return current
+                }
+                if let updated { self.onChange(updated, false) }
             }
         }
     }
 
-    func replace(_ item: NowPlaying) {
-        current = item
-        onChange(item, false)
-    }
-
     /// Current state with a fresh playback position.
-    func refreshed() -> NowPlaying? {
-        guard var item = current else { return nil }
-        if let seconds = MediaControl.query(item.player, "player position").flatMap(Double.init) {
+    func refreshed(player: String?, refresh: Bool) -> NowPlaying? {
+        let cached = player.flatMap { key in lock.withLock { tracks[key] } } ?? (player == nil ? current : nil)
+        guard refresh else { return cached }
+        let target = player ?? cached?.player ?? (MediaControl.isRunning("Spotify") ? "Spotify" : "Music")
+        if target == "Spotify", let playback = MediaControl.spotifySnapshot() { return playback }
+        guard var item = cached, MediaControl.isRunning(target) else { return nil }
+        if let seconds = MediaControl.query(item.player, "player position").flatMap({ Double($0.replacingOccurrences(of: ",", with: ".")) }) {
             item.positionMs = seconds * 1000
             item.updatedAt = Date().timeIntervalSince1970 * 1000
         }
@@ -192,37 +199,90 @@ extension NowPlayingMonitor {
 }
 
 enum MediaControl {
+    static func isRunning(_ player: String) -> Bool {
+        let bundle = player == "Spotify" ? "com.spotify.client" : "com.apple.Music"
+        return NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == bundle }
+    }
+
     /// One AppleScript property read from a running player (nil if it's not running).
     static func query(_ player: String, _ expression: String) -> String? {
-        let bundle = player == "Spotify" ? "com.spotify.client" : "com.apple.Music"
-        guard NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == bundle }) else { return nil }
+        guard isRunning(player) else { return nil }
+        return script("tell application \"\(player)\" to \(expression)")
+    }
+
+    private static func script(_ source: String) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", "tell application \"\(player)\" to \(expression)"]
+        process.arguments = ["-e", "with timeout of 5 seconds\n\(source)\nend timeout"]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
         guard (try? process.run()) != nil else { return nil }
+        let output = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { return nil }
-        let text = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? nil : text.replacingOccurrences(of: ",", with: ".")
+        let text = String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
     }
 
-    static func send(_ command: String) throws {
-        let running = NSWorkspace.shared.runningApplications
-        let target = running.contains { $0.bundleIdentifier == "com.spotify.client" } ? "Spotify" : "Music"
+    static func spotifySnapshot() -> NowPlaying? {
+        guard isRunning("Spotify"), let response = script("""
+        tell application "Spotify"
+            set t to current track
+            set cover to ""
+            try
+                set cover to artwork url of t as text
+            end try
+            set fields to {name of t, artist of t, album of t, player state as text, duration of t as text, player position as text, cover}
+        end tell
+        set AppleScript's text item delimiters to character id 30
+        return fields as text
+        """) else { return nil }
+        let fields = response.components(separatedBy: "\u{1e}")
+        guard fields.count == 7 else { return nil }
+        let artwork = fields[6].hasPrefix("https://") ? fields[6] : nil
+        let position = Double(fields[5].replacingOccurrences(of: ",", with: "."))
+        return NowPlaying(player: "Spotify", title: fields[0], artist: fields[1], album: fields[2], state: fields[3].capitalized,
+                          durationMs: Double(fields[4]), updatedAt: Date().timeIntervalSince1970 * 1000,
+                          artworkURL: artwork, positionMs: position.map { $0 * 1000 })
+    }
+
+    static func send(_ command: String, player: String? = nil) throws {
+        let target = player == "Spotify" || (player == nil && isRunning("Spotify")) ? "Spotify" : "Music"
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", "tell application \"\(target)\" to \(command)"]
+        process.arguments = ["-e", "with timeout of 5 seconds\ntell application \"\(target)\" to \(command)\nend timeout"]
         try process.run()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { throw BridgeError(.notAuthorized, "Allow Lima to control \(target) in System Settings → Privacy & Security → Automation") }
     }
 
-    /// Spotify has no public DJ API; open the DJ entry in Spotify itself.
-    static func openDJ() {
-        NSWorkspace.shared.open(URL(string: "spotify:playlist:37i9dQZF1EYkqdzj48dyYq")!)
+    static func playDJ() throws {
+        guard let spotify = NSRunningApplication.runningApplications(withBundleIdentifier: "com.spotify.client").first else {
+            throw BridgeError(.badRequest, "Start Spotify to use DJ.")
+        }
+        defer { minimizeSpotify(spotify) }
+        try send("play track \"spotify:playlist:37i9dQZF1EYkqdzj48dyYq\"", player: "Spotify")
+    }
+
+    private static func minimizeSpotify(_ spotify: NSRunningApplication) {
+        if AXIsProcessTrusted() {
+            var value: CFTypeRef?
+            let app = AXUIElementCreateApplication(spotify.processIdentifier)
+            if AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value) == .success,
+               let windows = value as? [AXUIElement], !windows.isEmpty,
+               windows.allSatisfy({ AXUIElementSetAttributeValue($0, kAXMinimizedAttribute as CFString, kCFBooleanTrue) == .success }) {
+                return
+            }
+        }
+        // Hiding keeps playback running when macOS won't let Lima minimize
+        // another application's windows through Accessibility.
+        if !spotify.isHidden { spotify.hide() }
+    }
+
+    static func openSpotify() throws {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.spotify.client"),
+              NSWorkspace.shared.open(url) else { throw BridgeError(.badRequest, "Install Spotify to use desktop playback controls.") }
     }
 }
 
@@ -310,23 +370,35 @@ extension Runtime {
     func registerMedia() {
         register("audio.outputs") { _, _ in try JSONValue.from(AudioDevices.outputs()) }
         register("audio.setOutput") { params, _ in
-            try AudioDevices.setDefaultOutput(UInt32(params.int("id", default: 0)))
+            guard let id = UInt32(exactly: params.int("id", default: 0)) else {
+                throw BridgeError(.badRequest, "Choose an available audio output.")
+            }
+            try AudioDevices.setDefaultOutput(id)
             return try JSONValue.from(AudioDevices.outputs())
         }
         register("audio.volume") { params, _ in
             if let value = params?["value"]?.doubleValue { try AudioDevices.setVolume(Float(min(max(value, 0), 1))) }
             return .number(Double(AudioDevices.volume() ?? 0))
         }
-        register("media.nowPlaying") { [unowned self] _, _ in
-            (try? JSONValue.from(self.activity?.nowPlaying.refreshed())) ?? .null
+        register("media.nowPlaying") { [unowned self] params, _ in
+            (try? JSONValue.from(self.activity?.nowPlaying.refreshed(player: params.optionalString("player"),
+                refresh: params?["refresh"]?.boolValue == true))) ?? .null
         }
         register("media.control") { params, _ in
             let action = try params.string("action")
+            let player = params.optionalString("player")
             switch action {
-            case "playpause": try MediaControl.send("playpause")
-            case "next": try MediaControl.send("next track")
-            case "previous": try MediaControl.send("previous track")
-            case "dj": MediaControl.openDJ()
+            case "playpause": try MediaControl.send("playpause", player: player)
+            case "next": try MediaControl.send("next track", player: player)
+            case "previous": try MediaControl.send("previous track", player: player)
+            case "dj": try MediaControl.playDJ()
+            case "seek":
+                guard let seconds = params?["seconds"]?.doubleValue, seconds.isFinite, (0...86400).contains(seconds),
+                      MediaControl.isRunning("Spotify") else {
+                    throw BridgeError(.badRequest, "Choose a position in the current Spotify track.")
+                }
+                try MediaControl.send("set player position to \(seconds)", player: "Spotify")
+            case "open": try MediaControl.openSpotify()
             default: throw BridgeError(.badRequest, "unknown media action")
             }
             return .null

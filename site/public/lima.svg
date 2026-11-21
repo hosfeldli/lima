@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="paper" x2="0" y2="1" gradientUnits="objectBoundingBox">
+      <stop offset="0" stop-color="#fff"/>
+      <stop offset="1" stop-color="#e9e9e9"/>
+    </linearGradient>
+  </defs>
+  <rect x="110" y="124" width="804" height="804" rx="176" fill="#d6d6d6"/>
+  <rect x="110" y="110" width="804" height="804" rx="176" fill="url(#paper)" stroke="#dedede" stroke-width="8"/>
+  <rect x="227" y="287" width="570" height="450" rx="78" fill="#fff" stroke="#383838" stroke-width="14"/>
+  <path d="M230 385h564M286 337h10m34 0h10m34 0h10M302 503l51 44-51 44m100 0h62" fill="none" stroke="#383838" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  <ellipse cx="610" cy="678" rx="96" ry="11" fill="#eaeaea"/>
+  <path d="M512 589c0-34 15-62 48-85 0-25 18-53 49-65l32 41c14 0 22 2 31 7l35-18c-5 19-3 33 5 46 24 26 36 57 27 87-12 34-43 48-105 48-72 0-114-16-114-51 0-3 0-6 1-10Z" fill="#f1f1f1" stroke="#383838" stroke-width="12" stroke-linejoin="round"/>
+  <path d="M565 504c28 9 48 6 74-13m-60 70v8m64-8v8m-46 16c10 12 22 12 33 0" fill="none" stroke="#383838" stroke-width="10" stroke-linecap="round"/>
+</svg>

@@ -8,7 +8,7 @@ import LimaSearch
 import LimaStorage
 import LimaTerminal
 
-public let limaRuntimeVersion = "5.0.0-dev"
+public let limaRuntimeVersion = "5.0.0"
 
 public struct RuntimePaths: Sendable {
     public var data: URL
@@ -51,9 +51,17 @@ public final class Runtime: @unchecked Sendable {
     public let discovery = CLIDiscovery()
     public let focus = WorkspaceFocus()
     let browserCalls = BrowserCalls()
+    let workspacePrompts = WorkspacePrompts()
+    let googleWorkspace = GoogleWorkspace()
+    let setup = SetupSessions()
+    let grammar = GrammarProcess()
     let dictation = DictationService()
+    let updates = UpdateService()
     public let startedAt = Date()
 
+    private static let conversationMethods: Set<String> = [
+        "chat.get", "chat.resources", "chat.configure", "chat.mascot", "chat.send", "chat.retry", "chat.edit", "chat.cancel", "chat.delete"
+    ]
     private var handlers: [String: MethodHandler] = [:]
     private let clientsLock = NSLock()
     private var clients: Set<ClientConnection> = []
@@ -91,15 +99,40 @@ public final class Runtime: @unchecked Sendable {
         registerCore()
         registerTerminal()
         registerChat()
+        registerChatResources()
         registerNotes()
         registerSearch()
         registerContext()
         registerSystem()
+        registerGoogleWorkspace()
+        registerSetup()
+        registerGrammar()
+        if let settings = try await store.get(GoogleWorkspace.Settings.self, collection: "settings", id: "google.workspace") {
+            await googleWorkspace.restore(settings)
+        }
+        if try await store.get(Bool.self, collection: "settings", id: "grammar.shortcut") == true {
+            try? await grammar.configure(true)
+        }
         registerWorkspaces()
+        registerAssistant()
         registerWorkspaceActivity()
         registerDictation()
+        registerUpdates()
         await conversations.setRunConfigurator { [weak self] conversation in
-            await self?.workspaceAgentConfiguration(conversation) ?? ([], [:], nil)
+            var configuration = await self?.workspaceAgentConfiguration(conversation) ?? (arguments: [], environment: [:], preamble: nil)
+            let richContent = """
+            Lima renders standard Markdown tables and supports optional interactive fenced JSON blocks in chat and Notes. Use chart with {"title":"…","type":"bar","values":[{"label":"…","value":3}]} (type bar or line), checklist with {"title":"…","items":["…"]}, quiz with {"title":"…","options":["…"],"correct":0}, or details with {"title":"…","text":"…"} when useful. Use the block name as the fence language and valid JSON as the entire body. Use a map block for an offline world map: {"title":"Trip","markers":[{"label":"New York","latitude":40.71,"longitude":-74.01}],"routes":[{"label":"Route","points":[[40.71,-74.01],[42.36,-71.06]]}]}. Coordinates are latitude then longitude. Provide intermediate waypoints for the route shape. The map displays the supplied route and does not compute directions. Leave Markdown tables outside code fences. Notes support ::embed URL for external widgets.
+            """
+            if conversation.provider == .claude {
+                if let index = configuration.arguments.firstIndex(of: "--append-system-prompt") {
+                    configuration.arguments[index + 1] += "\n\n" + richContent
+                } else {
+                    configuration.arguments += ["--append-system-prompt", richContent]
+                }
+            } else {
+                configuration.preamble = [configuration.preamble, richContent].compactMap { $0 }.joined(separator: "\n\n")
+            }
+            return configuration
         }
         await buildSearchIndex()
         await notes.onChange { [weak self] note, id in self?.noteChanged(note, id: id) }
@@ -118,9 +151,31 @@ public final class Runtime: @unchecked Sendable {
             return .failure(id: request.id, BridgeError(.unknownMethod, request.method))
         }
         do {
+            if let workspaceID = context.workspaceID {
+                let workspace = try await workspaces.get(workspaceID)
+                try await workspaces.requireActive(workspaceID)
+                if workspace.browserTestURL != nil, !["workspace.browserAction", "workspace.browserPlan"].contains(request.method) {
+                    throw BridgeError(.notAuthorized, "This helper may only interact with its assigned browser tab.")
+                }
+            }
+            if Self.conversationMethods.contains(request.method) {
+                let conversation = try await conversations.get(try request.params.string("id"))
+                if let workspaceID = conversation.workspaceID {
+                    guard (try? await workspaces.get(workspaceID)) != nil else {
+                        throw BridgeError(.notAuthorized, "This conversation belongs to an archived workspace.")
+                    }
+                    if request.method != "chat.get", request.method != "chat.cancel" {
+                        try await workspaces.requireActive(workspaceID)
+                    }
+                }
+            }
             return .success(id: request.id, try await handler(request.params, context))
         } catch let error as BridgeError {
             return .failure(id: request.id, error)
+        } catch TerminalServiceError.directoryAccess(let path) {
+            return .failure(id: request.id, BridgeError(.notAuthorized, TerminalServiceError.directoryAccess(path).description))
+        } catch TerminalServiceError.shellNotReady {
+            return .failure(id: request.id, BridgeError(.deadlineExceeded, TerminalServiceError.shellNotReady.description))
         } catch {
             return .failure(id: request.id, BridgeError(.internalError, String(describing: error)))
         }
@@ -144,10 +199,15 @@ public final class Runtime: @unchecked Sendable {
 
     // MARK: Search index maintenance
 
+    func visibleConversations() async -> [ConversationSummary] {
+        let live = Set(await workspaces.list().map(\.id))
+        return await conversations.list().filter { $0.workspaceID.map { live.contains($0) } ?? true }
+    }
+
     private func buildSearchIndex() async {
         let index = search.index
         for note in await notes.all() { index.upsert(Self.document(for: note)) }
-        for summary in await conversations.list() {
+        for summary in await visibleConversations() {
             index.upsert(SearchDocument(source: "conversation", id: summary.id, title: summary.title, subtitle: "AI conversation · \(summary.provider.rawValue)",
                                         timestamp: summary.updatedAt, action: SearchAction("openConversation", ["id": summary.id])))
         }
@@ -211,8 +271,8 @@ final class EventSink: @unchecked Sendable {
     func terminal(_ event: TerminalEvent) {
         guard let runtime else { return }
         switch event {
-        case .output(let id, let data):
-            runtime.broadcast("terminal.output", .object(["id": .string(id), "data": .string(data.base64EncodedString())]))
+        case .output(let id, let data, let offset):
+            runtime.broadcast("terminal.output", .object(["id": .string(id), "data": .string(data.base64EncodedString()), "offset": .number(Double(offset))]))
         case .state(let info):
             runtime.broadcast("terminal.state", (try? JSONValue.from(info)) ?? .null)
         case .command(let id, let command):
@@ -231,11 +291,17 @@ final class EventSink: @unchecked Sendable {
         switch event {
         case .updated(let conversation):
             runtime.broadcast("chat.updated", (try? JSONValue.from(conversation)) ?? .null)
-            runtime.search.index.upsert(SearchDocument(
+            Task {
+                if let id = conversation.workspaceID, (try? await runtime.workspaces.get(id)) == nil { return }
+                runtime.search.index.upsert(SearchDocument(
                 source: "conversation", id: conversation.id, title: conversation.title,
                 body: conversation.messages.suffix(20).map(\.text).joined(separator: "\n"),
                 subtitle: "AI conversation · \(conversation.provider.rawValue)", timestamp: conversation.updatedAt,
                 action: SearchAction("openConversation", ["id": conversation.id])))
+                if let id = conversation.workspaceID, (try? await runtime.workspaces.get(id)) == nil {
+                    runtime.search.index.remove(source: "conversation", id: conversation.id)
+                }
+            }
             if let last = conversation.messages.last, last.role == .assistant, last.status != .streaming {
                 runtime.recordActivity(ActivityEvent(kind: .agent, title: conversation.title, detail: last.status.rawValue,
                                                      project: conversation.workingDirectory,

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lima: browser and AI workspace for macOS</title>
+  <meta name="description" content="Lima is a macOS browser where AI coding agents work in the same tabs and terminals you do.">
+  <link rel="icon" href="/lima.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main>
+    <img class="mark" src="/lima.svg" alt="" width="96" height="96">
+    <h1>Lima</h1>
+    <p class="lede">A browser and AI workspace for macOS. Agents work in the same tabs and terminals you do, and you can always see what each one is doing.</p>
+
+    <div class="download">
+      <a id="download" class="button" href="/download" aria-disabled="true">Download for macOS</a>
+      <p id="release" class="meta">Checking for the latest release…</p>
+    </div>
+
+    <section>
+      <h2>Install</h2>
+      <ol>
+        <li>Open <code>Lima.dmg</code> and drag Lima to Applications.</li>
+        <li>The first time, Control-click Lima in Applications and choose <strong>Open</strong>. Lima is signed with its own certificate rather than through Apple’s notary service, so macOS asks once.</li>
+        <li>After that, Lima updates itself. Each update is checked against a signed release feed and Lima’s certificate before it installs.</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>Requirements</h2>
+      <p>macOS 14 or later, Apple Silicon or Intel. AI features use the Claude Code, Codex or OpenCode CLI you already have.</p>
+    </section>
+
+    <section id="verify" hidden>
+      <h2>Verify</h2>
+      <p>Checksums for this release: <a id="sums" href="#">SHA256SUMS</a>. Built from Zen <span id="engine"></span>.</p>
+    </section>
+  </main>
+  <footer>Lima is built on <a href="https://zen-browser.app">Zen</a> and Firefox (MPL-2.0).</footer>
+</body>
+</html>

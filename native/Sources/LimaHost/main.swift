@@ -9,10 +9,14 @@ let arguments = Array(CommandLine.arguments.dropFirst())
 switch arguments.first {
 case "daemon":
     await Daemon.run()
+case "grammar-shortcut":
+    GrammarShortcut.run()
 case "--stdio":
     StdioRelay.run()
 case "mcp":
     MCPServer.run()
+case "apply-update":
+    UpdateApplier.run(Array(arguments.dropFirst()))
 case "discover":
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -22,8 +26,13 @@ case "call":
     guard arguments.count >= 2 else { print("usage: lima-host call <method> [json]"); exit(64) }
     let params = arguments.count > 2 ? try JSONDecoder().decode(JSONValue.self, from: Data(arguments[2].utf8)) : nil
     do {
-        // Developer utility; defaults to the least-privileged origin.
+        // Developer utility. Release builds always use the least-privileged
+        // origin; the runtime rejects a claimed browser origin regardless.
+        #if DEBUG
         let origin = ActionOrigin(rawValue: ProcessInfo.processInfo.environment["LIMA_CALL_ORIGIN"] ?? "mcp") ?? .mcp
+        #else
+        let origin = ActionOrigin.mcp
+        #endif
         let client = try RuntimeClient.connect(origin: origin)
         let result = try client.call(arguments[1], params: params)
         let encoder = JSONEncoder()

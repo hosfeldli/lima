@@ -72,6 +72,38 @@ func waitIdle(_ service: ConversationService, _ id: String) async throws -> Conv
     return try await service.get(id)
 }
 
+@Test(.timeLimit(.minutes(1))) func shortProviderOutputArrivesWhileProcessIsStillRunning() async throws {
+    let cli = try fakeCLI("codex", script: """
+    cat >/dev/null
+    echo '{"type":"thread.started","thread_id":"LIVE"}'
+    echo '{"type":"turn.started"}'
+    echo '{"type":"item.completed","item":{"type":"agent_message","text":"First reply"}}'
+    for try in 1 2 3 4 5; do
+      [ -f "$(dirname "$0")/finish" ] && break
+      sleep 1
+    done
+    echo '{"type":"turn.completed"}'
+    """)
+    let (service, dir) = try await makeConversations(cliDir: cli)
+    defer {
+        try? FileManager.default.removeItem(at: cli)
+        try? FileManager.default.removeItem(at: dir)
+    }
+    let conversation = try await service.create(provider: .codex, model: nil, workingDirectory: nil)
+    _ = try await service.send(conversation.id, text: "hello")
+    for _ in 0..<50 {
+        if try await service.get(conversation.id).messages.last?.text == "First reply" { break }
+        try await Task.sleep(for: .milliseconds(40))
+    }
+    let live = try await service.get(conversation.id)
+    #expect(live.messages.last?.status == .streaming)
+    #expect(live.messages.last?.progress == .thinking)
+    #expect(live.messages.last?.text == "First reply")
+    try Data().write(to: cli.appendingPathComponent("finish"))
+    let finished = try await waitIdle(service, conversation.id)
+    #expect(finished.messages.last?.status == .complete)
+}
+
 @Test(.timeLimit(.minutes(1))) func conversationStreamsAndResumesSession() async throws {
     // Echoes the prompt and records the args it was called with.
     let cli = try fakeCLI("claude", script: """
@@ -134,4 +166,13 @@ func waitIdle(_ service: ConversationService, _ id: String) async throws -> Conv
     _ = try await service.send(conversation.id, text: "hi")
     let result = try await waitIdle(service, conversation.id)
     #expect(result.messages.last?.error?.kind == .missingExecutable)
+}
+
+
+@Test func codexReportsAnMCPToolAtStartWithoutRepeatingItAtCompletion() {
+    var parser = AgentEventParser(provider: .codex)
+    let events = parser.parse(line: #"{"type":"item.started","item":{"id":"tool1","type":"mcp_tool_call","server":"lima","tool":"workspace_open_tab","arguments":{"url":"https://example.com"}}}"#)
+    #expect(events == [.tool(name: "mcp__lima__workspace_open_tab", detail: #"{"url":"https://example.com"}"#)])
+    let completion = parser.parse(line: #"{"type":"item.completed","item":{"id":"tool1","type":"mcp_tool_call","server":"lima","tool":"workspace_open_tab"}}"#)
+    #expect(completion.isEmpty)
 }

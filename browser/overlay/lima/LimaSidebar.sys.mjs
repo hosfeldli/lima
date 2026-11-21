@@ -6,16 +6,18 @@
  *  - The dock above Zen's footer: now-playing pill (4.x music bar), the
  *    dictation pill while recording/transcribing, and the mic.
  *  - A workspace folder's ✦ opens its chat; renaming a folder renames the
- *    workspace or Notebook section. */
+ *    workspace or sidebar section. */
+
+import { googleEssentialTabs, refreshGoogleEssentials } from "resource://lima/LimaGoogleEssentials.sys.mjs";
 
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
-  LimaNotebook: "resource://lima/LimaNotebook.sys.mjs",
   LimaNotesBookmarks: "resource://lima/LimaNotesBookmarks.sys.mjs",
   LimaSearchPanel: "resource://lima/LimaSearchPanel.sys.mjs",
   LimaTabs: "resource://lima/LimaTabs.sys.mjs",
   LimaWorkspaces: "resource://lima/LimaWorkspaces.sys.mjs",
+  PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
   tabURL: "resource://lima/LimaWorkspaces.sys.mjs",
 });
 
@@ -64,11 +66,7 @@ export const LimaCreate = {
   },
 
   async note(win, folder = null) {
-    const section = folder?.hasAttribute("lima-section") ? folder.getAttribute("lima-section") : null;
-    const note = await lazy.LimaNotesBookmarks.createNote({ title: "Untitled", kind: "classic", folderGuid: section });
-    if (!folder || lazy.LimaNotebook.isNotebookFolder(folder)) {
-      if (await lazy.LimaNotebook.reveal(win, note.id)) return note;
-    }
+    const note = await lazy.LimaNotesBookmarks.createNote({ title: "Untitled", kind: "classic" });
     const tab = win.gBrowser.addTab(`about:lima?note=${encodeURIComponent(note.id)}`, { triggeringPrincipal: system() });
     this.place(win, tab, folder);
     return note;
@@ -92,7 +90,9 @@ export const LimaCreate = {
     }
     let workspace;
     try {
-      workspace = await lazy.LimaBridge.request("workspace.create", { name, directory });
+      const provider = Services.prefs.getStringPref("lima.agent.provider", "claude");
+      const model = Services.prefs.getStringPref("lima.agent.model." + provider, "default");
+      workspace = await lazy.LimaBridge.request("workspace.create", { name, directory, provider, model });
     } catch (error) {
       win.alert?.(`Couldn't create the workspace: ${error.message}`);
       return;
@@ -102,7 +102,6 @@ export const LimaCreate = {
       const folder = lazy.LimaWorkspaces.folderFor(workspace.id, "folder", win);
       if (folder) {
         lazy.LimaWorkspaces.openChat(win, workspace.id);
-        if (!pickFolder) win.setTimeout(() => folder.rename(), 250);
         return;
       }
       await new Promise(resolve => win.setTimeout(resolve, 100));
@@ -165,7 +164,7 @@ function installMenus(win) {
     if (anchor) anchor.after(...items); else toolbar.prepend(...items, separator("lima-ctx-sep"));
   }
 
-  // Right-click on a folder: create inside it; workspace/agent/notebook actions.
+  // Right-click on a folder: create inside it; workspace and agent actions.
   const folderMenu = doc.getElementById("zenFolderActions");
   if (folderMenu && !doc.getElementById("lima-folder-note")) {
     let target = null;
@@ -175,15 +174,8 @@ function installMenus(win) {
       inFolder("lima-folder-tab", "New Tab Here", "tab", f => { const tab = win.gBrowser.addTab("about:blank", { triggeringPrincipal: system() }); LimaCreate.place(win, tab, f); lazy.LimaSearchPanel.open(win); }),
       inFolder("lima-folder-note", "New Note Here", "note", f => LimaCreate.note(win, f)),
       inFolder("lima-folder-terminal", "New Terminal Here", "terminal", f => LimaCreate.terminal(win, f)),
-      inFolder("lima-folder-section", "New Section", "folder", () => lazy.LimaNotebook.newSection(win)),
-      inFolder("lima-folder-dismiss", "Dismiss Agent", "close", f => lazy.LimaBridge.request("workspace.delete", { id: f.getAttribute("lima-workspace") })),
-      inFolder("lima-folder-remove", "Remove Workspace…", "trash", f => {
-        const id = f.getAttribute("lima-workspace");
-        const workspace = lazy.LimaWorkspaces.workspace(id);
-        if (win.confirm(`Remove “${workspace?.name ?? f.label}”? Its tabs, terminal and helper agents close. The folder on disk is kept.`)) {
-          lazy.LimaBridge.request("workspace.delete", { id });
-        }
-      }),
+      inFolder("lima-folder-dismiss", "Dismiss Agent", "close", f => lazy.LimaWorkspaces.archive(win, f.getAttribute("lima-workspace"))),
+      inFolder("lima-folder-remove", "Archive Workspace…", "trash", f => lazy.LimaWorkspaces.archive(win, f.getAttribute("lima-workspace"))),
       separator("lima-folder-sep"),
     ];
     folderMenu.prepend(...own);
@@ -192,14 +184,14 @@ function installMenus(win) {
       target = contextFolder(win, folderMenu);
       const workspace = target?.hasAttribute("lima-workspace");
       const agent = target?.hasAttribute("lima-agent");
-      const notebook = lazy.LimaNotebook.isNotebookFolder(target);
       doc.getElementById("lima-folder-chat").hidden = !workspace;
-      doc.getElementById("lima-folder-tab").hidden = !target || notebook;
-      doc.getElementById("lima-folder-terminal").hidden = !target || notebook;
+      doc.getElementById("lima-folder-tab").hidden = !target;
+      doc.getElementById("lima-folder-terminal").hidden = !target;
       doc.getElementById("lima-folder-note").hidden = !target;
-      doc.getElementById("lima-folder-section").hidden = !target?.hasAttribute("lima-notebook");
       doc.getElementById("lima-folder-dismiss").hidden = !agent;
       doc.getElementById("lima-folder-remove").hidden = !workspace || agent;
+      const deleteItem = doc.getElementById("context_zenFolderDelete");
+      if (deleteItem) deleteItem.hidden = !!workspace;
     });
   }
 
@@ -219,22 +211,49 @@ function installMenus(win) {
 
 function attachDock(win) {
   const doc = win.document;
-  const art = el(doc, "button", { class: "lima-music-art", title: "Open the player" });
   const title = el(doc, "span", { class: "lima-music-title" });
   const artist = el(doc, "span", { class: "lima-music-artist" });
-  const playIcon = glyph(doc, "play");
-  const control = action => event => { event.stopPropagation(); lazy.LimaBridge.request("media.control", { action }).catch(error => flash(error.message)); };
-  const play = el(doc, "button", { class: "lima-music-btn", title: "Play / pause", onclick: control("playpause") }, playIcon);
-  const progress = el(doc, "div", { class: "lima-music-progress" }, el(doc, "i"));
-  const times = el(doc, "div", { class: "lima-music-times" }, el(doc, "span"), el(doc, "span"));
-  const expanded = el(doc, "div", { class: "lima-music-expanded" }, progress, times,
+  const control = (action, parameters = () => ({})) => async event => {
+    event.stopPropagation();
+    if (controlBusy) return;
+    controlBusy = true;
+    music.dataset.gesture = action === "next" || action === "previous" ? "skip" : action === "playpause" ? "tap" : "cue";
+    try {
+      await lazy.LimaBridge.request("media.control", { action, player: "Spotify", ...parameters() });
+      await refresh(true);
+      win.setTimeout(() => { if (music.hasAttribute("data-open")) refresh(true); }, 850);
+    } catch (error) { flash(error.message); }
+    finally {
+      controlBusy = false;
+      win.clearTimeout(gestureTimer);
+      gestureTimer = win.setTimeout(() => { delete music.dataset.gesture; }, 620);
+    }
+  };
+  const progress = el(doc, "input", { class: "lima-music-progress", type: "range", min: "0", max: "0", step: "0.25", "aria-label": "Track position" });
+  const volume = el(doc, "input", { type: "range", min: "0", max: "100", "aria-label": "Audio volume" });
+  const outputs = el(doc, "select", { "aria-label": "Audio output", title: "Audio output", disabled: true });
+  const elapsedTime = el(doc, "span", { class: "lima-music-time" });
+  const durationTime = el(doc, "span", { class: "lima-music-time" });
+  const timeline = el(doc, "div", { class: "lima-music-timeline" }, elapsedTime, progress, durationTime);
+  const djMascot = el(doc, "img", { class: "lima-dj-mascot", src: "resource://lima-ui/marks/dj.svg", alt: "" });
+  const djScene = el(doc, "span", { class: "lima-dj-scene", "aria-hidden": "true" }, djMascot,
+    el(doc, "i", { class: "lima-dj-record" }));
+  const expanded = el(doc, "div", { class: "lima-music-expanded" }, timeline,
     el(doc, "div", { class: "lima-music-transport" },
       el(doc, "button", { class: "lima-music-btn", title: "Previous", onclick: control("previous") }, glyph(doc, "previous")),
       el(doc, "button", { class: "lima-music-btn big", title: "Play / pause", onclick: control("playpause") }, glyph(doc, "play")),
       el(doc, "button", { class: "lima-music-btn", title: "Next", onclick: control("next") }, glyph(doc, "next")),
-      el(doc, "button", { class: "lima-music-dj", title: "Spotify DJ", onclick: control("dj") }, "DJ")));
-  const music = el(doc, "div", { id: "lima-music", hidden: true, title: "Scroll to change volume" },
-    el(doc, "div", { class: "lima-music-row" }, art, el(doc, "div", { class: "lima-music-text" }, title, artist), play), expanded);
+      el(doc, "button", { class: "lima-music-dj", title: "Play Spotify DJ", "aria-label": "Play Spotify DJ", onclick: control("dj") },
+        el(doc, "img", { src: "resource://lima-ui/marks/dj.svg", alt: "" }), "DJ")),
+    el(doc, "div", { class: "lima-music-audio" }, glyph(doc, "volume"), volume, outputs));
+  expanded.inert = true;
+  const playerHeader = el(doc, "button", { class: "lima-music-row", title: "Expand music controls", "aria-expanded": "false", onclick: toggleSpotify },
+    djScene, el(doc, "span", { class: "lima-music-text" }, title, artist),
+    el(doc, "span", { class: "lima-music-notes", "aria-hidden": "true" }, el(doc, "i", {}, "♪"), el(doc, "i", {}, "♫")));
+  const music = el(doc, "div", { id: "lima-music", hidden: true, "aria-label": "Spotify playback" },
+    playerHeader, el(doc, "div", { class: "lima-music-reveal" }, expanded));
+  const spotify = el(doc, "button", { id: "lima-spotify", title: "Spotify", "aria-label": "Spotify", "aria-expanded": "false", onclick: toggleSpotify },
+    el(doc, "span", { class: "lima-spotify-icon" }));
 
   const level = el(doc, "div", { class: "lima-dict-level" }, ...Array.from({ length: 5 }, () => el(doc, "i")));
   const dictLabel = el(doc, "span", { class: "lima-dict-label" });
@@ -243,15 +262,33 @@ function attachDock(win) {
     el(doc, "button", { class: "lima-music-btn", title: "Stop and transcribe (⌃⌥D)", onclick: () => toggleDictation(win) }, glyph(doc, "stop")),
     el(doc, "button", { class: "lima-music-btn", title: "Cancel", onclick: () => lazy.LimaBridge.request("dictation.cancel").catch(() => {}) }, glyph(doc, "close")));
   const mic = el(doc, "button", { id: "lima-mic", title: "Dictate (⌃⌥D)", "aria-label": "Dictate", onclick: () => toggleDictation(win) }, glyph(doc, "mic"));
-  const dock = el(doc, "div", { id: "lima-dock" }, el(doc, "div", { id: "lima-dock-main" }, music, dictation), mic);
+  const rail = el(doc, "div", { class: "lima-dock-rail", role: "toolbar", "aria-label": "Sidebar shortcuts" });
+  const dock = el(doc, "div", { id: "lima-dock" }, el(doc, "div", { id: "lima-dock-main" }, music, dictation));
 
   const foot = doc.getElementById("zen-sidebar-foot-buttons");
-  if (foot?.parentNode) foot.parentNode.insertBefore(dock, foot);
-  else (doc.getElementById("navigator-toolbox") ?? doc.documentElement).append(dock);
+  if (foot?.parentNode) {
+    foot.before(dock);
+    const plus = doc.getElementById("zen-create-new-button");
+    if (plus?.parentElement === foot) plus.after(rail);
+    else foot.append(rail);
+  } else {
+    dock.append(rail);
+    (doc.getElementById("navigator-toolbox") ?? doc.documentElement).append(dock);
+  }
 
   // Now playing.
   let track = null;
   let flashTimer = null;
+  let controlBusy = false;
+  let gestureTimer = null;
+  let revision = 0;
+  let lastPoll = 0;
+  let musicVisible = true;
+  let scrubbing = false;
+  const personality = () => music.dataset.personality = Services.prefs.getStringPref("lima.personality", "full");
+  personality();
+  Services.prefs.addObserver("lima.personality", personality);
+  win.addEventListener("unload", () => Services.prefs.removeObserver("lima.personality", personality), { once: true });
   const fmt = ms => { const s = Math.max(0, Math.round(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
   function flash(text) {
     artist.textContent = text;
@@ -259,41 +296,76 @@ function attachDock(win) {
     flashTimer = win.setTimeout(() => paintTrack(), 1600);
   }
   function paintTrack() {
-    const visible = !!track?.title && ["Playing", "Paused"].includes(track.state);
-    music.hidden = !visible;
-    if (!visible) return;
-    title.textContent = track.title;
-    artist.textContent = [track.artist, track.player].filter(Boolean).join(" · ");
-    const icon = track.state === "Playing" ? "pause" : "play";
+    const open = music.hasAttribute("data-open");
+    music.hidden = !musicVisible;
+    expanded.inert = !open;
+    playerHeader.setAttribute("aria-expanded", String(open));
+    spotify.setAttribute("aria-expanded", String(open));
+    title.textContent = track?.title || "Spotify";
+    artist.textContent = track?.title ? track.artist : "Spotify is idle";
+    const icon = track?.state === "Playing" ? "pause" : "play";
     for (const node of music.querySelectorAll('.lima-glyph[data-role="pp"], .lima-music-btn[title="Play / pause"] .lima-glyph')) node.style.maskImage = `url("${ICON(icon)}")`;
-    art.style.backgroundImage = track.artworkURL ? `url("${track.artworkURL}")` : "";
-    art.toggleAttribute("data-empty", !track.artworkURL);
-    music.toggleAttribute("data-playing", track.state === "Playing");
+    music.toggleAttribute("data-playing", track?.state === "Playing");
+    if (track?.positionMs != null && music.dataset.personality === "full") {
+      const elapsed = track.state === "Playing" ? Math.max(0, Date.now() - track.updatedAt) : 0;
+      const position = track.positionMs + elapsed;
+      for (const animation of playerHeader.getAnimations({ subtree: true })) {
+        if (!["dj-groove", "dj-spin", "lima-note-lift"].includes(animation.animationName)) continue;
+        if (animation.currentTime == null || Math.abs(animation.currentTime - position) > 160) animation.currentTime = position;
+      }
+    }
     tick();
   }
   function tick() {
-    if (!track?.durationMs || track.positionMs === undefined || track.positionMs === null) { progress.hidden = times.hidden = true; return; }
-    progress.hidden = times.hidden = false;
+    progress.disabled = !track?.durationMs || track.positionMs == null;
+    timeline.hidden = progress.disabled;
+    if (progress.disabled || scrubbing) return;
     const elapsed = track.state === "Playing" ? Date.now() - track.updatedAt : 0;
     const position = Math.min(track.durationMs, track.positionMs + elapsed);
-    progress.firstChild.style.width = `${(position / track.durationMs) * 100}%`;
-    times.firstChild.textContent = fmt(position);
-    times.lastChild.textContent = fmt(track.durationMs);
+    progress.max = track.durationMs / 1000;
+    progress.value = position / 1000;
+    elapsedTime.textContent = fmt(position);
+    durationTime.textContent = fmt(track.durationMs);
   }
-  win.setInterval(() => { if (!music.hidden && music.hasAttribute("data-open")) tick(); }, 1000);
-  const refresh = () => lazy.LimaBridge.request("media.nowPlaying").then(item => { track = item; paintTrack(); }).catch(() => {});
-  // Clicking the pill only expands it (it never opens the player);
-  // the artwork opens the player, as in 4.x.
-  music.addEventListener("click", event => {
-    if (event.target.closest("button")) return;
+  win.setInterval(() => {
+    if (music.hidden || doc.hidden) return;
+    tick();
+    if (music.hasAttribute("data-open") && !controlBusy && Date.now() - lastPoll > 15000) refresh(true);
+  }, 1000);
+  const refresh = (update = false) => {
+    if (update) lastPoll = Date.now();
+    const request = ++revision;
+    return lazy.LimaBridge.request("media.nowPlaying", { player: "Spotify", refresh: update }).then(item => {
+      if (request === revision) { track = item; paintTrack(); }
+    }).catch(error => { if (update) flash(error.message); });
+  };
+  function toggleSpotify() {
     music.toggleAttribute("data-open");
-    if (music.hasAttribute("data-open")) refresh();
+    paintTrack();
+    if (music.hasAttribute("data-open")) {
+      refresh(true);
+      lazy.LimaBridge.request("audio.volume").then(value => { volume.value = Math.round((value ?? 0) * 100); }).catch(() => {});
+      lazy.LimaBridge.request("audio.outputs").then(items => {
+        outputs.replaceChildren(...items.map(item => {
+          const option = el(doc, "option", { value: item.id, text: item.name });
+          option.selected = item.isDefault;
+          return option;
+        }));
+        outputs.disabled = !items.length;
+        outputs.title = outputs.selectedOptions[0]?.textContent || "Audio output";
+      }).catch(() => {});
+    }
+  }
+  progress.addEventListener("input", () => { scrubbing = true; elapsedTime.textContent = fmt(Number(progress.value) * 1000); });
+  progress.addEventListener("change", event => {
+    const seconds = Number(progress.value);
+    control("seek", () => ({ seconds }))(event).finally(() => { scrubbing = false; tick(); });
   });
-  art.addEventListener("click", event => {
-    event.stopPropagation();
-    const app = track?.player === "Spotify" ? "/Applications/Spotify.app" : "/System/Applications/Music.app";
-    lazy.LimaBridge.request("system.openApp", { path: app }).catch(() => {});
-  });
+  progress.addEventListener("blur", () => { scrubbing = false; });
+  volume.addEventListener("change", () => lazy.LimaBridge.request("audio.volume", { value: Number(volume.value) / 100 }).catch(error => flash(error.message)));
+  outputs.addEventListener("change", () => lazy.LimaBridge.request("audio.setOutput", { id: Number(outputs.value) })
+    .then(() => { outputs.title = outputs.selectedOptions[0]?.textContent || "Audio output"; })
+    .catch(error => flash(error.message)));
   // One volume control: scroll on the pill.
   let volumeBusy = false;
   music.addEventListener("wheel", async event => {
@@ -333,12 +405,162 @@ function attachDock(win) {
   }
 
   lazy.LimaBridge.onEvent(message => {
-    if (message.event === "media.nowPlaying") { track = message.data; paintTrack(); }
+    if (message.event === "media.nowPlaying" && message.data?.player === "Spotify") { revision++; track = message.data; paintTrack(); }
     else if (message.event === "dictation.state") paintDictation(message.data);
     else if (message.event === "dictation.result") deliverDictation(win, message.data);
   });
   refresh();
   lazy.LimaBridge.request("dictation.status").then(paintDictation).catch(() => {});
+  attachServices(win, dock, rail, spotify, mic, visible => {
+    musicVisible = visible;
+    if (!visible) music.removeAttribute("data-open");
+    paintTrack();
+  });
+}
+
+function attachServices(win, dock, rail, spotify, mic, hideSpotify) {
+  const doc = win.document;
+  const main = dock.querySelector("#lima-dock-main");
+  const privateMode = lazy.PrivateBrowsingUtils.isWindowPrivate(win);
+  const pref = "lima.sidebar.shortcuts";
+  const definitions = { inbox: "Gmail", calendar: "Google Calendar", spotify: "Spotify", mic: "Dictation", grammar: "Grammar settings" };
+  const settingsURL = section => `about:lima?view=integrations&section=${section}`;
+  const gmailURL = "https://mail.google.com/mail/u/0/#inbox";
+  const calendarURL = "https://calendar.google.com/calendar/u/0/r";
+  const launch = url => lazy.LimaTabs.openOrFocus(win, url);
+  const notice = el(doc, "div", { class: "lima-services-notice", hidden: true });
+  main.prepend(notice);
+  let snapshot = null;
+  let nativeStatus;
+  let tabStatus = {};
+  const keptLoaded = new Set();
+  let priorUnread;
+  let lastMeeting;
+  let dismissTimer;
+  let sequence = 0;
+  function jump(name) {
+    const service = name === "inbox" ? "mail" : "calendar";
+    const essential = googleEssentialTabs(win)[service];
+    if (essential) {
+      win.gBrowser.selectedTab = essential.tab;
+      notice.hidden = true;
+    } else if (snapshot?.[service] === "connected") {
+      launch(name === "inbox" ? gmailURL : calendarURL);
+      notice.hidden = true;
+    } else launch(settingsURL("google"));
+  }
+  const control = (label, icon, run) => el(doc, "button", { title: label, "aria-label": label, onclick: run }, glyph(doc, icon));
+  const inbox = control("Gmail", "inbox", () => jump("inbox"));
+  const calendar = control("Google Calendar", "calendar", () => jump("calendar"));
+  const grammar = control("Grammar settings", "grammar", () => launch(settingsURL("grammar")));
+  const buttons = { inbox, calendar, spotify, mic, grammar };
+  const settings = control("Settings", "sliders", () => launch("about:lima?view=integrations"));
+  settings.id = "lima-settings-button";
+  (doc.getElementById("zen-sidebar-foot-buttons") ?? dock).append(settings);
+  const defaultOrder = Object.keys(definitions);
+
+  function layout() {
+    let stored;
+    try { stored = JSON.parse(Services.prefs.getStringPref(pref, "{}")); } catch {}
+    const ordered = [...new Set((Array.isArray(stored?.order) ? stored.order : []).filter(id => Object.hasOwn(definitions, id)))];
+    const hidden = new Set(Array.isArray(stored?.hidden) ? stored.hidden : ["grammar"]);
+    return { order: [...ordered, ...defaultOrder.filter(id => !ordered.includes(id))], hidden };
+  }
+
+  function paintRail() {
+    const { order, hidden } = layout();
+    const visible = order.filter(id => !hidden.has(id) && (!privateMode || !["inbox", "calendar"].includes(id)));
+    hideSpotify(visible.includes("spotify"));
+    const current = doc.activeElement;
+    rail.replaceChildren(...visible.map(id => buttons[id]));
+    if (current?.isConnected && rail.contains(current)) current.focus();
+  }
+
+  function remind(title, actionText, url) {
+    notice.replaceChildren(el(doc, "img", { src: "resource://lima-ui/marks/companion.svg", alt: "" }),
+      el(doc, "div", { class: "lima-reminder-copy" }, el(doc, "strong", { text: title }),
+        el(doc, "button", { onclick: () => { launch(url); notice.hidden = true; } }, actionText + " →")),
+      control("Dismiss reminder", "close", () => { notice.hidden = true; }));
+    notice.hidden = false;
+    win.clearTimeout(dismissTimer);
+    dismissTimer = win.setTimeout(() => { notice.hidden = true; }, 14000);
+  }
+
+  function paint() {
+    const result = { ...nativeStatus };
+    // Essential tab metadata is local to this window. GWS fills gaps when the
+    // tab layout doesn't expose a usable count or time.
+    if (tabStatus.mail) Object.assign(result, { mail: "connected", unread: tabStatus.mail.unread, mailReconnect: false });
+    if (tabStatus.calendar) Object.assign(result, { calendar: "connected", meeting: tabStatus.calendar.meeting, calendarReconnect: false });
+    if (tabStatus.mail || tabStatus.calendar) result.enabled = true;
+    snapshot = result;
+    const count = result.unread ?? 0;
+    inbox.toggleAttribute("lima-reconnect", result.enabled && result.mailReconnect);
+    calendar.toggleAttribute("lima-reconnect", result.enabled && result.calendarReconnect);
+    inbox.toggleAttribute("lima-unread", result.mail === "connected" && count > 0);
+    const currentMeeting = result.meeting;
+    const minutes = currentMeeting ? Math.ceil((currentMeeting.startsAt - Date.now()) / 60000) : -1;
+    calendar.toggleAttribute("lima-upcoming", minutes >= 0 && minutes <= 15);
+    inbox.title = result.mailReconnect ? "Reconnect Gmail" : count > 0 ? `Gmail · ${count} unread` : "Gmail";
+    calendar.title = result.calendarReconnect ? "Reconnect Google Calendar" : "Google Calendar";
+    inbox.setAttribute("aria-label", inbox.title);
+    calendar.setAttribute("aria-label", calendar.title);
+    if (!result.enabled) { notice.hidden = true; priorUnread = undefined; lastMeeting = undefined; return; }
+    if (doc.hasFocus() && result.calendar === "connected" && currentMeeting && minutes >= 0 && minutes <= 15 && lastMeeting !== currentMeeting.id && calendar.isConnected) {
+      lastMeeting = currentMeeting.id;
+      remind(minutes < 1 ? `${currentMeeting.title} starts now` : `${currentMeeting.title} in ${minutes} min`, "Calendar", currentMeeting.link || calendarURL);
+    } else if (doc.hasFocus() && result.mail === "connected" && count > (priorUnread ?? 0) && inbox.isConnected) {
+      remind(`${count} unread email${count === 1 ? "" : "s"}`, "Open inbox", gmailURL);
+    }
+    if (result.mail === "connected" && (doc.hasFocus() || count === 0)) priorUnread = count;
+  }
+
+  async function refresh() {
+    if (privateMode || doc.hidden) return;
+    const ticket = ++sequence;
+    try {
+      const result = await lazy.LimaBridge.request("integrations.google.refresh");
+      if (ticket === sequence && result) { nativeStatus = result; paint(); }
+    } catch {}
+  }
+  let readingTabs = false;
+  async function refreshTabs() {
+    if (privateMode || doc.hidden || readingTabs) return;
+    readingTabs = true;
+    try {
+      tabStatus = await refreshGoogleEssentials(win, keptLoaded);
+      win.limaGoogleEssentialStatus = { mail: Boolean(tabStatus.mail), calendar: Boolean(tabStatus.calendar) };
+      paint();
+    } finally { readingTabs = false; }
+  }
+  const tabEvents = ["TabSelect", "TabOpen", "TabClose", "TabAttrModified", "SSTabRestored"];
+  let refreshTimer;
+  const scheduleTabs = () => {
+    win.clearTimeout(refreshTimer);
+    refreshTimer = win.setTimeout(refreshTabs, 450);
+  };
+  for (const event of tabEvents) win.gBrowser.tabContainer.addEventListener(event, scheduleTabs);
+  doc.addEventListener("visibilitychange", scheduleTabs);
+  const tabTimer = win.setInterval(refreshTabs, 15000);
+  Services.prefs.addObserver(pref, paintRail);
+  const off = lazy.LimaBridge.onEvent(({ event, data }) => {
+    if (!privateMode && event === "integrations.google.updated" && data) { sequence++; nativeStatus = data; paint(); }
+  });
+  const timer = win.setInterval(refresh, 45000);
+  win.addEventListener("focus", refresh);
+  doc.addEventListener("visibilitychange", refresh);
+  win.addEventListener("unload", () => {
+    off();
+    Services.prefs.removeObserver(pref, paintRail);
+    win.clearInterval(timer);
+    win.clearInterval(tabTimer);
+    win.clearTimeout(refreshTimer);
+    for (const event of tabEvents) win.gBrowser.tabContainer.removeEventListener(event, scheduleTabs);
+    win.clearTimeout(dismissTimer);
+  }, { once: true });
+  paintRail();
+  refresh();
+  refreshTabs();
 }
 
 // MARK: Dictation
@@ -378,30 +600,31 @@ async function deliverDictation(win, { text, target }) {
   }
   const stamp = new Date().toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   const note = await lazy.LimaNotesBookmarks.createNote({ title: `Dictation — ${stamp}`, kind: "classic", markdown: `${text}\n` });
-  if (!(await lazy.LimaNotebook.reveal(win, note.id))) lazy.LimaTabs.openOrFocus(win, `about:lima?note=${encodeURIComponent(note.id)}`);
+  lazy.LimaTabs.openOrFocus(win, `about:lima?note=${encodeURIComponent(note.id)}`);
 }
 
 // MARK: Folder behaviour
 
 function attachFolderBehaviour(win) {
   const doc = win.document;
-  // ✦ opens the workspace chat instead of collapsing the folder.
-  const onIcon = event => {
-    const icon = event.target.closest?.(".tab-group-folder-icon");
-    const folder = icon?.closest("zen-folder[lima-workspace]");
-    if (!folder || icon.parentElement?.parentElement !== folder) return;
+  const openWorkspaceChat = event => {
+    if (event.button !== 0 || event.target.closest?.(".lima-workspace-disclosure, input")) return;
+    const label = event.target.closest?.(".tab-group-label-container");
+    const folder = label?.parentElement;
+    if (!folder?.hasAttribute("lima-workspace")) return;
     event.stopPropagation();
-    event.preventDefault();
-    if (event.type === "click") lazy.LimaWorkspaces.openChat(win, folder.getAttribute("lima-workspace"));
+    if (event.type === "click") {
+      event.preventDefault();
+      lazy.LimaWorkspaces.openChat(win, folder.getAttribute("lima-workspace"));
+    }
   };
-  for (const type of ["mousedown", "mouseup", "click"]) doc.addEventListener(type, onIcon, true);
+  doc.addEventListener("click", openWorkspaceChat, true);
+  win.gBrowser.tabContainer.addEventListener("TabSelect", () => lazy.LimaWorkspaces.onTabSelect(win));
 
   win.addEventListener("ZenFolderRenamed", event => {
     const folder = event.target;
     if (folder.hasAttribute?.("lima-workspace")) lazy.LimaWorkspaces.onFolderRenamed(folder);
-    else if (folder.hasAttribute?.("lima-section")) lazy.LimaNotebook.onFolderRenamed(folder);
   });
-  win.gBrowser.tabContainer.addEventListener("TabGrouped", event => lazy.LimaNotebook.onTabGrouped(event.target));
 }
 
 // MARK: Keys

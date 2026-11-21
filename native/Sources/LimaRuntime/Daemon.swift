@@ -40,8 +40,13 @@ public enum Daemon {
                 requested = .chat
             } else if requested == .chat {
                 requested = .mcp // "chat" is reserved for token-bound workspace agents
+            } else if requested == .browser, !client.peerIsLimaHost {
+                // Only the signed relay (which verified its parent is the
+                // Lima engine) or the daemon's own helpers may speak for the user.
+                throw BridgeError(.notAuthorized, "The browser origin is reserved for Lima itself.")
             }
             origins.set(client, requested, workspaceID: workspaceID)
+            if requested == .browser { runtime.connect(client) } else { runtime.disconnect(client) }
             return .object(["origin": .string(requested.rawValue), "workspace": workspaceID.map(JSONValue.string) ?? .null])
         }
         runtime.register("terminal.lease.handle") { [unowned runtime] params, _ in
@@ -54,7 +59,7 @@ public enum Daemon {
         }
 
         let server = SocketServer(path: paths.socket,
-            onConnect: { runtime.connect($0) },
+            onConnect: { _ in },
             onDisconnect: { client in runtime.disconnect(client); origins.remove(client) },
             handler: { client, payload in
                 guard let request = try? JSONDecoder().decode(BridgeRequest.self, from: payload) else {
@@ -139,18 +144,38 @@ public final class RuntimeClient: @unchecked Sendable {
     /// running from a different build.
     public static func connect(paths: RuntimePaths = .resolve(), executable: String = CommandLine.arguments[0], origin: ActionOrigin, workspaceToken: String? = nil) throws -> RuntimeClient {
         var client = try connectOrSpawn(paths: paths, executable: executable)
-        if let hello = try? client.call("host.hello"), hello["buildID"]?.stringValue != RuntimeBuild.id,
-           ProcessInfo.processInfo.environment["LIMA_KEEP_DAEMON"] == nil,
-           BackgroundAgent.status().executable.map({ ($0 as NSString).resolvingSymlinksInPath == (executable as NSString).resolvingSymlinksInPath }) ?? true {
-            _ = try? client.call("host.shutdown")
-            close(client.fd)
-            for _ in 0..<50 where SocketServer.connect(path: paths.socket).map({ close($0); return true }) ?? false { usleep(100_000) }
-            client = try connectOrSpawn(paths: paths, executable: executable)
+        func timeout(_ socket: Int32, seconds: Int) {
+            var interval = timeval(tv_sec: seconds, tv_usec: 0)
+            setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &interval, socklen_t(MemoryLayout<timeval>.size))
         }
-        var identity: [String: JSONValue] = ["origin": .string(origin.rawValue)]
-        if let workspaceToken { identity["workspaceToken"] = .string(workspaceToken) }
-        _ = try client.call("host.identify", params: .object(identity))
-        return client
+        do {
+            timeout(client.fd, seconds: 5)
+            let hello = try client.call("host.hello")
+            if hello["buildID"]?.stringValue != RuntimeBuild.id,
+               ProcessInfo.processInfo.environment["LIMA_KEEP_DAEMON"] == nil,
+               BackgroundAgent.status().executable.map({ ($0 as NSString).resolvingSymlinksInPath == (executable as NSString).resolvingSymlinksInPath }) ?? true {
+                _ = try client.call("host.shutdown")
+                var stopped = false
+                for _ in 0..<50 {
+                    guard let probe = SocketServer.connect(path: paths.socket) else { stopped = true; break }
+                    close(probe)
+                    usleep(100_000)
+                }
+                guard stopped else { throw BridgeError(.deadlineExceeded, "The previous Lima runtime did not stop during the update.") }
+                let replacement = try connectOrSpawn(paths: paths, executable: executable)
+                close(client.fd)
+                client = replacement
+                timeout(client.fd, seconds: 5)
+            }
+            var identity: [String: JSONValue] = ["origin": .string(origin.rawValue)]
+            if let workspaceToken { identity["workspaceToken"] = .string(workspaceToken) }
+            _ = try client.call("host.identify", params: .object(identity))
+            timeout(client.fd, seconds: 0)
+            return client
+        } catch {
+            close(client.fd)
+            throw error
+        }
     }
 
     private static func connectOrSpawn(paths: RuntimePaths, executable: String) throws -> RuntimeClient {
@@ -219,6 +244,9 @@ public final class RuntimeClient: @unchecked Sendable {
         while true {
             let count = read(fd, &buffer, buffer.count)
             if count < 0 && errno == EINTR { continue }
+            if count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) {
+                throw BridgeError(.deadlineExceeded, "Lima’s runtime did not respond. An existing session may need to be closed before reopening Lima.")
+            }
             guard count > 0 else { throw BridgeError(.internalError, "runtime connection closed") }
             let payloads = try decoder.append(Data(buffer[0..<count]))
             if !payloads.isEmpty { return payloads }
@@ -232,11 +260,17 @@ public final class RuntimeClient: @unchecked Sendable {
 public enum StdioRelay {
     public static func run() -> Never {
         signal(SIGPIPE, SIG_IGN)
+        guard CodeTrust.parentIsLimaEngine() else {
+            let event = BridgeEvent(event: "host.unavailable", data: .string("lima-host --stdio only runs as a child of Lima."))
+            if let data = try? JSONEncoder().encode(event) { FileHandle.standardOutput.write(BridgeFrame.encode(data)) }
+            exit(1)
+        }
         let client: RuntimeClient
         do {
             client = try RuntimeClient.connect(origin: .browser)
         } catch {
-            let event = BridgeEvent(event: "host.unavailable", data: .string(String(describing: error)))
+            let message = (error as? BridgeError)?.message ?? error.localizedDescription
+            let event = BridgeEvent(event: "host.unavailable", data: .string(message))
             if let data = try? JSONEncoder().encode(event) { FileHandle.standardOutput.write(BridgeFrame.encode(data)) }
             exit(1)
         }

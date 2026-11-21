@@ -28,6 +28,7 @@ public final class SocketServer: @unchecked Sendable {
         let directory = (path as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         chmod(directory, 0o700)
+        guard SocketServer.isPrivateDirectory(directory) else { throw POSIXError(.EPERM) }
         // The caller holds the runtime lock, so any existing socket file is stale.
         unlink(path)
 
@@ -58,7 +59,7 @@ public final class SocketServer: @unchecked Sendable {
             }
             var noSigPipe: Int32 = 1
             setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
-            let client = ClientConnection(fd: fd)
+            let client = ClientConnection(fd: fd, peerAuditToken: SocketServer.peerAuditToken(fd))
             onConnect(client)
             Thread.detachNewThread { [self] in readLoop(client) }
         }
@@ -80,6 +81,15 @@ public final class SocketServer: @unchecked Sendable {
         onDisconnect(client)
     }
 
+    /// The connecting process's audit token, which (unlike a pid) can't be
+    /// recycled, so a code-signature check on it is race-free.
+    static func peerAuditToken(_ fd: Int32) -> Data? {
+        var token = audit_token_t()
+        var length = socklen_t(MemoryLayout<audit_token_t>.size)
+        guard getsockopt(fd, SOL_LOCAL, LOCAL_PEERTOKEN, &token, &length) == 0 else { return nil }
+        return withUnsafeBytes(of: &token) { Data($0) }
+    }
+
     static func address(_ path: String) -> sockaddr_un {
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
@@ -91,8 +101,19 @@ public final class SocketServer: @unchecked Sendable {
         return address
     }
 
-    /// Connects as a client; returns the fd or nil when nothing is listening.
+    /// The socket directory is a real directory owned by this user and closed
+    /// to everyone else. (The /tmp fallback could otherwise be pre-created
+    /// by another account to impersonate the runtime.)
+    static func isPrivateDirectory(_ path: String) -> Bool {
+        var info = stat()
+        guard lstat(path, &info) == 0 else { return false }
+        return (info.st_mode & S_IFMT) == S_IFDIR && info.st_uid == getuid() && (info.st_mode & 0o077) == 0
+    }
+
+    /// Connects as a client; returns the fd or nil when nothing is listening
+    /// or the socket isn't in this user's private directory.
     public static func connect(path: String) -> Int32? {
+        guard isPrivateDirectory((path as NSString).deletingLastPathComponent) else { return nil }
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
         var address = address(path)
@@ -109,34 +130,68 @@ public final class SocketServer: @unchecked Sendable {
 public final class ClientConnection: @unchecked Sendable, Hashable {
     public let id = UUID()
     let fd: Int32
+    let peerAuditToken: Data?
     private let writeLock = NSLock()
-    private var closed = false
+    private let writer = DispatchQueue(label: "lima.socket.writer")
+    private var closing = false
+    private var closeScheduled = false
+    private var pendingBytes = 0
+    private static let maximumPendingBytes = 12 * 1024 * 1024
 
-    init(fd: Int32) { self.fd = fd }
+    init(fd: Int32, peerAuditToken: Data? = nil) {
+        self.fd = fd
+        self.peerAuditToken = peerAuditToken
+    }
+
+    /// The peer is lima-host from this installation (signature-verified).
+    var peerIsLimaHost: Bool {
+        guard let peerAuditToken, let code = CodeTrust.code(auditToken: peerAuditToken) else { return CodeTrust.developmentOverride }
+        return CodeTrust.isLimaHost(code)
+    }
 
     public func send(_ payload: Data) {
         let frame = BridgeFrame.encode(payload)
-        writeLock.lock(); defer { writeLock.unlock() }
-        guard !closed else { return }
-        frame.withUnsafeBytes { raw in
+        writeLock.lock()
+        defer { writeLock.unlock() }
+        guard !closing else { return }
+        guard pendingBytes + frame.count <= Self.maximumPendingBytes else {
+            // Close only this peer. The read loop owns the final descriptor close.
+            closing = true
+            shutdown(fd, SHUT_RDWR)
+            return
+        }
+        pendingBytes += frame.count
+        writer.async { [self] in writeFrame(frame) }
+    }
+
+    private func writeFrame(_ frame: Data) {
+        defer { writeLock.withLock { pendingBytes -= frame.count } }
+        guard writeLock.withLock({ !closing }) else { return }
+        let sent = frame.withUnsafeBytes { raw in
             var offset = 0
             while offset < raw.count {
                 let written = write(fd, raw.baseAddress!.advanced(by: offset), raw.count - offset)
-                if written < 0 {
-                    if errno == EINTR || errno == EAGAIN { continue }
-                    closed = true
-                    return
-                }
+                if written < 0, errno == EINTR { continue }
+                guard written > 0 else { return false }
                 offset += written
+            }
+            return true
+        }
+        if !sent {
+            writeLock.withLock {
+                if !closing { closing = true; shutdown(fd, SHUT_RDWR) }
             }
         }
     }
 
     func close() {
-        writeLock.lock(); defer { writeLock.unlock() }
-        guard !closed else { return }
-        closed = true
-        Darwin.close(fd)
+        writeLock.withLock {
+            guard !closeScheduled else { return }
+            closeScheduled = true
+            closing = true
+            shutdown(fd, SHUT_RDWR)
+            writer.async { [fd] in Darwin.close(fd) }
+        }
     }
 
     public static func == (lhs: ClientConnection, rhs: ClientConnection) -> Bool { lhs.id == rhs.id }

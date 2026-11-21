@@ -3,6 +3,7 @@ import Foundation
 /// Specific, user-actionable failure classes (spec v2 §5.5).
 public enum AgentFailureKind: String, Codable, Sendable {
     case missingExecutable = "missing_executable"
+    case permissionDenied = "permission_denied"
     case authentication
     case modelRejected = "model_rejected"
     case incompatibleVersion = "incompatible_version"
@@ -32,6 +33,9 @@ public struct AgentFailure: Codable, Equatable, Sendable, Error {
         if signaled { return AgentFailure(.processCrashed, "CLI terminated by signal. \(summary)") }
         if has("not logged in", "please log in", "login required", "/login", "authenticate", "unauthorized", "401", "invalid api key", "auth login") {
             return AgentFailure(.authentication, summary)
+        }
+        if has("operation not permitted", "permission denied", "sandbox denied", "access to this folder", "denied access to") {
+            return AgentFailure(.permissionDenied, summary)
         }
         if has("rate limit", "429", "usage limit", "quota") { return AgentFailure(.rateLimited, summary) }
         if has("model") && has("not found", "not supported", "does not exist", "invalid", "not available", "access", "unknown model") {
@@ -79,10 +83,17 @@ public struct AgentRunRequest: Sendable {
 
 public enum AgentStreamEvent: Equatable, Sendable {
     case session(String)
+    case progress(AgentProgress)
     case delta(String)
     case tool(name: String, detail: String)
     case completed(text: String)
     case failed(AgentFailure)
+}
+
+public enum AgentProgress: String, Codable, Sendable {
+    case connected
+    case thinking
+    case reconnecting
 }
 
 /// Builds argv for each CLI. Kept pure so it is unit-testable.
@@ -95,15 +106,20 @@ public enum AgentCommandLine {
             if let model { args += ["--model", model] }
             switch request.mode {
             case .quickAsk:
-                args += ["--tools", "", "--no-session-persistence", "--effort", "low"]
+                args += ["--tools", "", "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}", "--no-session-persistence", "--effort", "low"]
             case .chat:
                 if let session = request.cliSessionID { args += ["--resume", session] }
             }
             return args + request.extraArguments
         case .codex:
-            var args = ["exec", "--json", "--skip-git-repo-check", "-c", "sandbox_mode=\"read-only\""]
+            var args = ["exec", "--json", "--skip-git-repo-check"]
+            if !request.extraArguments.contains("--dangerously-bypass-approvals-and-sandbox") {
+                args += ["-c", "sandbox_mode=\"read-only\""]
+            }
             if let model { args += ["-m", model] }
-            if request.mode == .quickAsk { args += ["-c", "model_reasoning_effort=\"low\"", "--ephemeral"] }
+            if request.mode == .quickAsk {
+                args += ["-c", "model_reasoning_effort=\"low\"", "-c", "mcp_servers={}", "--disable", "shell_tool", "--ephemeral"]
+            }
             args += request.extraArguments
             if request.mode == .chat, let session = request.cliSessionID { args += ["resume", session] }
             return args + ["-"]
@@ -121,6 +137,7 @@ public struct AgentEventParser: Sendable {
     public let provider: CLIProvider
     private var finalText = ""
     private var sawDelta = false
+    private var startedTools = Set<String>()
 
     public init(provider: CLIProvider) { self.provider = provider }
 
@@ -140,6 +157,7 @@ public struct AgentEventParser: Sendable {
             if object["subtype"] as? String == "init", let id = object["session_id"] as? String { return [.session(id)] }
         case "stream_event":
             let event = object["event"] as? [String: Any]
+            if event?["type"] as? String == "message_start" { return [.progress(.thinking)] }
             let delta = event?["delta"] as? [String: Any]
             if event?["type"] as? String == "content_block_delta", delta?["type"] as? String == "text_delta", let text = delta?["text"] as? String {
                 sawDelta = true
@@ -151,8 +169,7 @@ public struct AgentEventParser: Sendable {
             var events: [AgentStreamEvent] = []
             for block in content {
                 if block["type"] as? String == "tool_use", let name = block["name"] as? String {
-                    let input = (try? JSONSerialization.data(withJSONObject: block["input"] ?? [:])).map { String(decoding: $0, as: UTF8.self) } ?? ""
-                    events.append(.tool(name: name, detail: String(input.prefix(300))))
+                    events.append(.tool(name: name, detail: Self.toolDetail(block["input"])))
                 } else if !sawDelta, block["type"] as? String == "text", let text = block["text"] as? String {
                     finalText += text
                     events.append(.delta(text))
@@ -175,23 +192,46 @@ public struct AgentEventParser: Sendable {
         switch object["type"] as? String {
         case "thread.started":
             if let id = object["thread_id"] as? String { return [.session(id)] }
-        case "item.completed":
+        case "turn.started":
+            return [.progress(.thinking)]
+        case "item.started", "item.completed":
+            let completed = object["type"] as? String == "item.completed"
             let item = object["item"] as? [String: Any] ?? [:]
-            switch item["type"] as? String {
-            case "agent_message":
-                let text = item["text"] as? String ?? ""
-                finalText += finalText.isEmpty ? text : "\n\n" + text
-                return [.delta(finalText == text ? text : "\n\n" + text)]
+            guard let type = item["type"] as? String else { break }
+            if type == "reasoning" { return completed ? [] : [.progress(.thinking)] }
+            if type == "agent_message" {
+                guard completed, let text = item["text"] as? String else { break }
+                let delta = finalText.isEmpty ? text : "\n\n" + text
+                finalText += delta
+                return [.delta(delta)]
+            }
+            if let id = item["id"] as? String {
+                if completed, startedTools.remove(id) != nil { break }
+                if !completed, !startedTools.insert(id).inserted { break }
+            }
+            switch type {
+            case "mcp_tool_call":
+                let name = item["tool"] as? String ?? item["name"] as? String ?? "MCP tool"
+                let server = item["server"] as? String
+                let qualified = server.map { "mcp__\($0)__\(name)" } ?? name
+                return [.tool(name: qualified, detail: Self.toolDetail(item["arguments"] ?? item["input"]))]
             case "command_execution":
                 return [.tool(name: "shell", detail: item["command"] as? String ?? "")]
-            case let type?:
-                if type != "reasoning" { return [.tool(name: type, detail: "")] }
-            default: break
+            case "file_change":
+                let paths = (item["changes"] as? [[String: Any]] ?? []).compactMap { $0["path"] as? String }
+                return [.tool(name: type, detail: paths.joined(separator: ", "))]
+            case "web_search":
+                return [.tool(name: type, detail: item["query"] as? String ?? "")]
+            default:
+                return [.tool(name: type, detail: "")]
             }
         case "turn.completed":
             return [.completed(text: finalText)]
         case "turn.failed", "error":
             let message = (object["error"] as? [String: Any])?["message"] as? String ?? object["message"] as? String ?? "Codex reported an error"
+            if object["type"] as? String == "error", message.lowercased().hasPrefix("reconnecting") {
+                return [.progress(.reconnecting)]
+            }
             return [.failed(AgentFailure.classify(message))]
         default:
             break
@@ -201,11 +241,13 @@ public struct AgentEventParser: Sendable {
 
     private mutating func parseOpenCode(_ object: [String: Any]) -> [AgentStreamEvent] {
         var events: [AgentStreamEvent] = []
-        if let session = object["sessionID"] as? String, finalText.isEmpty, !sawDelta {
+        if let session = object["sessionID"] as? String, !sawDelta {
             sawDelta = true // reuse flag: session announced once
             events.append(.session(session))
         }
         switch object["type"] as? String {
+        case "step_start":
+            events.append(.progress(.thinking))
         case "text":
             if let part = object["part"] as? [String: Any], let text = part["text"] as? String {
                 finalText += text
@@ -213,7 +255,10 @@ public struct AgentEventParser: Sendable {
             }
         case "tool_use", "tool":
             let part = object["part"] as? [String: Any]
-            events.append(.tool(name: part?["tool"] as? String ?? "tool", detail: ""))
+            let state = part?["state"] as? [String: Any]
+            if let id = part?["callID"] as? String ?? part?["id"] as? String,
+               !startedTools.insert(id).inserted { break }
+            events.append(.tool(name: part?["tool"] as? String ?? "tool", detail: Self.toolDetail(state?["input"] ?? part?["input"])))
         case "error":
             let error = object["error"] as? [String: Any]
             let message = (error?["data"] as? [String: Any])?["message"] as? String ?? error?["name"] as? String ?? "OpenCode reported an error"
@@ -222,6 +267,13 @@ public struct AgentEventParser: Sendable {
             break
         }
         return events
+    }
+
+    private static func toolDetail(_ value: Any?) -> String {
+        if let text = value as? String { return String(text.prefix(300)) }
+        guard let value, JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .withoutEscapingSlashes]) else { return "" }
+        return String(String(decoding: data, as: UTF8.self).prefix(300))
     }
 
     /// OpenCode has no explicit completion event; the stream ends at exit.
@@ -250,6 +302,9 @@ public final class AgentRun: @unchecked Sendable {
         environment["NO_COLOR"] = "1"
         environment.removeValue(forKey: "CLAUDECODE")
         environment.merge(request.extraEnvironment) { _, new in new }
+        if request.provider == .opencode, request.mode == .quickAsk {
+            environment["OPENCODE_CONFIG_CONTENT"] = #"{"permissions":[{"action":"*","resource":"*","effect":"deny"}]}"#
+        }
         process.environment = environment
 
         let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
@@ -258,34 +313,59 @@ public final class AgentRun: @unchecked Sendable {
         process.standardError = stderr
 
         let state = RunState(provider: request.provider)
-        stdout.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            for event in state.consume(data) { stream.yield(event) }
-        }
-        stderr.fileHandleForReading.readabilityHandler = { handle in
-            state.appendStderr(handle.availableData)
-        }
+        let readers = DispatchGroup()
+        readers.enter()
+        readers.enter()
         process.terminationHandler = { [weak self] finished in
-            stdout.fileHandleForReading.readabilityHandler = nil
-            stderr.fileHandleForReading.readabilityHandler = nil
-            for event in state.consume(stdout.fileHandleForReading.readDataToEndOfFile()) { stream.yield(event) }
-            state.appendStderr(stderr.fileHandleForReading.readDataToEndOfFile())
-            let wasCancelled = self?.isCancelled ?? false
-            if let terminal = state.finish(status: finished.terminationStatus,
-                                           signaled: finished.terminationReason == .uncaughtSignal,
-                                           cancelled: wasCancelled) {
-                stream.yield(terminal)
+            readers.notify(queue: .global(qos: .utility)) { [weak self] in
+                let wasCancelled = self?.isCancelled ?? false
+                if let terminal = state.finish(status: finished.terminationStatus,
+                                               signaled: finished.terminationReason == .uncaughtSignal,
+                                               cancelled: wasCancelled) {
+                    stream.yield(terminal)
+                }
+                stream.finish()
             }
-            stream.finish()
         }
 
         do {
             try process.run()
-            stdin.fileHandleForWriting.write(Data(request.prompt.utf8))
-            try? stdin.fileHandleForWriting.close()
+            DispatchQueue.global(qos: .utility).async {
+                defer { readers.leave() }
+                Self.readChunks(stdout.fileHandleForReading) { data in
+                    for event in state.consume(data) { stream.yield(event) }
+                }
+                for event in state.consume(Data([0x0A])) { stream.yield(event) }
+            }
+            DispatchQueue.global(qos: .utility).async {
+                defer { readers.leave() }
+                Self.readChunks(stderr.fileHandleForReading) { data in
+                    state.appendStderr(data)
+                }
+            }
+            DispatchQueue.global(qos: .utility).async {
+                defer { try? stdin.fileHandleForWriting.close() }
+                try? stdin.fileHandleForWriting.write(contentsOf: Data(request.prompt.utf8))
+            }
         } catch {
-            stream.yield(.failed(AgentFailure(.missingExecutable, "could not start \(executable): \(error.localizedDescription)")))
+            let failure = error as NSError
+            let cause = (failure.userInfo[NSUnderlyingErrorKey] as? NSError) ?? failure
+            let denied = (cause.domain == NSPOSIXErrorDomain && [Int(EACCES), Int(EPERM)].contains(cause.code))
+                || (failure.domain == NSCocoaErrorDomain && failure.code == NSFileReadNoPermissionError)
+            let kind: AgentFailureKind = denied ? .permissionDenied : .missingExecutable
+            stream.yield(.failed(AgentFailure(kind, "Could not start \(request.provider.rawValue): \(error.localizedDescription)")))
             stream.finish()
+        }
+    }
+
+    private static func readChunks(_ handle: FileHandle, consume: (Data) -> Void) {
+        // Read the bytes currently in the pipe so short JSONL events arrive before EOF.
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        while true {
+            let count = buffer.withUnsafeMutableBytes { read(handle.fileDescriptor, $0.baseAddress, $0.count) }
+            if count < 0 && errno == EINTR { continue }
+            guard count > 0 else { return }
+            consume(Data(buffer.prefix(count)))
         }
     }
 

@@ -7,7 +7,9 @@ ChromeUtils.defineESModuleGetters(lazy, {
   LimaNotesBookmarks: "resource://lima/LimaNotesBookmarks.sys.mjs",
   LimaUrlbar: "resource://lima/LimaUrlbar.sys.mjs",
   LimaNotebook: "resource://lima/LimaNotebook.sys.mjs",
+  LimaDockBadge: "resource://lima/LimaDockBadge.sys.mjs",
   LimaWorkspaces: "resource://lima/LimaWorkspaces.sys.mjs",
+  LimaUpdates: "resource://lima/LimaUpdates.sys.mjs",
 });
 
 let initialized = false;
@@ -43,6 +45,12 @@ export const LimaStartup = {
       Services.ppmm.loadProcessScript("resource://lima/LimaContentProcess.js", true);
     });
     step("window actor", () => {
+      ChromeUtils.registerWindowActor("LimaPage", {
+        child: { esModuleURI: "resource://lima/actors/LimaPageChild.sys.mjs" },
+        matches: ["http://*/*", "https://*/*"],
+        messageManagerGroups: ["browsers"],
+        safeForUntrustedWebProcess: true,
+      });
       ChromeUtils.registerWindowActor("Lima", {
         parent: { esModuleURI: "resource://lima/actors/LimaParent.sys.mjs" },
         child: {
@@ -70,20 +78,26 @@ export const LimaStartup = {
     Services.obs.addObserver(win => {
       try {
         lazy.LimaWindow.attach(win);
+        lazy.LimaNotebook.retire(win).catch(error => log(`Notebook sidebar migration failed: ${error}`));
       } catch (error) {
         log(`window attach failed: ${error}\n${error.stack}`);
       }
     }, "browser-delayed-startup-finished");
 
-    Services.obs.addObserver(async function onFirstWindow() {
+    Services.obs.addObserver(async function onFirstWindow(win) {
       Services.obs.removeObserver(onFirstWindow, "browser-delayed-startup-finished");
       step("urlbar", () => log(`urlbar provider ${lazy.LimaUrlbar.register() ? "registered" : "not registered"}`));
       try {
         const hello = await lazy.LimaBridge.request("host.hello");
+        const provider = Services.prefs.getStringPref("lima.agent.provider", "claude");
+        lazy.LimaBridge.request("integrations.grammar.provider", {
+          provider, model: Services.prefs.getStringPref("lima.agent.model." + provider, "default"),
+        }).catch(() => {});
         log(`runtime ${hello.hostVersion} pid ${hello.pid}`);
         await lazy.LimaNotesBookmarks.start();
         lazy.LimaWorkspaces.start();
-        lazy.LimaNotebook.start();
+        lazy.LimaDockBadge.start(win);
+        lazy.LimaUpdates.start().catch(error => log(`updates unavailable: ${error}`));
       } catch (error) {
         log(`runtime unavailable: ${error.message ?? error}`);
       }

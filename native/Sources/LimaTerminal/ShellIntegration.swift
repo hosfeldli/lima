@@ -9,6 +9,7 @@ public enum TerminalProcessState: String, Codable, Sendable {
 public enum ShellIntegrationEvent: Equatable, Sendable {
     /// precmd fired: the prompt is back. Carries the previous command's status.
     case promptReady(exitStatus: Int?)
+    case workingDirectory(String)
     /// preexec fired: a command line was submitted. The command text comes
     /// from the shell's own hook (explicit history), never from keystrokes.
     case commandStarted(command: String?)
@@ -42,11 +43,19 @@ public enum ShellIntegration {
         ".zshrc": #"""
         ZDOTDIR="$LIMA_USER_ZDOTDIR"
         [[ -r "$ZDOTDIR/.zshrc" ]] && source "$ZDOTDIR/.zshrc"
-        __lima_precmd() { printf '\033]777;lima;prompt;%s\007' "$?"; }
-        __lima_preexec() { printf '\033]777;lima;preexec;%s\007' "$(print -rn -- "$1" | /usr/bin/base64 | tr -d '\n')"; }
-        autoload -Uz add-zsh-hook
-        add-zsh-hook precmd __lima_precmd
-        add-zsh-hook preexec __lima_preexec
+        __lima_precmd() {
+          local result=$?
+          printf '\033]777;lima;pwd;%s\007' "$(print -rn -- "$PWD" | /usr/bin/base64 | /usr/bin/tr -d '\n')"
+          __lima_status=$result
+          if [[ -z "$__lima_zle_hook" || ! -o zle ]]; then __lima_line_init; fi
+        }
+        __lima_line_init() { printf '\033]777;lima;prompt;%s\007' "${__lima_status:-0}"; }
+        autoload -Uz add-zle-hook-widget
+        add-zle-hook-widget line-init __lima_line_init && __lima_zle_hook=1
+        __lima_preexec() { printf '\033]777;lima;preexec;%s\007' "$(print -rn -- "${1[1,2500]}" | /usr/bin/base64 | /usr/bin/tr -d '\n')"; }
+        typeset -ag precmd_functions preexec_functions
+        precmd_functions=(__lima_precmd "${precmd_functions[@]:#__lima_precmd}")
+        preexec_functions=(__lima_preexec "${preexec_functions[@]:#__lima_preexec}")
         """#
     ]
 
@@ -114,6 +123,10 @@ public struct ShellMarkerScanner: Sendable {
         let parts = body.split(separator: ";", omittingEmptySubsequences: false)
         switch parts.first {
         case "prompt": return .promptReady(exitStatus: parts.count > 1 ? Int(parts[1]) : nil)
+        case "pwd":
+            guard parts.count > 1, let data = Data(base64Encoded: String(parts[1])),
+                  let path = String(data: data, encoding: .utf8), path.hasPrefix("/") else { return nil }
+            return .workingDirectory(path)
         case "preexec":
             let command = parts.count > 1 ? Data(base64Encoded: String(parts[1])).map { String(decoding: $0, as: UTF8.self) } : nil
             return .commandStarted(command: command)

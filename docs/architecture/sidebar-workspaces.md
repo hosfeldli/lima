@@ -20,19 +20,19 @@ Creation is in one place, twice: Zen's bottom **＋** (`zenCreateNewPopup`) and 
 (empty area, a folder, or a tab): New Tab · New Note · New Terminal · New AI Workspace (· from Folder…).
 Right-clicking a folder creates the item inside that folder.
 
-## Where the AI is: prism states
+## Where the AI is working
 
 The runtime tracks one focus per workspace/agent and broadcasts `workspace.activity {id, surface, url}`:
 
 | Agent is… | surface | Sidebar shows |
 |---|---|---|
-| reading/opening a page (`workspace_open_tab`, `workspace_read_tab`) | `tab` + url | that tab gets the moving prismatic border |
-| running a command (`workspace_run`) | `terminal` | Terminal tab gets the prism; the page tab loses it |
-| writing a reply (stream deltas, no tool) | `chat` | the ✦ (folder icon and Chat tab) rotates prismatically |
+| reading/opening a page (`workspace_open_tab`, `workspace_read_tab`) | `tab` + url | that tab gets the copper edge indicator |
+| running a command (`workspace_run`) | `terminal` | the indicator moves to the Terminal tab |
+| writing a reply (stream deltas, no tool) | `chat` | the Chat tab shows a copper status dot |
 | done | `idle` | nothing animates |
 
 Rules: a tool call moves focus to its surface; text deltas move it back to chat; turn end → idle. Reduce Motion
-replaces motion with a static prism outline.
+keeps the indicators and pauses decorative motion.
 
 ## Agents (Orca's coordinator/worker, made visible)
 
@@ -78,7 +78,7 @@ note appears in the workspace folder and the Notebook.
 | # | Hypothesis | Check |
 |---|---|---|
 | S1 | Every workspace/agent object is reachable from the sidebar alone | Marionette: create workspace, spawn agent, verify folder tree; no `?workspace=`/`?view=workspaces` pages remain |
-| S2 | Prism follows the agent | Runtime test: tool calls/deltas/turn-end produce tab→terminal→chat→idle; Marionette: attributes move between tabs |
+| S2 | Indicator follows the agent | Runtime test: tool calls/deltas/turn-end produce tab→terminal→chat→idle; Marionette: attributes move between tabs |
 | S3 | Agents can operate on real tabs | Runtime test of browser round-trip; live run: agent reads a page in its Tabs folder |
 | S4 | ⌘T opens Lima Search, and web + Lima results both arrive | Marionette: synthesize ⌘T, type, inspect rows |
 | S5 | Dictation matches 4.x | Whisper transcription test on a generated WAV; mic capture depends on macOS permission |

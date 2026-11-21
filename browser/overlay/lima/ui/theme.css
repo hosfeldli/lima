@@ -1,0 +1,20 @@
+:root:is([lima-window], [data-lima-page]) {
+  --lima-bg: #ffffff;
+  --lima-sidebar: #f2f2f2;
+  --lima-surface: #f7f7f7;
+  --lima-elevated: #eaeaea;
+  --lima-border: #dedede;
+  --lima-fg: #242424;
+  --lima-secondary: #515151;
+  --lima-muted: #646464;
+  --lima-accent: #383838;
+  --lima-accent-hover: #252525;
+  --lima-accent-fill: #e3e3e3;
+  --lima-accent-contrast: #ffffff;
+  --lima-success: #383838;
+  --lima-warning: #4b4b4b;
+  --lima-error: #303030;
+  --lima-info: #4e4e4e;
+  --lima-radius: 8px;
+  --lima-panel-radius: 14px;
+}
