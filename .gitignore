@@ -10,3 +10,4 @@ browser/overlay/lima/ui/icons.js
 .impeccable/reference/
 /dist/
 __pycache__/
+gha-creds-*.json
