@@ -17,6 +17,7 @@ import LimaAgentSupervisor
     defer { try? FileManager.default.removeItem(at: directory) }
     let file = directory.appendingPathComponent("gws")
     let meeting = Date().addingTimeInterval(300).ISO8601Format()
+    let started = Date().addingTimeInterval(-30).ISO8601Format()
     try """
     #!/bin/sh
     if [ -f "${0}.expired" ]; then echo '401 unauthenticated'; exit 1; fi
@@ -24,9 +25,11 @@ import LimaAgentSupervisor
     if [ "$1" = "calendar" ] && [ -f "${0}.calendar-disabled" ]; then
       echo '{"error":{"message":"API is disabled","reason":"accessNotConfigured"}}'; exit 1
     fi
-    case "$1 $2 $3" in
-      'gmail users labels') [ "$4" = 'get' ] || exit 8; echo '{"messagesUnread":7}' ;;
-      'calendar events list') echo '{"items":[{"id":"soon","summary":"Smoke test","start":{"dateTime":"\(meeting)"}},{"id":"all-day","start":{"date":"2027-01-02"}}]}' ;;
+    case "$1 $2 $3 $4" in
+      'gmail users labels get') echo '{"messagesUnread":7}' ;;
+      'gmail users messages list') echo '{"messages":[{"id":"message"}],"resultSizeEstimate":1}' ;;
+      'gmail users messages get') echo '{"id":"message","threadId":"thread","internalDate":"1760000000000","payload":{"headers":[{"name":"From","value":"Fixture sender"},{"name":"subject","value":"Fixture subject"}]}}' ;;
+      'calendar events list --params') echo '{"items":[{"id":"soon","summary":"Smoke test","start":{"dateTime":"\(meeting)"}},{"id":"now","start":{"dateTime":"\(started)"},"end":{"dateTime":"\(meeting)"}},{"id":"declined","start":{"dateTime":"\(started)"},"attendees":[{"self":true,"responseStatus":"declined"}]},{"id":"all-day","start":{"date":"2027-01-02"}}]}' ;;
       *) exit 9 ;;
     esac
     """.write(to: file, atomically: true, encoding: .utf8)
@@ -38,6 +41,11 @@ import LimaAgentSupervisor
     let connected = try await service.refresh(store: runtime.store, force: true)
     #expect(connected.mail == "connected" && connected.calendar == "connected")
     #expect(connected.unread == 7 && connected.meeting?.title == "Smoke test")
+    #expect(connected.meetings?.map(\.id) == ["now", "soon"])
+    #expect(connected.meetings?.first?.endsAt != nil)
+    #expect(connected.mailPreviews?.first?.subject == "Fixture subject")
+    #expect(connected.mailPreviews?.first?.sender == "Fixture sender")
+    #expect(connected.mailPreviews?.first?.link == "https://mail.google.com/mail/u/0/#inbox/thread")
     try Data().write(to: directory.appendingPathComponent("gws.calendar-disabled"))
     let partial = try await service.refresh(store: runtime.store, force: true)
     #expect(partial.mail == "connected" && partial.calendar == "setup")

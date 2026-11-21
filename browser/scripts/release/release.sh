@@ -257,6 +257,9 @@ build_artifacts() {
   local stage; stage="$(mktemp -d)"
   ditto "$out/Lima.app" "$stage/Lima.app"
   ln -s /Applications "$stage/Applications"
+  cp "$ROOT/browser/branding/install-lima.html" "$stage/Install Lima.html"
+  cp "$out/Lima.app/Contents/Resources/lima.icns" "$stage/.VolumeIcon.icns"
+  if command -v SetFile >/dev/null 2>&1; then SetFile -a C "$stage"; fi
   hdiutil create -quiet -volname "Lima $v" -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$dist/Lima-$v.dmg"
   rm -rf "$stage"
   codesign --force --timestamp=none --sign "$IDENTITY" --keychain "$LIMA_SIGN_KEYCHAIN" "$dist/Lima-$v.dmg"

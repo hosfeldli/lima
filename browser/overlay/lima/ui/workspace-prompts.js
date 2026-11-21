@@ -22,26 +22,35 @@ export function workspacePrompts({ workspace = () => null, signal } = {}) {
       return { field, control };
     });
     const input = !prompt.approval && !fields.length ? el("textarea", { required: true, "aria-label": "Answer", rows: 2 }) : null;
-    const status = el("div", { class: "muted", role: "status" });
+    const status = el("div", { class: "prompt-status", role: "status" });
     const send = el("button", { class: "primary", type: "submit" }, prompt.approval ? prompt.actionLabel || "Approve session" : "Send answer");
     const cancel = el("button", { class: "ghost", type: "button", onclick: () => reply(false) }, prompt.approval ? "Decline" : "Dismiss");
     const form = el("form", { onsubmit: event => { event.preventDefault(); reply(true); } },
-      input, fields.length ? el("div", { class: "workspace-question-fields" }, controls.map(({ field, control }) =>
-        el("label", { "data-field-type": field.type }, el("span", { text: field.label }), control))) : null,
-      el("div", { class: "row" }, send, cancel), status);
+      input && el("label", { class: "prompt-answer" }, el("span", { text: "Your answer" }), input),
+      fields.length ? el("div", { class: "workspace-question-fields" }, controls.map(({ field, control }) => {
+        const caption = el("span", {}, field.label,
+          field.required === false && field.type !== "checkbox" ? el("small", { text: "Optional" }) : null);
+        return el("label", { "data-field-type": field.type },
+          ...(field.type === "checkbox" ? [control, caption] : [caption, control]));
+      })) : null,
+      status, el("div", { class: "prompt-actions" }, cancel, send));
     const card = el("article", { "data-workspace": prompt.workspaceId },
-      el("strong", { text: prompt.workspaceName }), el("p", { text: prompt.question }),
+      el("header", {}, el("div", { class: "prompt-workspace", text: prompt.workspaceName }),
+        el("h3", { text: prompt.question })),
       prompt.detail ? el("p", { class: "prompt-detail", text: prompt.detail }) : null, form);
     rows.set(prompt.id, card);
     tray.append(card);
     draw();
     async function reply(approved) {
       send.disabled = cancel.disabled = true;
+      form.setAttribute("aria-busy", "true");
+      status.textContent = "Sending…";
       const values = approved && fields.length ? Object.fromEntries(controls.map(({ field, control }) => [
         field.id, field.type === "checkbox" ? control.checked : field.type === "number" && control.value ? control.valueAsNumber : control.value,
       ])) : undefined;
       try { await call("workspace.promptReply", { id: prompt.id, approved, text: input?.value, values }); }
       catch (error) { status.textContent = errorText(error); send.disabled = cancel.disabled = false; }
+      finally { form.removeAttribute("aria-busy"); }
     }
   }
   const removed = new Set();

@@ -10,6 +10,7 @@ import { renderAssistant } from "./assistant.js";
 import { renderWorkspace } from "./workspace.js";
 import { renderChat } from "./chat.js";
 import { renderStudio } from "./studio.js";
+import { renderWelcome } from "./welcome.js";
 import { renderAsk, renderAudio, renderIntegrations } from "./views.js";
 
 const params = new URLSearchParams(location.search);
@@ -21,6 +22,7 @@ function renderStart(root) {
 }
 
 const routes = [
+  [() => params.get("view") === "welcome", () => renderWelcome(app)],
   [() => params.get("view") === "assistant", () => renderAssistant(app, params.get("workspaceId"))],
   [() => params.has("workspace"), () => renderWorkspace(app, params.get("workspace"))],
   [() => ["workspaces", "agents"].includes(params.get("view")), () => renderStart(app)],

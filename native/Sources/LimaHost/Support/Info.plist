@@ -7,7 +7,8 @@
   <key>CFBundleShortVersionString</key><string>5.0.0</string>
   <key>NSCalendarsFullAccessUsageDescription</key><string>Lima shows your upcoming meetings and never changes calendar events.</string>
   <key>NSRemindersFullAccessUsageDescription</key><string>Lima lets you view, create and complete reminders from Search.</string>
-  <key>NSMicrophoneUsageDescription</key><string>Lima records your voice for dictation and transcribes it on this Mac.</string>
+  <key>NSMicrophoneUsageDescription</key><string>Lima uses the microphone when you start dictation.</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>When you choose meeting dictation, Apple Speech Recognition may process your audio on Apple servers to create a note.</string>
   <key>NSAppleEventsUsageDescription</key><string>Lima controls music playback when you use its media controls.</string>
 </dict>
 </plist>

@@ -95,12 +95,32 @@ extension Runtime {
             guard let workspaceID = conversation.workspaceID else { return }
             focus.bind(conversation: conversation.id, to: workspaceID)
             let streaming = conversation.messages.last.map { $0.role == .assistant && $0.status == .streaming } ?? false
-            if !streaming { setFocus(workspaceID, .idle) }
+            if !streaming {
+                let wasActive = focus.state(workspaceID).surface != .idle
+                setFocus(workspaceID, .idle)
+                if wasActive, let reply = conversation.messages.last, reply.role == .assistant, reply.status == .complete {
+                    Task { await completeCompanionTask(workspaceID, summary: reply.text) }
+                }
+            }
             else if focus.state(workspaceID).surface == .idle { setFocus(workspaceID, .chat) }
         case .delta(let conversationID, _, let text):
             guard let workspaceID = focus.workspace(for: conversationID),
                   !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             setFocus(workspaceID, .chat)
+        }
+    }
+
+    private func completeCompanionTask(_ id: String, summary: String) async {
+        guard let workspace = try? await workspaces.get(id), let kind = workspace.companionTask else { return }
+        do {
+            _ = try await browserCalls.call(self, kind: "finishCompanionTask", workspaceID: id,
+                                            payload: ["keepWebTabs": .bool(kind == "tabs")])
+            _ = try await archiveWorkspace(id)
+            broadcast("assistant.taskFinished", .object(["title": .string(workspace.name), "summary": .string(String(summary.prefix(4000)))]))
+        } catch {
+            // Keep the workspace visible if its results cannot be moved safely.
+            broadcast("assistant.taskFinished", .object(["title": .string(workspace.name),
+                "summary": .string("The task completed. Its workspace is still open with its results.")]))
         }
     }
 

@@ -61,6 +61,7 @@ class Workspaces {
   #archived = new Set();
   #prompts = new Map();
   #chatMotion = new Map();
+  #mascots = new Map();
 
   start() {
     if (this.#started) return;
@@ -80,10 +81,12 @@ class Workspaces {
           this.#workspaces.delete(data.id);
           this.#focus.delete(data.id);
           this.#chatMotion.delete(data.id);
+          this.#mascots.delete(workspace?.conversationID);
           this.#enqueue(() => this.remove(data.id, data.parentId, workspace));
           break;
         }
         case "chat.updated": {
+          this.#mascots.set(data.id, data.mascot ?? "classic");
           const workspace = this.workspaces.find(item => item.conversationID === data.id);
           if (!workspace) break;
           const message = data.messages?.findLast(item => item.role === "assistant");
@@ -122,6 +125,10 @@ class Workspaces {
     this.#enqueue(async () => {
       for (const prompt of await lazy.LimaBridge.request("workspace.prompts").catch(() => [])) this.#prompts.set(prompt.id, prompt.workspaceId);
       const all = (await lazy.LimaBridge.request("workspace.list")).filter(workspace => !this.#archived.has(workspace.id));
+      const chats = await lazy.LimaBridge.request("chat.list").catch(() => []);
+      for (const chat of chats) {
+        if (chat.workspaceID && !this.#mascots.has(chat.id)) this.#mascots.set(chat.id, chat.mascot ?? "classic");
+      }
       for (const workspace of all) if (!this.#workspaces.has(workspace.id)) this.#workspaces.set(workspace.id, workspace);
       // Parents before helpers, so Agents folders have somewhere to go.
       for (const workspace of all.filter(w => !w.parentID)) await this.reconcile(this.#workspaces.get(workspace.id));
@@ -251,6 +258,12 @@ class Workspaces {
       log(`folder for “${workspace.name}”${helper ? " (agent)" : ""}`);
     }
     folder.setAttribute("lima-workspace", workspace.id);
+    if (workspace.companionTask && !folder.hasAttribute("lima-companion-task")) {
+      folder.setAttribute("lima-companion-task", "");
+      const first = [...folder.parentElement.children].find(node => node !== folder && (node.isZenFolder || node.localName === "tab"));
+      if (first) first.before(folder);
+      win.gBrowser.tabContainer._invalidateCachedTabs();
+    }
     if (helper) folder.setAttribute("lima-agent", "true");
     if (folder.label !== workspace.name) folder.label = workspace.name;
 
@@ -589,6 +602,7 @@ class Workspaces {
     const state = this.#focus.get(id) ?? { surface: "idle" };
     const workspace = this.#workspaces.get(id);
     const own = this.#allTabs(workspace?.parentID && folder.group?.isZenFolder ? folder.group : folder).filter(tab => this.workspaceForTab(tab) === id);
+    folder.setAttribute("lima-mascot", this.#mascots.get(workspace?.conversationID) ?? "classic");
     const chatURL = workspace?.conversationID && `about:lima?chat=${workspace.conversationID}`;
     const activeURL = { chat: chatURL, tab: state.url, terminal: `about:lima?terminal=${workspace?.terminalID}` }[state.surface];
     folder.toggleAttribute("lima-chat-selected", own.some(tab => tab.selected && tabURL(tab) === chatURL));
@@ -623,6 +637,24 @@ class Workspaces {
     try {
       const win = this.#win();
       if (!win || lazy.PrivateBrowsingUtils.isWindowPrivate(win)) throw new Error("Open a regular Lima window.");
+      if (request.kind === "finishCompanionTask") {
+        await this.#queue;
+        const folder = this.folderFor(request.workspaceId, "folder", win);
+        if (!folder) throw new Error("The Companion task is unavailable.");
+        const keep = this.#allTabs(folder).filter(tab => {
+          const url = tabURL(tab);
+          return url.startsWith("about:lima?note=") || (request.keepWebTabs && /^https?:/.test(url));
+        });
+        for (const tab of keep) {
+          while (tab.group?.isZenFolder && folder.contains(tab)) {
+            const previous = tab.group;
+            win.gBrowser.ungroupTab(tab);
+            if (tab.group === previous) throw new Error("A result tab couldn’t be moved.");
+          }
+          lazy.SessionStore.deleteCustomTabValue(tab, "lima-workspace");
+        }
+        return reply({ kept: keep.length });
+      }
       if (request.kind === "location") return reply(await this.#approximateLocation(win));
       if (request.kind === "listTabs") return reply(this.#pages(win, request.workspaceId).map(tab => ({ url: tabURL(tab), title: tab.label, selected: tab.selected })));
       if (request.kind === "action") return reply(await this.#act(win, request));
@@ -660,11 +692,16 @@ class Workspaces {
       await new Promise(resolve => win.setTimeout(resolve, 100));
       tab = this.#pages(win, request.workspaceId).find(item => sameURL(tabURL(item), request.url));
     }
-    if (!tab) throw new Error("The workspace tab is unavailable.");
+    if (!tab) throw new Error("The workspace tab is unavailable. Reopen its original URL with workspace_open_tab, then inspect it.");
     const browser = await this.#loaded(win, tab, request.url, false);
     const origin = new URL(request.url).origin;
     const global = browser.browsingContext?.currentWindowGlobal;
-    if (!global || new URL(global.documentURI.spec).origin !== origin) throw new Error("The page left its authorized origin.");
+    if (!global || global.documentURI.spec === "about:blank") {
+      throw new Error("The page has not loaded. Inspect again after it opens.");
+    }
+    if (new URL(global.documentURI.spec).origin !== origin) {
+      throw new Error(`The page is now on ${new URL(global.documentURI.spec).origin}. Open that site as a workspace tab and request a separate plan if it is within the task.`);
+    }
     if (request.paths && !request.paths.includes(new URL(browser.currentURI.spec).pathname)) {
       throw new Error("This path is outside the approved plan. Inspect the current page and request approval if the new path is needed.");
     }
@@ -684,7 +721,10 @@ class Workspaces {
       result = await global.getActor("LimaPage").sendQuery("action", data);
     } catch (error) {
       const live = browser.browsingContext?.currentWindowGlobal;
-      if (!live || live === global || request.action !== "inspect") throw error;
+      if (live === global) throw error;
+      if (!live || request.action !== "inspect") {
+        throw new Error("The page changed during the action. Inspect again to see whether the action took effect before attempting it again.");
+      }
       result = await live.getActor("LimaPage").sendQuery("action", data);
     }
     if (result.pointer) this.#showAction(win, browser, result.pointer, request.action);

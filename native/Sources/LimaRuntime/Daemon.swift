@@ -109,13 +109,11 @@ public enum Daemon {
         leaseTimer.setEventHandler { Task { await runtime.terminals.expireIdleLeases(timeout: 300) } }
         leaseTimer.resume()
 
-        withExtendedLifetime((server, timer, leaseTimer)) {
-            FileHandle.standardError.write(Data("lima-host: runtime \(limaRuntimeVersion) listening on \(paths.socket)\n".utf8))
-            // A port keeps the run loop alive; it services the main dispatch
-            // queue plus NSWorkspace and distributed notifications.
-            RunLoop.main.add(Port(), forMode: .default)
-            while true { _ = RunLoop.main.run(mode: .default, before: .distantFuture) }
-        }
+        defer { withExtendedLifetime((server, timer, leaseTimer)) {} }
+        FileHandle.standardError.write(Data("lima-host: runtime \(limaRuntimeVersion) listening on \(paths.socket)\n".utf8))
+        // The async entry point already runs the main dispatch loop. Keep
+        // the server alive without driving that loop from a worker thread.
+        while !Task.isCancelled { try? await Task.sleep(for: .seconds(3600)) }
         exit(0)
     }
 }
@@ -151,7 +149,10 @@ public final class RuntimeClient: @unchecked Sendable {
         do {
             timeout(client.fd, seconds: 5)
             let hello = try client.call("host.hello")
-            if hello["buildID"]?.stringValue != RuntimeBuild.id,
+            var identity: [String: JSONValue] = ["origin": .string(origin.rawValue)]
+            if let workspaceToken { identity["workspaceToken"] = .string(workspaceToken) }
+            _ = try client.call("host.identify", params: .object(identity))
+            if origin == .browser, workspaceToken == nil, hello["buildID"]?.stringValue != RuntimeBuild.id,
                ProcessInfo.processInfo.environment["LIMA_KEEP_DAEMON"] == nil,
                BackgroundAgent.status().executable.map({ ($0 as NSString).resolvingSymlinksInPath == (executable as NSString).resolvingSymlinksInPath }) ?? true {
                 _ = try client.call("host.shutdown")
@@ -166,10 +167,8 @@ public final class RuntimeClient: @unchecked Sendable {
                 close(client.fd)
                 client = replacement
                 timeout(client.fd, seconds: 5)
+                _ = try client.call("host.identify", params: .object(identity))
             }
-            var identity: [String: JSONValue] = ["origin": .string(origin.rawValue)]
-            if let workspaceToken { identity["workspaceToken"] = .string(workspaceToken) }
-            _ = try client.call("host.identify", params: .object(identity))
             timeout(client.fd, seconds: 0)
             return client
         } catch {

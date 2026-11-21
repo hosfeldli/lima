@@ -1,6 +1,8 @@
 {
   "policies": {
     "DisableAppUpdate": true,
-    "DisableTelemetry": true
+    "DisableTelemetry": true,
+    "OverrideFirstRunPage": "",
+    "OverridePostUpdatePage": ""
   }
 }

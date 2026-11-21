@@ -12,6 +12,7 @@ import { googleEssentialTabs, refreshGoogleEssentials } from "resource://lima/Li
 
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
+  BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.sys.mjs",
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
   LimaNotesBookmarks: "resource://lima/LimaNotesBookmarks.sys.mjs",
   LimaSearchPanel: "resource://lima/LimaSearchPanel.sys.mjs",
@@ -231,11 +232,12 @@ function attachDock(win) {
   };
   const progress = el(doc, "input", { class: "lima-music-progress", type: "range", min: "0", max: "0", step: "0.25", "aria-label": "Track position" });
   const volume = el(doc, "input", { type: "range", min: "0", max: "100", "aria-label": "Audio volume" });
-  const outputs = el(doc, "select", { "aria-label": "Audio output", title: "Audio output", disabled: true });
+  const outputs = el(doc, "div", { class: "lima-audio-outputs", hidden: true, "aria-label": "Audio outputs" });
+  const output = el(doc, "button", { class: "lima-music-btn", title: "Choose audio output", "aria-label": "Choose audio output", "aria-expanded": "false", onclick: toggleOutputs }, glyph(doc, "volume"));
   const elapsedTime = el(doc, "span", { class: "lima-music-time" });
   const durationTime = el(doc, "span", { class: "lima-music-time" });
   const timeline = el(doc, "div", { class: "lima-music-timeline" }, elapsedTime, progress, durationTime);
-  const djMascot = el(doc, "img", { class: "lima-dj-mascot", src: "resource://lima-ui/marks/dj.svg", alt: "" });
+  const djMascot = el(doc, "img", { class: "lima-dj-mascot", src: "resource://lima-ui/marks/companion.svg#dj", alt: "" });
   const djScene = el(doc, "span", { class: "lima-dj-scene", "aria-hidden": "true" }, djMascot,
     el(doc, "i", { class: "lima-dj-record" }));
   const expanded = el(doc, "div", { class: "lima-music-expanded" }, timeline,
@@ -244,8 +246,8 @@ function attachDock(win) {
       el(doc, "button", { class: "lima-music-btn big", title: "Play / pause", onclick: control("playpause") }, glyph(doc, "play")),
       el(doc, "button", { class: "lima-music-btn", title: "Next", onclick: control("next") }, glyph(doc, "next")),
       el(doc, "button", { class: "lima-music-dj", title: "Play Spotify DJ", "aria-label": "Play Spotify DJ", onclick: control("dj") },
-        el(doc, "img", { src: "resource://lima-ui/marks/dj.svg", alt: "" }), "DJ")),
-    el(doc, "div", { class: "lima-music-audio" }, glyph(doc, "volume"), volume, outputs));
+        el(doc, "img", { src: "resource://lima-ui/marks/spotify-dj.svg", alt: "" }))),
+    el(doc, "div", { class: "lima-music-audio" }, volume, output), outputs);
   expanded.inert = true;
   const playerHeader = el(doc, "button", { class: "lima-music-row", title: "Expand music controls", "aria-expanded": "false", onclick: toggleSpotify },
     djScene, el(doc, "span", { class: "lima-music-text" }, title, artist),
@@ -263,6 +265,7 @@ function attachDock(win) {
     el(doc, "button", { class: "lima-music-btn", title: "Cancel", onclick: () => lazy.LimaBridge.request("dictation.cancel").catch(() => {}) }, glyph(doc, "close")));
   const mic = el(doc, "button", { id: "lima-mic", title: "Dictate (⌃⌥D)", "aria-label": "Dictate", onclick: () => toggleDictation(win) }, glyph(doc, "mic"));
   const rail = el(doc, "div", { class: "lima-dock-rail", role: "toolbar", "aria-label": "Sidebar shortcuts" });
+
   const dock = el(doc, "div", { id: "lima-dock" }, el(doc, "div", { id: "lima-dock-main" }, music, dictation));
 
   const foot = doc.getElementById("zen-sidebar-foot-buttons");
@@ -282,7 +285,6 @@ function attachDock(win) {
   let controlBusy = false;
   let gestureTimer = null;
   let revision = 0;
-  let lastPoll = 0;
   let musicVisible = true;
   let scrubbing = false;
   const personality = () => music.dataset.personality = Services.prefs.getStringPref("lima.personality", "full");
@@ -327,13 +329,46 @@ function attachDock(win) {
     elapsedTime.textContent = fmt(position);
     durationTime.textContent = fmt(track.durationMs);
   }
-  win.setInterval(() => {
-    if (music.hidden || doc.hidden) return;
-    tick();
-    if (music.hasAttribute("data-open") && !controlBusy && Date.now() - lastPoll > 15000) refresh(true);
-  }, 1000);
+  let inactivity, ticker;
+  function closeOutputs() {
+    outputs.hidden = true;
+    output.setAttribute("aria-expanded", "false");
+  }
+  function keepMusicOpen() {
+    win.clearTimeout(inactivity);
+    if (!music.hasAttribute("data-open")) return;
+    inactivity = win.setTimeout(() => {
+      if (scrubbing || !outputs.hidden || controlBusy) { keepMusicOpen(); return; }
+      toggleSpotify();
+    }, 8500);
+  }
+  for (const event of ["pointerdown", "keydown", "focusin"]) music.addEventListener(event, keepMusicOpen);
+  async function toggleOutputs() {
+    if (!outputs.hidden) { closeOutputs(); keepMusicOpen(); return; }
+    outputs.hidden = false;
+    output.setAttribute("aria-expanded", "true");
+    outputs.textContent = "Loading audio outputs…";
+    try {
+      const devices = await lazy.LimaBridge.request("audio.outputs");
+      outputs.replaceChildren(...devices.map(device => el(doc, "button", {
+        text: device.name, "aria-pressed": String(device.isDefault), onclick: async () => {
+          try {
+            await lazy.LimaBridge.request("audio.setOutput", { id: device.id });
+            output.title = device.name;
+            closeOutputs();
+            output.focus();
+          } catch (error) { flash(error.message); }
+          keepMusicOpen();
+        },
+      })));
+      if (!devices.length) outputs.textContent = "No audio outputs available.";
+    } catch (error) { outputs.textContent = error.message; }
+  }
+  music.addEventListener("keydown", event => {
+    if (event.key === "Escape" && !outputs.hidden) { closeOutputs(); output.focus(); }
+  });
+  win.addEventListener("unload", () => { win.clearInterval(ticker); win.clearTimeout(inactivity); }, { once: true });
   const refresh = (update = false) => {
-    if (update) lastPoll = Date.now();
     const request = ++revision;
     return lazy.LimaBridge.request("media.nowPlaying", { player: "Spotify", refresh: update }).then(item => {
       if (request === revision) { track = item; paintTrack(); }
@@ -342,19 +377,13 @@ function attachDock(win) {
   function toggleSpotify() {
     music.toggleAttribute("data-open");
     paintTrack();
+    win.clearInterval(ticker);
     if (music.hasAttribute("data-open")) {
       refresh(true);
+      ticker = win.setInterval(() => { if (!music.hidden && !doc.hidden) tick(); }, 1000);
       lazy.LimaBridge.request("audio.volume").then(value => { volume.value = Math.round((value ?? 0) * 100); }).catch(() => {});
-      lazy.LimaBridge.request("audio.outputs").then(items => {
-        outputs.replaceChildren(...items.map(item => {
-          const option = el(doc, "option", { value: item.id, text: item.name });
-          option.selected = item.isDefault;
-          return option;
-        }));
-        outputs.disabled = !items.length;
-        outputs.title = outputs.selectedOptions[0]?.textContent || "Audio output";
-      }).catch(() => {});
-    }
+    } else closeOutputs();
+    keepMusicOpen();
   }
   progress.addEventListener("input", () => { scrubbing = true; elapsedTime.textContent = fmt(Number(progress.value) * 1000); });
   progress.addEventListener("change", event => {
@@ -363,9 +392,6 @@ function attachDock(win) {
   });
   progress.addEventListener("blur", () => { scrubbing = false; });
   volume.addEventListener("change", () => lazy.LimaBridge.request("audio.volume", { value: Number(volume.value) / 100 }).catch(error => flash(error.message)));
-  outputs.addEventListener("change", () => lazy.LimaBridge.request("audio.setOutput", { id: Number(outputs.value) })
-    .then(() => { outputs.title = outputs.selectedOptions[0]?.textContent || "Audio output"; })
-    .catch(error => flash(error.message)));
   // One volume control: scroll on the pill.
   let volumeBusy = false;
   music.addEventListener("wheel", async event => {
@@ -407,7 +433,7 @@ function attachDock(win) {
   lazy.LimaBridge.onEvent(message => {
     if (message.event === "media.nowPlaying" && message.data?.player === "Spotify") { revision++; track = message.data; paintTrack(); }
     else if (message.event === "dictation.state") paintDictation(message.data);
-    else if (message.event === "dictation.result") deliverDictation(win, message.data);
+    else if (message.event === "dictation.result") deliverDictation(win, message.data).catch(error => showDictationError(win, error));
   });
   refresh();
   lazy.LimaBridge.request("dictation.status").then(paintDictation).catch(() => {});
@@ -434,8 +460,12 @@ function attachServices(win, dock, rail, spotify, mic, hideSpotify) {
   let nativeStatus;
   let tabStatus = {};
   const keptLoaded = new Set();
-  let priorUnread;
-  let lastMeeting;
+  const since = Date.now();
+  const seenMail = new Map();
+  const pendingMail = [];
+  const meetingNotices = new Map();
+  let essentialBaseline = false;
+  let noticeKind;
   let dismissTimer;
   let sequence = 0;
   function jump(name) {
@@ -476,14 +506,39 @@ function attachServices(win, dock, rail, spotify, mic, hideSpotify) {
     if (current?.isConnected && rail.contains(current)) current.focus();
   }
 
-  function remind(title, actionText, url) {
+  function closeNotice() {
+    notice.hidden = true;
+    win.clearTimeout(dismissTimer);
+  }
+
+  function remind(kind, title, detail, action, duration, extra) {
+    noticeKind = kind;
+    notice.setAttribute("role", "status");
+    notice.dataset.kind = kind;
     notice.replaceChildren(el(doc, "img", { src: "resource://lima-ui/marks/companion.svg", alt: "" }),
       el(doc, "div", { class: "lima-reminder-copy" }, el(doc, "strong", { text: title }),
-        el(doc, "button", { onclick: () => { launch(url); notice.hidden = true; } }, actionText + " →")),
-      control("Dismiss reminder", "close", () => { notice.hidden = true; }));
+        el(doc, "span", { class: "lima-reminder-detail", text: detail }),
+        el(doc, "div", { class: "lima-reminder-actions" }, action, extra)),
+      control("Dismiss reminder", "close", closeNotice));
     notice.hidden = false;
     win.clearTimeout(dismissTimer);
-    dismissTimer = win.setTimeout(() => { notice.hidden = true; }, 14000);
+    dismissTimer = win.setTimeout(() => { closeNotice(); paint(); }, duration);
+  }
+
+  function meetingReminder(meeting, started) {
+    const open = el(doc, "button", { onclick: () => { launch(meeting.link || calendarURL); closeNotice(); } }, "Open Calendar");
+    let mic;
+    if (started) mic = control("Dictate a meeting note", "mic", () => {
+      win.clearTimeout(dismissTimer);
+      const detail = notice.querySelector(".lima-reminder-detail");
+      detail.textContent = "Dictate up to 50 seconds. Apple Speech Recognition may send audio to Apple.";
+      mic.replaceWith(el(doc, "button", { onclick: () => { closeNotice(); startMeetingDictation(win, meeting.title); } },
+        "Start dictation"));
+      notice.querySelector(".lima-reminder-actions button:last-child")?.focus();
+    });
+    const minutes = Math.max(1, Math.ceil((meeting.startsAt - Date.now()) / 60000));
+    remind(started ? "meeting-start" : "meeting-soon", meeting.title, started ? "Starting now" : `Starts in ${minutes} min`,
+      open, started ? 45000 : 12000, mic);
   }
 
   function paint() {
@@ -491,28 +546,60 @@ function attachServices(win, dock, rail, spotify, mic, hideSpotify) {
     // Essential tab metadata is local to this window. GWS fills gaps when the
     // tab layout doesn't expose a usable count or time.
     if (tabStatus.mail) Object.assign(result, { mail: "connected", unread: tabStatus.mail.unread, mailReconnect: false });
-    if (tabStatus.calendar) Object.assign(result, { calendar: "connected", meeting: tabStatus.calendar.meeting, calendarReconnect: false });
+    if (tabStatus.calendar && result.calendar !== "connected") Object.assign(result, {
+      calendar: "connected", meetings: tabStatus.calendar.meetings, calendarReconnect: false,
+    });
     if (tabStatus.mail || tabStatus.calendar) result.enabled = true;
     snapshot = result;
     const count = result.unread ?? 0;
     inbox.toggleAttribute("lima-reconnect", result.enabled && result.mailReconnect);
     calendar.toggleAttribute("lima-reconnect", result.enabled && result.calendarReconnect);
     inbox.toggleAttribute("lima-unread", result.mail === "connected" && count > 0);
-    const currentMeeting = result.meeting;
-    const minutes = currentMeeting ? Math.ceil((currentMeeting.startsAt - Date.now()) / 60000) : -1;
-    calendar.toggleAttribute("lima-upcoming", minutes >= 0 && minutes <= 15);
+    const now = Date.now();
+    const meetings = result.meetings ?? (result.meeting ? [result.meeting] : []);
+    calendar.toggleAttribute("lima-upcoming", meetings.some(meeting => meeting.startsAt > now && meeting.startsAt <= now + 600000));
     inbox.title = result.mailReconnect ? "Reconnect Gmail" : count > 0 ? `Gmail · ${count} unread` : "Gmail";
     calendar.title = result.calendarReconnect ? "Reconnect Google Calendar" : "Google Calendar";
     inbox.setAttribute("aria-label", inbox.title);
     calendar.setAttribute("aria-label", calendar.title);
-    if (!result.enabled) { notice.hidden = true; priorUnread = undefined; lastMeeting = undefined; return; }
-    if (doc.hasFocus() && result.calendar === "connected" && currentMeeting && minutes >= 0 && minutes <= 15 && lastMeeting !== currentMeeting.id && calendar.isConnected) {
-      lastMeeting = currentMeeting.id;
-      remind(minutes < 1 ? `${currentMeeting.title} starts now` : `${currentMeeting.title} in ${minutes} min`, "Calendar", currentMeeting.link || calendarURL);
-    } else if (doc.hasFocus() && result.mail === "connected" && count > (priorUnread ?? 0) && inbox.isConnected) {
-      remind(`${count} unread email${count === 1 ? "" : "s"}`, "Open inbox", gmailURL);
+    if (!result.enabled) { closeNotice(); pendingMail.length = 0; essentialBaseline = false; return; }
+    const nativePreviews = result.mailPreviews;
+    const previews = nativePreviews ?? tabStatus.mail?.previews ?? [];
+    for (const message of [...previews].reverse()) {
+      const key = `${nativePreviews ? "api" : "tab"}:${message.id}`;
+      if (seenMail.has(key)) continue;
+      seenMail.set(key, now);
+      if (nativePreviews ? message.receivedAt >= since : essentialBaseline) pendingMail.push(message);
     }
-    if (result.mail === "connected" && (doc.hasFocus() || count === 0)) priorUnread = count;
+    if (tabStatus.mail?.previews?.length || tabStatus.mail?.unread === 0) essentialBaseline = true;
+    if (pendingMail.length > 8) pendingMail.splice(0, pendingMail.length - 8);
+    for (const [key, time] of seenMail) if (now - time > 86400000 && !previews.some(message => key.endsWith(`:${message.id}`))) seenMail.delete(key);
+    for (const [key, time] of meetingNotices) if (now - time > 86400000) meetingNotices.delete(key);
+    if (!(doc.hasFocus() || Services.focus.activeWindow === win)) return;
+    if (result.calendar === "connected" && calendar.isConnected) {
+      for (const started of [true, false]) {
+        if (!notice.hidden && noticeKind === "meeting-start") break;
+        const meeting = meetings.find(item => {
+          const offset = item.startsAt - now;
+          const key = `${item.startsAt}:${item.title}:${started}`;
+          return !meetingNotices.has(key) && (started
+            ? offset <= 0 && offset >= -120000 && (item.endsAt == null || item.endsAt > now)
+            : offset > 0 && offset <= 600000);
+        });
+        if (meeting) {
+          meetingNotices.set(`${meeting.startsAt}:${meeting.title}:${started}`, now);
+          meetingReminder(meeting, started);
+          return;
+        }
+      }
+    }
+    if (notice.hidden && result.mail === "connected" && inbox.isConnected && pendingMail.length) {
+      const message = pendingMail.shift();
+      const action = el(doc, "button", { onclick: () => {
+        if (message.link) { launch(message.link); closeNotice(); } else jump("inbox");
+      } }, message.link ? "Open email" : "Open inbox");
+      remind("mail", message.subject, message.sender, action, 7000);
+    }
   }
 
   async function refresh() {
@@ -541,19 +628,21 @@ function attachServices(win, dock, rail, spotify, mic, hideSpotify) {
   };
   for (const event of tabEvents) win.gBrowser.tabContainer.addEventListener(event, scheduleTabs);
   doc.addEventListener("visibilitychange", scheduleTabs);
-  const tabTimer = win.setInterval(refreshTabs, 15000);
+  const tabTimer = win.setInterval(refreshTabs, 5000);
   Services.prefs.addObserver(pref, paintRail);
   const off = lazy.LimaBridge.onEvent(({ event, data }) => {
     if (!privateMode && event === "integrations.google.updated" && data) { sequence++; nativeStatus = data; paint(); }
   });
-  const timer = win.setInterval(refresh, 45000);
-  win.addEventListener("focus", refresh);
+  const timer = win.setInterval(refresh, 20000);
+  const clock = win.setInterval(() => { if (!privateMode && !doc.hidden && snapshot?.enabled) paint(); }, 3000);
+  win.addEventListener("focus", () => { paint(); refresh(); scheduleTabs(); });
   doc.addEventListener("visibilitychange", refresh);
   win.addEventListener("unload", () => {
     off();
     Services.prefs.removeObserver(pref, paintRail);
     win.clearInterval(timer);
     win.clearInterval(tabTimer);
+    win.clearInterval(clock);
     win.clearTimeout(refreshTimer);
     for (const event of tabEvents) win.gBrowser.tabContainer.removeEventListener(event, scheduleTabs);
     win.clearTimeout(dismissTimer);
@@ -564,6 +653,20 @@ function attachServices(win, dock, rail, spotify, mic, hideSpotify) {
 }
 
 // MARK: Dictation
+
+let meetingDictationWindow;
+
+async function startMeetingDictation(win, meeting) {
+  try {
+    const result = await lazy.LimaBridge.request("dictation.status");
+    if (["recording", "transcribing"].includes(result.phase)) throw new Error("Finish the current dictation first.");
+    meetingDictationWindow = win;
+    await lazy.LimaBridge.request("dictation.start", { meeting });
+  } catch (error) {
+    meetingDictationWindow = null;
+    showDictationError(win, error);
+  }
+}
 
 function noteIdOf(tab) {
   const url = tab && lazy.tabURL(tab);
@@ -576,18 +679,28 @@ async function toggleDictation(win) {
     if (status.phase === "recording") await lazy.LimaBridge.request("dictation.stop");
     else if (status.phase !== "transcribing") await lazy.LimaBridge.request("dictation.start", { target: noteIdOf(win.gBrowser.selectedTab) });
   } catch (error) {
-    win.document.getElementById("lima-dictation")?.removeAttribute("hidden");
-    const label = win.document.querySelector("#lima-dictation .lima-dict-label");
-    if (label) label.textContent = error.message;
-    win.document.getElementById("lima-dictation")?.setAttribute("data-phase", "failed");
-    win.setTimeout(() => win.document.getElementById("lima-dictation")?.setAttribute("hidden", "true"), 6000);
+    showDictationError(win, error);
   }
+}
+
+function showDictationError(win, error) {
+  const pill = win.document.getElementById("lima-dictation");
+  if (!pill) return;
+  pill.hidden = false;
+  pill.setAttribute("data-phase", "failed");
+  pill.querySelector(".lima-dict-label").textContent = error.message;
+  win.setTimeout(() => { if (pill.getAttribute("data-phase") === "failed") pill.hidden = true; }, 6000);
 }
 
 /** Text goes into the note you were in (its open page inserts it at the
  * cursor); otherwise into a new Dictation note, as in 4.x. */
-async function deliverDictation(win, { text, target }) {
+async function deliverDictation(win, { text, target, meeting }) {
   if (!text) return;
+  if (meeting) {
+    const owner = meetingDictationWindow?.closed || !meetingDictationWindow
+      ? lazy.BrowserWindowTracker.getTopWindow({ private: false }) : meetingDictationWindow;
+    if (owner !== win) return;
+  }
   const page = target && [...win.gBrowser.tabs].find(tab => noteIdOf(tab) === target && tab.linkedPanel && !tab.hasAttribute("pending"));
   if (page) return; // the note page handles dictation.result itself
   if (target) {
@@ -599,7 +712,7 @@ async function deliverDictation(win, { text, target }) {
     } catch {}
   }
   const stamp = new Date().toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-  const note = await lazy.LimaNotesBookmarks.createNote({ title: `Dictation — ${stamp}`, kind: "classic", markdown: `${text}\n` });
+  const note = await lazy.LimaNotesBookmarks.createNote({ title: meeting ? `${meeting} — Dictation` : `Dictation — ${stamp}`, kind: "classic", markdown: `${text}\n` });
   lazy.LimaTabs.openOrFocus(win, `about:lima?note=${encodeURIComponent(note.id)}`);
 }
 

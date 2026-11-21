@@ -45,7 +45,11 @@ export const LimaAssistant = {
     panel.setAttribute("role", "complementary");
     panel.setAttribute("aria-label", "Lima Companion");
     panel.setAttribute("aria-hidden", "true");
-    surface.append(panel);
+    const outside = doc.createElementNS(HTML, "div");
+    outside.id = "lima-assistant-outside";
+    outside.hidden = true;
+    outside.setAttribute("aria-hidden", "true");
+    surface.append(outside, panel);
 
     let browser;
     let open = false;
@@ -73,6 +77,7 @@ export const LimaAssistant = {
 
     function toggle(show = !open) {
       open = show;
+      outside.hidden = !open;
       if (open) panel.style.setProperty("--lima-assistant-top", `${Math.max(8, button.getBoundingClientRect().bottom + 6)}px`);
       button.setAttribute("aria-expanded", String(open));
       panel.setAttribute("aria-hidden", String(!open));
@@ -93,12 +98,14 @@ export const LimaAssistant = {
     }
 
     button.addEventListener("click", () => toggle());
+    outside.addEventListener("click", () => toggle(false));
     win.addEventListener("keydown", event => {
       if (open && event.key === "Escape" && (event.target === button || panel.contains(event.target))) {
         event.preventDefault();
         toggle(false);
       }
     }, true);
+    win.addEventListener("LimaAssistantOpen", () => { if (!open) toggle(true); });
     win.addEventListener("LimaAssistantClose", () => { if (open) toggle(false); });
     win.addEventListener("LimaAssistantAttention", event => { needsHandoff = event.detail === true; paint(); });
 

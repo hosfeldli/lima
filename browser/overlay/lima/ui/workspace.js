@@ -37,6 +37,7 @@ export async function renderWorkspace(app, id) {
     const working = [...chats.values()].filter(chat => chat.status === "streaming").length;
     active.textContent = working ? working + " working" : "Ready";
     const latest = [...chats.values()].findLast(chat => chat.status === "streaming") ?? chats.get(workspace.conversationID);
+    character.dataset.variant = latest?.mascot ?? "classic";
     const describe = chat => replyActivity(chat, { provider: chat?.provider, tool: chat?.tool });
     setCompanionState(character, describe(latest).motion ?? "idle");
     agents.replaceChildren(...[...chats.values()].map(chat => {
@@ -59,7 +60,7 @@ export async function renderWorkspace(app, id) {
       for (const member of own) {
         if (chats.has(member.conversationID)) continue;
         const summary = summaries.find(chat => chat.id === member.conversationID);
-        chats.set(member.conversationID, { title: member.name, provider: summary?.provider,
+        chats.set(member.conversationID, { title: member.name, provider: summary?.provider, mascot: summary?.mascot,
           status: summary?.running ? "streaming" : summary?.lastStatus ?? "idle", error: { kind: summary?.lastErrorKind }, progress: summary?.lastProgress });
       }
       error.hidden = true;
@@ -80,7 +81,7 @@ export async function renderWorkspace(app, id) {
       const reply = data.messages?.findLast(message => message.role === "assistant");
       const prior = chats.get(data.id);
       const tool = prior.id === reply?.id && prior.tools?.length === reply?.tools?.length ? prior.tool : lastVisibleTool(reply?.tools);
-      chats.set(data.id, { title: prior.title, provider: data.provider, ...reply, tool });
+      chats.set(data.id, { title: prior.title, provider: data.provider, mascot: data.mascot, ...reply, tool });
       draw();
     } else if (event === "chat.delta") {
       const chat = chats.get(data.conversationId);

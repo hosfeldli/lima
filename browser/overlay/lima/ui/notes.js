@@ -187,18 +187,32 @@ const dateLine = ms => new Date(ms).toLocaleString([], { weekday: "long", month:
 
 async function renderClassic(app, note) {
   let dirty = false;
-  const status = el("span", { class: "page-status", text: "" });
+  let saving = Promise.resolve();
+  let conflicted = false;
+  let selectionRange;
+  const status = el("span", { class: "page-status", role: "status" });
+  const recover = el("button", { class: "ghost", hidden: true, onclick: saveCopy }, "Save a copy");
   const title = el("input", { class: "page-title", value: note.title === "Untitled" ? "" : note.title, placeholder: "Untitled", "aria-label": "Title" });
   const body = el("div", { class: "page-body", contenteditable: "true", spellcheck: "true", "aria-label": "Page", "data-placeholder": "Start writing…" });
+  const selectBody = () => {
+    const selection = getSelection();
+    if (document.activeElement !== body) body.focus();
+    if (body.contains(selection.anchorNode)) return;
+    if (selectionRange && body.contains(selectionRange.commonAncestorContainer)) {
+      selection.removeAllRanges();
+      selection.addRange(selectionRange);
+    }
+  };
   const tool = (iconOrText, label, fn) => el("button", { class: "fmt", title: label, "aria-label": label,
-    onmousedown: e => { e.preventDefault(); fn(); body.dispatchEvent(new Event("input")); } },
+    onmousedown: event => event.preventDefault(),
+    onclick: () => { selectBody(); fn(); markDirty(); } },
     typeof iconOrText === "string" && iconOrText.length < 3 ? el("span", { text: iconOrText }) : iconOrText);
   const exec = (command, value) => () => document.execCommand(command, false, value);
   const toolbar = el("div", { class: "page-tools", role: "toolbar" },
     tool("H1", "Heading", exec("formatBlock", "h1")), tool("H2", "Subheading", exec("formatBlock", "h2")), tool(icon("paragraph"), "Text", exec("formatBlock", "p")),
     el("i", { class: "sep" }),
     tool("B", "Bold (⌘B)", exec("bold")), tool("I", "Italic (⌘I)", exec("italic")), tool("S", "Strikethrough", exec("strikeThrough")),
-    tool("{}", "Code", () => wrapCode()),
+    tool("{}", "Code", wrapCode), tool(icon("link"), "Link (⌘K)", insertLink),
     el("i", { class: "sep" }),
     tool(icon("list"), "Bulleted list", exec("insertUnorderedList")), tool("1.", "Numbered list", exec("insertOrderedList")), tool(icon("checkbox"), "To-do", () => insertTodo()),
     tool(icon("globe"), "Insert an interactive embed", () => {
@@ -206,12 +220,19 @@ async function renderClassic(app, note) {
       if (!value) return;
       const card = noteEmbed(value.trim());
       if (!card) { status.textContent = "Enter an HTTPS or local preview URL."; return; }
-      body.append(card, el("p", {}, el("br")));
+      selectBody();
+      const anchor = getSelection().anchorNode;
+      let block = anchor;
+      while (block?.parentNode && block.parentNode !== body) block = block.parentNode;
+      const next = el("p", {}, el("br"));
+      if (block && block !== body && block.parentNode === body) block.after(card, next);
+      else body.append(card, next);
+      getSelection().collapse(next, 0);
     }),
     el("i", { class: "sep" }),
     tool(icon("mic"), "Dictate (⌃⌥D)", () => bridge.browser("dictate", { noteId: note.id })),
-    el("span", { class: "spacer" }), status,
-    tool(icon("undo"), "Undo (⌘Z)", () => history("notes.undo")), tool(icon("redo"), "Redo (⇧⌘Z)", () => history("notes.redo")));
+    el("span", { class: "spacer" }), status, recover,
+    tool(icon("undo"), "Undo (⌘Z)", exec("undo")), tool(icon("redo"), "Redo (⇧⌘Z)", exec("redo")));
 
   setPage(note.title || "Untitled", "note");
   app.replaceChildren(el("div", { class: "page-wrap" },
@@ -221,8 +242,9 @@ async function renderClassic(app, note) {
   document.execCommand("defaultParagraphSeparator", false, "p");
 
   function paint() {
-    const rendered = markdown(note.markdown, { onTaskToggle: () => { dirty = true; save(); }, attachments: attachmentURL, embeds: true });
+    const rendered = markdown(note.markdown, { attachments: attachmentURL, embeds: true });
     for (const box of rendered.querySelectorAll("input[type=checkbox]")) box.disabled = false;
+    selectionRange = undefined;
     body.replaceChildren(...rendered.childNodes);
     body.classList.toggle("empty", !note.markdown.trim());
   }
@@ -230,11 +252,26 @@ async function renderClassic(app, note) {
   function wrapCode() {
     const selection = getSelection();
     if (!selection.rangeCount || selection.isCollapsed) return;
-    const range = selection.getRangeAt(0);
     const code = document.createElement("code");
-    code.textContent = range.toString();
-    range.deleteContents();
-    range.insertNode(code);
+    code.textContent = selection.toString();
+    document.execCommand("insertHTML", false, code.outerHTML);
+  }
+
+  function insertLink() {
+    const input = window.prompt("Link address", "https://");
+    if (!input) return;
+    let url;
+    try { url = new URL(input.trim()); } catch { status.textContent = "Enter a valid link address."; return; }
+    if (!["https:", "http:"].includes(url.protocol) && !url.href.startsWith("about:lima")) {
+      status.textContent = "Enter an HTTPS, HTTP, or Lima link.";
+      return;
+    }
+    selectBody();
+    if (getSelection().isCollapsed) {
+      const link = el("a", { href: url.href, text: url.href });
+      document.execCommand("insertHTML", false, link.outerHTML);
+    } else document.execCommand("createLink", false, url.href);
+    markDirty();
   }
 
   function insertTodo() {
@@ -263,6 +300,21 @@ async function renderClassic(app, note) {
 
   // Markdown shortcuts at the start of a line: "# ", "## ", "- ", "1. ", "[] ".
   body.addEventListener("keydown", event => {
+    if (event.isComposing) return;
+    const key = event.key.toLowerCase();
+    if ((event.metaKey || event.ctrlKey) && key === "k") {
+      event.preventDefault();
+      event.stopPropagation();
+      insertLink();
+      return;
+    }
+    const anchor = getSelection().anchorNode;
+    if (event.key === "Tab" && (anchor?.parentElement?.closest("li") || anchor?.closest?.("li"))) {
+      event.preventDefault();
+      exec(event.shiftKey ? "outdent" : "indent")();
+      markDirty();
+      return;
+    }
     if (event.key !== " ") return;
     const selection = getSelection();
     const node = selection.anchorNode;
@@ -274,99 +326,102 @@ async function renderClassic(app, note) {
       "-": () => exec("insertUnorderedList")(), "*": () => exec("insertUnorderedList")(), "1.": () => exec("insertOrderedList")(), "[]": insertTodo, ">": () => exec("formatBlock", "blockquote")() };
     if (!actions[before]) return;
     event.preventDefault();
-    node.textContent = node.textContent.slice(before.length);
+    selection.setBaseAndExtent(node, 0, node, before.length);
+    document.execCommand("delete");
     actions[before]();
-    body.dispatchEvent(new Event("input"));
+    markDirty();
   });
 
   body.addEventListener("click", event => {
-    if (event.target.matches("input[type=checkbox]")) { dirty = true; save(); }
+    if (event.target.matches("input[type=checkbox]")) markDirty();
     const link = event.target.closest("a[href]");
     if (link && (event.metaKey || !body.contains(document.activeElement))) { event.preventDefault(); bridge.openTab(link.href); }
   });
 
-  const save = debounce(async () => {
-    const markdownText = toMarkdown(body);
-    const edits = [];
-    if (markdownText.trim() !== note.markdown.trim()) edits.push({ setMarkdown: { _0: markdownText } });
-    const nextTitle = title.value.trim() || "Untitled";
-    if (nextTitle !== note.title) edits.push({ setTitle: { _0: nextTitle } });
-    if (!edits.length) { dirty = false; status.textContent = ""; return; }
-    status.textContent = "Saving…";
-    try {
-      note = await call("notes.apply", { id: note.id, edits, baseRevision: note.revision, author: "user" });
-      dirty = false;
-      status.textContent = "Saved";
-      setPage(note.title, "note");
-    } catch (error) {
-      if (/changed \(expected revision/.test(errorText(error))) {
-        // An agent or another tab edited it: keep both.
-        const latest = await call("notes.get", { id: note.id });
-        const mine = markdownText;
-        note = latest;
-        note.markdown = `${latest.markdown.trim()}\n\n${mine}`;
-        paint();
-        dirty = true;
-        status.textContent = "Merged with an edit from elsewhere";
-        save();
-      } else status.textContent = `Not saved: ${errorText(error)}`;
-    }
-  }, 450);
-
-  async function history(method) {
-    if (dirty) await save.flush();
-    try {
-      note = await call(method, { id: note.id, author: "user" });
-      title.value = note.title === "Untitled" ? "" : note.title;
-      paint();
-      status.textContent = method === "notes.undo" ? "Undone" : "Redone";
-    } catch (error) {
-      status.textContent = errorText(error);
-    }
+  function draft() {
+    return { markdown: toMarkdown(body), title: title.value.trim() || "Untitled" };
   }
 
+  const save = debounce(() => {
+    const current = draft();
+    saving = saving.then(async () => {
+      if (!dirty || conflicted) return;
+      const edits = [];
+      if (current.markdown.trim() !== note.markdown.trim()) edits.push({ setMarkdown: { _0: current.markdown } });
+      if (current.title !== note.title) edits.push({ setTitle: { _0: current.title } });
+      if (!edits.length) {
+        dirty = draft().markdown !== current.markdown || draft().title !== current.title;
+        status.textContent = "";
+        return;
+      }
+      status.textContent = "Saving…";
+      try {
+        note = await call("notes.apply", { id: note.id, edits, baseRevision: note.revision, author: "user" });
+        const latest = draft();
+        dirty = latest.markdown !== current.markdown || latest.title !== current.title;
+        status.textContent = dirty ? "Saving…" : "Saved";
+        setPage(note.title, "note");
+      } catch (error) {
+        conflicted = /changed \(expected revision/.test(errorText(error));
+        recover.hidden = !conflicted;
+        status.textContent = conflicted
+          ? "This note changed elsewhere. Your edits are here. Save a copy to keep them."
+          : `Couldn’t save. ${errorText(error)}`;
+      }
+    });
+    return saving;
+  }, 300);
+
+  function markDirty() {
+    dirty = true;
+    body.classList.toggle("empty", !body.textContent.trim() && !body.querySelector("img, table, [data-artifact], [data-note-embed]"));
+    if (!conflicted) save();
+  }
+
+  async function saveCopy() {
+    const current = draft();
+    try {
+      const copied = await bridge.browser("createNote", { kind: "classic", title: current.title + " (copy)" });
+      await call("notes.apply", { id: copied.id, edits: [{ setMarkdown: { _0: current.markdown } }], author: "user" });
+      status.textContent = "Copy saved";
+      bridge.openTab(`about:lima?note=${encodeURIComponent(copied.id)}`);
+    } catch (error) { status.textContent = errorText(error); }
+  }
+
+  const rememberSelection = () => {
+    const selection = getSelection();
+    if (selection.rangeCount && body.contains(selection.anchorNode)) selectionRange = selection.getRangeAt(0).cloneRange();
+  };
+  document.addEventListener("selectionchange", rememberSelection);
   body.addEventListener("input", () => {
-    // New to-do rows (Enter on a to-do) get their checkbox.
     for (const li of body.querySelectorAll("li.task")) {
       if (!li.querySelector(":scope > input[type=checkbox]")) li.prepend(el("input", { type: "checkbox" }));
     }
-    autoInline();
+    markDirty();
   });
-  // Typing **bold**, *italic*, `code` or ~~strike~~ formats it in place.
-  function autoInline() {
-    const selection = getSelection();
-    const node = selection.anchorNode;
-    if (!node || node.nodeType !== Node.TEXT_NODE || !body.contains(node)) return;
-    const text = node.textContent.slice(0, selection.anchorOffset);
-    const match = /(\*\*([^*]+)\*\*|~~([^~]+)~~|`([^`]+)`|(?<![*\w])\*([^*]+)\*)$/.exec(text);
-    if (!match) return;
-    const [whole, , bold, strike, code, italic] = match;
-    const tag = bold ? "strong" : strike ? "s" : code ? "code" : "em";
-    const start = selection.anchorOffset - whole.length;
-    const range = document.createRange();
-    range.setStart(node, start);
-    range.setEnd(node, selection.anchorOffset);
-    range.deleteContents();
-    const wrapped = el(tag, { text: bold ?? strike ?? code ?? italic });
-    range.insertNode(wrapped);
-    const after = document.createTextNode("\u200b");
-    wrapped.after(after);
-    selection.collapse(after, 1);
-  }
-  body.addEventListener("input", () => { dirty = true; body.classList.remove("empty"); status.textContent = ""; save(); });
-  title.addEventListener("input", () => { dirty = true; save(); });
-  title.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); body.focus(); } });
-  // Undo goes through the service's transaction history (shared with agents).
-  document.addEventListener("keydown", e => {
-    if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "z") return;
-    if (!body.contains(document.activeElement) && document.activeElement !== body && document.activeElement !== title) return;
-    e.preventDefault();
-    history(e.shiftKey ? "notes.redo" : "notes.undo");
+  title.addEventListener("input", markDirty);
+  title.addEventListener("keydown", event => {
+    if (event.key === "Enter") { event.preventDefault(); body.focus(); }
   });
-  window.addEventListener("pagehide", () => { if (dirty) save.flush(); });
+  const flush = () => { if (dirty) save.flush(); };
+  const onKey = event => {
+    if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "s") return;
+    event.preventDefault();
+    flush();
+  };
+  document.addEventListener("keydown", onKey);
+  body.addEventListener("blur", flush);
+  title.addEventListener("blur", flush);
+  window.addEventListener("pagehide", () => {
+    flush();
+    document.removeEventListener("keydown", onKey);
+    document.removeEventListener("selectionchange", rememberSelection);
+    unsubscribe();
+  }, { once: true });
 
-  onEvent(message => {
-    if (message.event === "notes.changed" && message.data.id === note.id && message.data.revision > note.revision && !dirty) {
+  const unsubscribe = onEvent(message => {
+    if (message.event === "notes.changed" && message.data.id === note.id && message.data.revision > note.revision &&
+        !dirty && document.activeElement !== body && !body.contains(document.activeElement)) {
       note = message.data;
       if (document.activeElement !== title) title.value = note.title === "Untitled" ? "" : note.title;
       setPage(note.title, "note");
@@ -387,7 +442,7 @@ async function renderClassic(app, note) {
     }
   });
   paint();
-  if (!note.markdown.trim() && !title.value) title.focus(); else body.focus();
+  if (!document.hidden && !note.markdown.trim() && !title.value) title.focus();
 }
 
 // MARK: Canvas
@@ -518,7 +573,7 @@ async function renderCanvas(app, note) {
     node.append(handle);
 
     node.addEventListener("pointerdown", event => {
-      if (node.isContentEditable || event.target.closest(".note-embed")) return;
+      if (event.button !== 0 || node.isContentEditable || event.target.closest(".note-embed")) return;
       if (connectFrom && connectFrom !== block.id) {
         apply([{ connect: { _0: { id: crypto.randomUUID(), from: connectFrom, to: block.id } } }], "Connected");
         connectFrom = null;
@@ -535,9 +590,14 @@ async function renderCanvas(app, note) {
         if (resizing) { node.style.width = `${Math.max(40, start.bw + dx)}px`; node.style.height = `${Math.max(30, start.bh + dy)}px`; }
         else { node.style.left = `${Math.max(0, start.bx + dx)}px`; node.style.top = `${Math.max(0, start.by + dy)}px`; }
       };
-      const up = e => {
+      const clear = () => {
         node.removeEventListener("pointermove", move);
         node.removeEventListener("pointerup", up);
+        node.removeEventListener("pointercancel", cancel);
+      };
+      const cancel = () => { clear(); draw(); };
+      const up = e => {
+        clear();
         const dx = e.clientX - start.x, dy = e.clientY - start.y;
         if (Math.abs(dx) + Math.abs(dy) < 2) return;
         const x = resizing ? block.x : Math.max(0, start.bx + dx), y = resizing ? block.y : Math.max(0, start.by + dy);
@@ -546,9 +606,10 @@ async function renderCanvas(app, note) {
       };
       node.addEventListener("pointermove", move);
       node.addEventListener("pointerup", up);
+      node.addEventListener("pointercancel", cancel);
     });
-    node.addEventListener("dblclick", () => {
-      if (block.type === "image") return;
+    node.addEventListener("dblclick", event => {
+      if (block.type === "image" || event.target.closest(".note-embed")) return;
       node.contentEditable = "true";
       node.textContent = block.content;
       node.focus();
@@ -563,13 +624,13 @@ async function renderCanvas(app, note) {
   }
 
   wrap.addEventListener("keydown", e => {
-    if (document.activeElement?.isContentEditable) return;
+    if (document.activeElement?.isContentEditable || e.target === title) return;
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") { e.preventDefault(); history(e.shiftKey ? "notes.redo" : "notes.undo"); }
     if ((e.key === "Backspace" || e.key === "Delete") && selected) { e.preventDefault(); apply([{ removeBlock: { id: selected } }], "Deleted"); selected = null; }
   });
   const saveTitle = debounce(() => apply([{ setTitle: { _0: title.value || "Untitled Canvas" } }]), 500);
   title.addEventListener("input", saveTitle);
-  onEvent(message => {
+  const unsubscribe = onEvent(message => {
     if (message.event === "notes.changed" && message.data.id === note.id && message.data.revision > note.revision) {
       note = message.data;
       setPage(note.title, "note");
@@ -577,5 +638,6 @@ async function renderCanvas(app, note) {
       if (!document.activeElement?.isContentEditable) draw();
     }
   });
+  window.addEventListener("pagehide", unsubscribe, { once: true });
   draw();
 }

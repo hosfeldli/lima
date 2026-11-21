@@ -157,9 +157,11 @@ for size in 16 32 128 256 512; do
 done
 iconutil -c icns "$ICON_SET" -o "$R/lima.icns"
 sips -s format png "$BROWSER/branding/grammar.svg" --out "$R/lima/ui/marks/grammar-mascot.png" >/dev/null
-for frame in 1 2 3; do
-  radii=(4 4 4)
-  radii[$((frame - 1))]=7
+for frame in 1 2 3 4 5 6; do
+  case "$frame" in
+    1) radii=(7 4 3) ;; 2) radii=(6 6 3) ;; 3) radii=(4 7 4) ;;
+    4) radii=(3 6 6) ;; 5) radii=(3 4 7) ;; 6) radii=(5 3 6) ;;
+  esac
   sed -e "s/FRAME_A/${radii[0]}/" -e "s/FRAME_B/${radii[1]}/" -e "s/FRAME_C/${radii[2]}/" \
     "$BROWSER/branding/dock-chat.svg" > "$ICON_STAGE/frame.svg"
   sips -s format png "$ICON_STAGE/frame.svg" --out "$R/lima/ui/marks/dock-chat-$frame.png" >/dev/null
@@ -182,6 +184,11 @@ plutil -replace CFBundleExecutable -string lima "$PLIST"
 plutil -replace CFBundleIdentifier -string "$BUNDLE_ID" "$PLIST"
 plutil -replace CFBundleName -string "$DISPLAY_NAME" "$PLIST"
 plutil -replace CFBundleDisplayName -string "$DISPLAY_NAME" "$PLIST"
+while IFS= read -r -d '' localized; do
+  plutil -convert xml1 "$localized"
+  plutil -replace CFBundleName -string "$DISPLAY_NAME" "$localized"
+done < <(find "$R" -maxdepth 2 -path '*.lproj/InfoPlist.strings' -print0)
+
 plutil -replace CFBundleIconFile -string lima.icns "$PLIST"
 plutil -remove CFBundleIconName "$PLIST" 2>/dev/null || true
 plutil -replace CFBundleShortVersionString -string "$VERSION" "$PLIST"
@@ -189,7 +196,7 @@ plutil -replace CFBundleVersion -string "$BUILD_NUMBER" "$PLIST"
 plutil -replace LimaEngine -string "zen ${ZEN_TAG} / gecko ${GECKO_VERSION}" "$PLIST"
 plutil -replace LimaSourceCommit -string "$SOURCE_STAMP" "$PLIST"
 # Lima's runtime asks for these through the app, so the app must explain them.
-for key in NSMicrophoneUsageDescription NSAppleEventsUsageDescription \
+for key in NSMicrophoneUsageDescription NSSpeechRecognitionUsageDescription NSAppleEventsUsageDescription \
            NSCalendarsFullAccessUsageDescription NSRemindersFullAccessUsageDescription; do
   plutil -replace "$key" -string "$(plutil -extract "$key" raw "$HOST_PLIST")" "$PLIST"
 done

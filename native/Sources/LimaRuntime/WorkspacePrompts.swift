@@ -1,4 +1,6 @@
+import CryptoKit
 import Foundation
+import LimaStorage
 import LimaProtocol
 
 struct WorkspaceQuestionField: Codable, Sendable {
@@ -96,6 +98,35 @@ actor WorkspacePrompts {
     private var requests: [String: Request] = [:]
     private var sessions: [String: (workspace: String, url: String, paths: Set<String>, actions: Set<String>, expires: Date)] = [:]
     static let browserActions: Set<String> = ["click", "type", "scroll"]
+
+    enum BrowserReview {
+        case routine, needsUser, directUserOnly
+    }
+
+    static func browserReview(goal: String, plan: String) -> BrowserReview {
+        let intent = goal + " " + plan
+        if intent.range(of: #"\b(?:place (?:a |the |any )?bets?|betting|wagers?|stake cash|submit payment|place order|transfer funds|delete account|send message|publish|change password)\b"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return .directUserOnly
+        }
+        if intent.range(of: #"\b(?:payment|purchase|checkout|deposit|withdraw|credentials|password|private key|authorization|sign[ -]?in|unsubscribe|delete|remove|download|upload|submit|external sharing)\b"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return .needsUser
+        }
+        return .routine
+    }
+
+    static func permissionKey(scope: String, goal: String, plan: String) -> String {
+        let fields = [scope, goal, plan].map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let data = Data(fields.map { "\($0.utf8.count):\($0)" }.joined().utf8)
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    func browserPermission(_ key: String, store: EncryptedStore) async throws -> Bool? {
+        try await store.get(Bool.self, collection: "browserPermissions", id: key)
+    }
+
+    func rememberBrowserPermission(_ value: Bool, key: String, store: EncryptedStore) async throws {
+        try await store.put(value, collection: "browserPermissions", id: key)
+    }
 
     func ask(_ runtime: Runtime, workspace: Workspace, question: String, detail: String?, approval: Bool, fields: [WorkspaceQuestionField] = [], actionLabel: String? = nil) async throws -> JSONValue {
         guard question.count <= 1200, !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {

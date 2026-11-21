@@ -5,7 +5,7 @@ import { activityStatus, bridge, call, el, errorText, filesPrivacyButton, icon, 
 import { failureActivity, isFolderPermissionError, lastVisibleTool, replyActivity, toolActivity } from "./tool-activity.sys.mjs";
 
 import { agentControls, composerMenu, preferredAgent } from "./composer.js";
-import { companion, setCompanionState } from "./companion.js";
+import { companion, MASCOTS, setCompanionState } from "./companion.js";
 import { workspacePrompts } from "./workspace-prompts.js";
 const MASCOT = "resource://lima-ui/marks/companion.svg";
 
@@ -81,8 +81,7 @@ async function initializeChat(app, chatId, compact, signal) {
         draw();
       } catch (error) { reportError(error); }
     },
-  }, ["classic", "builder", "explorer", "artist", "analyst"].map(name =>
-    el("option", { value: name, text: name[0].toUpperCase() + name.slice(1) })));
+  }, Object.entries(MASCOTS).map(([value, text]) => el("option", { value, text })));
   const prompts = workspacePrompts({ workspace: () => workspace?.id ?? "", signal });
   const sendButton = el("button", { class: "send", title: "Send (↩)", onclick: send, disabled: true }, "Send");
   const stopButton = el("button", { class: "send stop", title: "Stop the reply", onclick: () => call("chat.cancel", { id: chatId }).catch(reportError), hidden: true }, "Stop");
@@ -156,6 +155,7 @@ async function initializeChat(app, chatId, compact, signal) {
     deltaPaint = 0;
     if (!conversation) return;
     const name = workspace?.name ?? conversation.title;
+    character.classList.toggle("workspace-chat-avatar", Boolean(conversation.workspaceID) && !compact);
     mascot.value = character.dataset.variant = conversation.mascot ?? "classic";
     prompts.draw();
     if (!compact) setPage(workspace ? "Chat" : conversation.title, MASCOT);

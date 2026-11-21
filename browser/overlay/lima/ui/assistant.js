@@ -18,19 +18,17 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
   const status = el("div", { class: "handoff" }, el("div", { class: "grow" }, target, activity.node, recovery), openAgent);
   const recent = el("div", { class: "handoff-recent" });
   const prompts = workspacePrompts();
-  const answer = el("section", { class: "companion-answer", hidden: true, "aria-live": "polite" });
-  const approval = el("section", { class: "workspace-prompts", hidden: true });
+  const taskChat = el("section", { class: "companion-task-chat", role: "log", "aria-label": "Companion requests", hidden: true });
+  const tasks = [];
   const agent = agentControls();
   const providerHelp = el("details", { class: "assistant-providers", hidden: true });
   const draftKey = "assistant.draft";
   input.value = prefs.get(draftKey, "");
-  let pending = false;
   let handedOff;
   let ready = false;
   let shownWorkspace;
   let requestError;
   let conversationRevision = 0;
-  let proposed;
 
   const close = () => bridge.browser("closeAssistant", {});
   const head = home
@@ -42,7 +40,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
       el("div", { class: "handoff-composer composer-box" }, input,
         el("div", { class: "composer-row handoff-controls" }, agent.provider, agent.model,
           el("span", { class: "spacer" }), send)),
-      status, answer, approval, prompts.node, recent, home ? null : providerHelp)));
+      taskChat, status, prompts.node, recent, home ? null : providerHelp)));
 
   input.addEventListener("input", () => prefs.set(draftKey, input.value));
   input.addEventListener("keydown", event => {
@@ -97,6 +95,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     shownWorkspace = workspaces.get(handedOff) ?? [...workspaces.values()].find(workspace =>
       !workspace.parentID && conversations.get(workspace.conversationID)?.message?.status === "streaming");
     const current = shownWorkspace && conversations.get(shownWorkspace.conversationID)?.message;
+    const pending = tasks.some(task => task.phase === "working");
     const next = requestError ? failureActivity(requestError, ready ? "Workspace request failed" : "Workspaces unavailable")
       : !ready ? { state: "starting", label: "Loading workspaces", icon: "workspace", motion: "think" }
       : pending ? { state: "starting", label: "Reviewing the request", icon: "workspace", motion: "think" }
@@ -110,7 +109,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
       requestError && !ready ? el("button", { class: "ghost", onclick: load }, "Retry") : null,
       isFolderPermissionError(requestError ?? current?.error) ? filesPrivacyButton(reportError) : null);
     recovery.hidden = !recovery.childElementCount;
-    send.disabled = !ready || pending || !!proposed || !agent.settings().provider;
+    send.disabled = !ready || !agent.settings().provider;
   }
 
   function draw() {
@@ -125,93 +124,105 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     paintActivity();
   }
 
-  function showApproval(plan) {
-    proposed = plan;
-    approval.hidden = !plan;
-    if (!home) bridge.browser("assistantAttention", { pending: !!plan }).catch(() => {});
-    if (!plan) { approval.replaceChildren(); return; }
+  function paintTask(task, phase, ...content) {
+    task.phase = phase;
+    task.reply.dataset.state = phase;
+    task.reply.replaceChildren(...content);
+    if (!home) bridge.browser("assistantAttention", { pending: tasks.some(item => item.phase === "approval") }).catch(() => {});
+    paintActivity();
+  }
+
+  function showApproval(task, plan) {
     const destinations = plan.workspaceIds.map(id => workspaces.get(id)?.name).filter(Boolean);
-    approval.replaceChildren(el("article", {},
-      el("strong", { text: "Connect to workspaces?" }),
+    paintTask(task, "approval", el("strong", { text: "Connect to workspaces?" }),
       el("p", { text: destinations.join(", ") }),
       plan.pages.length ? el("p", { class: "muted", text: "Relevant tab content will be shared with these agents." }) : null,
       el("div", { class: "row" },
-        el("button", { class: "primary", onclick: () => { showApproval(null); submit(plan); } }, "Approve handoff"),
-        el("button", { class: "ghost", onclick: () => { showApproval(null); draw(); } }, "Cancel"))));
+        el("button", { class: "primary", onclick: () => submit(task, plan) }, "Approve handoff"),
+        el("button", { class: "ghost", onclick: () => paintTask(task, "complete", "Handoff canceled.") }, "Cancel")));
   }
 
   async function delegate() {
     const text = input.value.trim();
-    if (!text || pending || !ready || proposed || !agent.settings().provider) return;
-    pending = true;
+    const agentSettings = agent.settings();
+    if (!text || !ready || !agentSettings.provider) return;
+    const reply = el("div", { class: "companion-task-reply" });
+    const row = el("article", { class: "companion-task" },
+      el("p", { class: "companion-task-request", text }), reply);
+    const task = { row, reply };
+    tasks.push(task);
+    const settled = tasks.filter(item => ["complete", "failed"].includes(item.phase));
+    if (settled.length > 15) {
+      const oldest = settled[0];
+      oldest.row.remove();
+      tasks.splice(tasks.indexOf(oldest), 1);
+    }
+    taskChat.hidden = false;
+    taskChat.prepend(row);
+    input.value = "";
+    prefs.set(draftKey, "");
     requestError = undefined;
-    paintActivity();
-    answer.hidden = true;
+    paintTask(task, "working", "Reviewing request…");
     try {
-      await agent.ready;
-      const tabs = await bridge.browser("assistantTabs", {});
+      const [tabs, folders] = await Promise.all([
+        bridge.browser("assistantTabs", {}),
+        bridge.browser("assistantFolders", {}).catch(() => []),
+      ]);
       const metadata = tabs.map(({ title, url, live }, index) => ({ title, site: new URL(url).hostname, live, index }));
-      const agentSettings = agent.settings();
-      const first = await call("assistant.plan", { text, ...agentSettings, tabs: metadata });
-      const pages = await Promise.all([...new Set(first.tabIndexes)].map(async index => {
+      const planWith = () => call("assistant.plan", { text, ...agentSettings, tabs: metadata, folders });
+      const first = await planWith();
+      const pages = await Promise.all([...new Set(first.tabIndexes ?? [])].map(async index => {
         const tab = tabs[index];
         if (!tab) return null;
         const excerpt = await bridge.browser("assistantReadTab", { id: tab.id, url: tab.url }).catch(() => "");
         metadata[index].excerpt = excerpt;
         return { ...tab, excerpt };
       }));
-      const plan = pages.some(page => page?.excerpt)
-        ? await call("assistant.plan", { text, ...agentSettings, tabs: metadata })
-        : first;
-      if (plan.answer) {
-        answer.replaceChildren(el("strong", { text: text }), markdown(plan.answer));
-        answer.hidden = false;
-        if (input.value.trim() === text) {
-          input.value = "";
-          prefs.set(draftKey, "");
-        }
+      const plan = pages.some(page => page?.excerpt) ? await planWith() : first;
+      if (plan.localAction) {
+        const note = plan.localAction.kind === "note";
+        paintTask(task, "working", note ? "Creating your note…" : "Creating your tab folder…");
+        const result = await bridge.browser("assistantLocalTask", plan.localAction);
+        const open = el("button", { class: "ghost", onclick: async () => {
+          try {
+            if (note) await bridge.openTab(`about:lima?note=${encodeURIComponent(result.id)}`);
+            else await bridge.browser("assistantRevealGroup", { id: result.id });
+          } catch (error) { paintTask(task, "failed", errorText(error)); }
+        } }, icon(note ? "note" : "folder"), note ? "Open note" : "Show folder");
+        paintTask(task, "complete", el("p", { text: note ? `Created “${result.title}”.`
+          : `Created “${result.title}” with ${result.count} ${result.count === 1 ? "tab" : "tabs"}.` }), open);
         return;
       }
-      if (!home) close().catch(() => {});
+      if (plan.answer) { paintTask(task, "complete", markdown(plan.answer)); return; }
       if (plan.workspaceIds.some(id => !workspaces.has(id))) throw new Error("A workspace changed during planning. Send the request again.");
       plan.pages = pages.filter(Boolean);
       plan.text = text;
       plan.agent = agentSettings;
-      if (plan.workspaceIds.length) showApproval(plan);
-      else await submit(plan);
-    } catch (error) {
-      requestError = error;
-      if (!home) bridge.browser("assistantAttention", { pending: true }).catch(() => {});
-    } finally { pending = false; draw(); }
+      if (plan.workspaceIds.length) showApproval(task, plan);
+      else await submit(task, plan);
+    } catch (error) { paintTask(task, "failed", errorText(error)); }
   }
 
-  async function submit(plan) {
-    pending = true;
-    paintActivity();
+  async function submit(task, plan) {
+    paintTask(task, "working", "Starting the workspace agent…");
     try {
       const pages = plan.pages.map(tab => [tab.title, tab.url, tab.excerpt].filter(Boolean).join("\n"));
       const revision = conversationRevision;
+      const destinations = [];
       for (const id of plan.workspaceIds.length ? plan.workspaceIds : [undefined]) {
         const { workspace, conversation } = await call("assistant.delegate", {
           id, name: plan.newName, text: plan.text, mascot: plan.mascot, ...plan.agent, references: pages.join("\n\n"),
         });
         workspaces.set(workspace.id, workspace);
+        destinations.push(workspace);
         handedOff = workspace.id;
         if (revision === conversationRevision || !conversations.get(conversation.id)?.message?.id) rememberConversation(conversation);
       }
-      if (input.value.trim() === plan.text) {
-        input.value = "";
-        prefs.set(draftKey, "");
-      }
-      if (!home) close().catch(() => {});
-    } catch (error) {
-      handedOff = undefined;
-      requestError = error;
-      if (!home) bridge.browser("assistantAttention", { pending: true }).catch(() => {});
-    } finally {
-      pending = false;
-      draw();
-    }
+      paintTask(task, "complete", el("p", { text: "Handed off to the workspace." }),
+        ...destinations.map(workspace => el("button", { class: "ghost", onclick: () => openWorkspace(workspace) }, workspace.name)));
+      if (!home && !input.value && !tasks.some(item => ["working", "approval"].includes(item.phase))) close().catch(() => {});
+    } catch (error) { paintTask(task, "failed", errorText(error)); }
+    finally { draw(); }
   }
 
   function rememberConversation(data) {

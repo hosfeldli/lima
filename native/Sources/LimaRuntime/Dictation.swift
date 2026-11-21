@@ -1,12 +1,12 @@
 import AVFoundation
 import Foundation
 import LimaProtocol
+@preconcurrency import Speech
 
 /// Dictation, ported from Lima 4.x (NoteDictationService + LocalWhisperTranscriber):
 /// record 16 kHz mono PCM, then transcribe on-device with the same
-/// `whisper-cli` and `ggml-small.en(-tdrz)` model 4.x shipped. Nothing leaves
-/// the Mac. The browser decides where the text goes (the focused note, or a
-/// new Dictation note), as in 4.x where dictation landed in Notes.
+/// `whisper-cli` and model that 4.x shipped. Meeting dictation uses Apple's
+/// network-capable Speech service when the user explicitly chooses it.
 final class DictationService: NSObject, @unchecked Sendable, AVAudioRecorderDelegate {
     enum Phase: String, Sendable { case idle, recording, transcribing, failed }
 
@@ -20,6 +20,9 @@ final class DictationService: NSObject, @unchecked Sendable, AVAudioRecorderDele
     private var recorder: AVAudioRecorder?
     private var startedAt = Date()
     private var target: String?
+    private var meetingTitle: String?
+    private var captureID = UUID()
+    private var speech: NetworkSpeech?
     private var lastError: String?
     private var meter: DispatchSourceTimer?
     private var process: Process?
@@ -91,9 +94,16 @@ final class DictationService: NSObject, @unchecked Sendable, AVAudioRecorderDele
 
     // MARK: Recording
 
-    func start(target: String?) async throws {
+    func start(target: String?, meeting: String? = nil) async throws {
         guard locked({ phase != .recording && phase != .transcribing }) else { return }
-        guard Self.engine() != nil else {
+        if meeting != nil {
+            let allowed = await withCheckedContinuation { continuation in
+                SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0 == .authorized) }
+            }
+            guard allowed else {
+                throw BridgeError(.notAuthorized, "Allow Speech Recognition for Lima in System Settings to use Apple dictation.")
+            }
+        } else if Self.engine() == nil {
             throw BridgeError(.badRequest, "On-device transcription isn't installed. Lima uses the Whisper engine from Lima 4 (~/Applications/Lima.app) or ~/Library/Application Support/Lima Browser/Whisper.")
         }
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -108,16 +118,26 @@ final class DictationService: NSObject, @unchecked Sendable, AVAudioRecorderDele
         let recorder = try AVAudioRecorder(url: url, settings: settings)
         recorder.isMeteringEnabled = true
         recorder.delegate = self
-        guard recorder.record() else { throw BridgeError(.internalError, "The microphone couldn't start recording. Check the input device in System Settings → Sound.") }
-        locked {
+        let id = UUID()
+        try locked {
+            guard phase != .recording && phase != .transcribing else { throw BridgeError(.badRequest, "Dictation is already running.") }
+            guard recorder.record() else { throw BridgeError(.internalError, "The microphone couldn't start recording. Check the input device in System Settings → Sound.") }
             self.recorder = recorder
             self.target = target
+            self.meetingTitle = meeting
+            self.captureID = id
             self.phase = .recording
             self.lastError = nil
             self.startedAt = Date()
         }
         startMeter()
         publish()
+        if meeting != nil {
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(50))
+                _ = try? await self?.stop(capture: id)
+            }
+        }
     }
 
     private static var permissionError: BridgeError {
@@ -142,25 +162,47 @@ final class DictationService: NSObject, @unchecked Sendable, AVAudioRecorderDele
 
     /// Stops recording and transcribes. Returns the text (also broadcast as
     /// `dictation.result` with the target chosen at start).
-    func stop() async throws -> String {
-        let (url, target): (URL, String?) = try locked {
-            guard phase == .recording, let recorder else { throw BridgeError(.badRequest, "not recording") }
+    func stop(capture: UUID? = nil) async throws -> String {
+        let (url, target, meeting, id): (URL, String?, String?, UUID) = try locked {
+            guard phase == .recording, let recorder, capture == nil || capture == captureID else {
+                throw BridgeError(.badRequest, "not recording")
+            }
             meter?.cancel(); meter = nil
             recorder.stop()
             self.recorder = nil
             phase = .transcribing
-            return (recorder.url, self.target)
+            return (recorder.url, self.target, self.meetingTitle, self.captureID)
         }
         publish()
         defer { try? FileManager.default.removeItem(at: url) }
         do {
-            let text = try await transcribe(url)
-            locked { phase = .idle }
+            let text: String
+            if meeting != nil {
+                let engine = NetworkSpeech()
+                try locked {
+                    guard captureID == id else { throw CancellationError() }
+                    speech = engine
+                }
+                text = try await engine.transcribe(url)
+            } else {
+                text = try await transcribe(url)
+            }
+            let completed = locked {
+                guard captureID == id, phase == .transcribing else { return false }
+                phase = .idle
+                speech = nil
+                return true
+            }
+            guard completed else { throw CancellationError() }
             publish()
-            emit?("dictation.result", .object(["text": .string(text), "target": target.map(JSONValue.string) ?? .null]))
+            emit?("dictation.result", .object(["text": .string(text), "target": target.map(JSONValue.string) ?? .null,
+                                              "meeting": meeting.map(JSONValue.string) ?? .null]))
             return text
         } catch {
-            fail(String(describing: error))
+            if locked({ captureID == id && phase == .transcribing }) {
+                locked { speech = nil }
+                fail(String(describing: error))
+            }
             throw error
         }
     }
@@ -172,6 +214,9 @@ final class DictationService: NSObject, @unchecked Sendable, AVAudioRecorderDele
         recorder?.stop()
         recorder = nil
         process?.terminate()
+        speech?.cancel()
+        speech = nil
+        captureID = UUID()
         phase = .idle
         lastError = nil
         lock.unlock()
@@ -225,13 +270,70 @@ final class DictationService: NSObject, @unchecked Sendable, AVAudioRecorderDele
     }
 }
 
+private final class NetworkSpeech: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<String, Error>?
+    private var task: SFSpeechRecognitionTask?
+    private var cancelled = false
+
+    func transcribe(_ url: URL) async throws -> String {
+        guard let recognizer = SFSpeechRecognizer(), recognizer.isAvailable else {
+            throw BridgeError(.badRequest, "Apple Speech Recognition is currently unavailable.")
+        }
+        let request = SFSpeechURLRecognitionRequest(url: url)
+        request.requiresOnDeviceRecognition = false
+        request.shouldReportPartialResults = false
+        return try await withCheckedThrowingContinuation { continuation in
+            lock.lock()
+            guard !cancelled else {
+                lock.unlock()
+                continuation.resume(throwing: CancellationError())
+                return
+            }
+            self.continuation = continuation
+            lock.unlock()
+            let recognition = recognizer.recognitionTask(with: request) { [weak self] result, error in
+                if let error { self?.finish(.failure(error)) }
+                else if let result, result.isFinal {
+                    let text = result.bestTranscription.formattedString.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self?.finish(text.isEmpty ? .failure(BridgeError(.badRequest, "No speech was recognized.")) : .success(text))
+                }
+            }
+            lock.lock()
+            let ongoing = self.continuation != nil
+            if ongoing { task = recognition }
+            lock.unlock()
+            if !ongoing { recognition.cancel() }
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(30))
+                self?.finish(.failure(BridgeError(.deadlineExceeded, "Apple Speech Recognition timed out.")))
+            }
+        }
+    }
+
+    func cancel() { finish(.failure(CancellationError())) }
+
+    private func finish(_ result: Result<String, Error>) {
+        lock.lock()
+        cancelled = true
+        let waiter = continuation
+        let recognition = task
+        continuation = nil
+        task = nil
+        lock.unlock()
+        if case .failure = result { recognition?.cancel() }
+        waiter?.resume(with: result)
+    }
+}
+
 extension Runtime {
     func registerDictation() {
         dictation.emit = { [weak self] event, data in self?.broadcast(event, data) }
         register("dictation.status") { [unowned self] _, _ in self.dictation.status }
         register("dictation.start") { [unowned self] params, context in
             guard context.origin == .browser else { throw BridgeError(.notAuthorized, "only the user can start dictation") }
-            try await self.dictation.start(target: params.optionalString("target"))
+            let meeting = params.optionalString("meeting").map { String($0.prefix(140)) }
+            try await self.dictation.start(target: meeting == nil ? params.optionalString("target") : nil, meeting: meeting)
             return self.dictation.status
         }
         register("dictation.stop") { [unowned self] _, context in

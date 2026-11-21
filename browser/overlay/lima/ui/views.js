@@ -189,6 +189,7 @@ export async function renderIntegrations(app, section) {
     ["writing", "Writing tools", "grammar accessibility global shortcut ai replace", [card("Grammar checker", grammarSettings())]],
     ["connections", "Integrations", "gmail google calendar oauth github reminders login spotify automation", [
       card("Gmail & Google Calendar", googleSettings()), card("GitHub", services),
+      card("Messages", messagesSettings()),
     ]],
     ["data", "Data & permissions", "backup recovery encryption MCP storage grants permission", [
       card("MCP for external agents", mcp), card("Encrypted storage", storage),
@@ -291,7 +292,7 @@ function sidebarSettings() {
   return node;
 }
 
-function setupAction(id, label, approval, finished) {
+export function setupAction(id, label, approval, finished) {
   const row = el("div", { class: "settings-setup" });
   const start = el("button", { class: "primary", onclick: () => { confirm.hidden = false; } }, label);
   const feedback = el("span", { class: "muted", role: "status" });
@@ -356,6 +357,22 @@ function providerSettings() {
     el("button", { class: "ghost", onclick: () => draw().catch(error => fail(items, error)) }, "Check again")), items);
   draw().catch(error => fail(items, error));
   return node;
+}
+
+function messagesSettings() {
+  const recipient = el("input", { maxlength: 160, placeholder: "Phone number or email" });
+  const message = el("textarea", { maxlength: 5000, rows: 3, required: true });
+  const status = el("p", { class: "muted", role: "status" });
+  const send = el("button", { class: "primary", type: "submit" }, "Open draft in Messages");
+  return el("form", { class: "messages-settings", onsubmit: async event => {
+    event.preventDefault();
+    send.disabled = true;
+    status.textContent = "";
+    try { await call("integrations.messages.compose", { recipient: recipient.value, message: message.value }); }
+    catch (error) { status.textContent = errorText(error); }
+    finally { send.disabled = false; }
+  } }, el("label", {}, "Recipient (optional)", recipient),
+  el("label", {}, "Message", message), send, status);
 }
 
 function googleSettings() {

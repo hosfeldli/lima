@@ -166,7 +166,7 @@ public enum MCPServer {
 
 extension MCPServer {
     static let browserTools: [Tool] = [
-        Tool(name: "workspace_browser_plan", description: "Block for user approval before an interaction session. Describe the goal, exact same-site paths, and intended actions. Public-page plans require orchestrator review and user approval. Use the session for click, type, or scroll.",
+        Tool(name: "workspace_browser_plan", description: "Block for user approval before an interaction session. Describe the goal, exact same-site paths, and intended actions. The Lima orchestrator approves routine actions and asks the user only when a higher-risk action needs consent. The plan can open the requested tab. Use the session for click, type, or scroll.",
              properties: ["url": ["type": "string"], "goal": ["type": "string"], "plan": ["type": "string"], "paths": ["type": "string", "description": "Comma-separated exact URL paths on this site. The starting path is included."], "actions": ["type": "string", "description": "Comma-separated click, type or scroll"]], required: ["goal", "plan", "actions"]) { args, client in
             try client.call("workspace.browserPlan", params: args)
         },
@@ -228,7 +228,7 @@ extension MCPServer {
              properties: ["title": ["type": "string"], "markdown": ["type": "string"]], required: ["title", "markdown"]) { args, client in
             try client.call("workspace.note", params: .object(["title": args?["title"] ?? .null, "markdown": args?["markdown"] ?? .null]))
         },
-        Tool(name: "agent_spawn", description: "Start an independent helper and track it with agents_status. For browser-only work, open the HTTPS or loopback page in the workspace, then pass it as browser_url with provider=claude. Public-site actions need an approved path plan. Tool-only helpers cannot access project files, shell or other tabs.",
+        Tool(name: "agent_spawn", description: "Start an independent helper and track it with agents_status. For browser-only work, open the HTTPS or loopback page in the workspace, then pass it as browser_url with provider=claude. Use workspace_browser_plan to negotiate site access. Tool-only helpers cannot access project files, shell or other tabs.",
              properties: ["name": ["type": "string"], "task": ["type": "string"], "browser_url": ["type": "string"], "provider": ["type": "string"]],
              required: ["name", "task"]) { args, client in
             try client.call("agent.spawn", params: .object(["name": args?["name"] ?? .null, "task": args?["task"] ?? .null,

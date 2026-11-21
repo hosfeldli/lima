@@ -24,7 +24,12 @@ export class LimaPageChild extends JSWindowActorChild {
         const hit = doc.elementFromPoint(x, y);
         if (!hit || !node.contains(hit) || !rect.width || !rect.height) continue;
         if (!node.checkVisibility({ opacityProperty: true, visibilityProperty: true, contentVisibilityAuto: true })) continue;
-        elements.push({ label: labelFor(node), x, y, role: node.getAttribute("role") || node.localName });
+        let path;
+        if (node.localName === "a") {
+          const link = new URL(node.href);
+          if (link.origin === doc.location.origin) path = link.pathname;
+        }
+        elements.push({ label: labelFor(node), x, y, role: node.getAttribute("role") || node.localName, path });
         if (elements.length >= 120) break;
       }
       let text = "";
@@ -110,6 +115,14 @@ export class LimaPageChild extends JSWindowActorChild {
 function essentialStatus(doc, { origin, service }) {
   if (doc.location.origin !== origin) return null;
   if (service === "mail" && origin === "https://mail.google.com") {
+    const previews = /#inbox(?:$|\/)/.test(doc.location.hash) ? [...doc.querySelectorAll("tr.zA.zE")].slice(0, 12).flatMap(row => {
+      const subject = row.querySelector(".bog");
+      const sender = row.querySelector(".yP");
+      const id = subject?.getAttribute("data-thread-id") || row.querySelector("[data-thread-id]")?.getAttribute("data-thread-id") || row.id;
+      if (!id || !sender || !subject) return [];
+      return [{ id, subject: subject.textContent.trim().slice(0, 200) || "(No subject)",
+        sender: (sender.getAttribute("name") || sender.textContent).trim().slice(0, 160) }];
+    }) : [];
     const readCount = value => {
       const digits = value?.match(/\((\d[\d,.\u00a0\u202f ]*)\)|\b(\d[\d,.\u00a0\u202f ]*)\s+unread\b/i);
       if (!digits) return null;
@@ -120,20 +133,20 @@ function essentialStatus(doc, { origin, service }) {
     for (const link of inboxes) {
       for (const text of [link.getAttribute("aria-label"), link.getAttribute("title"), link.textContent]) {
         const count = readCount(text) ?? (text?.trim().match(/^inbox[ \u00a0]+(\d[\d,.]*)$/i) ? Number(text.replace(/\D/g, "")) : null);
-        if (count !== null) return { unread: count };
+        if (count !== null) return { unread: count, previews };
       }
-      if (/^inbox$/i.test(link.textContent.trim())) return { unread: 0 };
+      if (/^inbox$/i.test(link.textContent.trim())) return { unread: 0, previews };
     }
     if (/^inbox\s+\(/i.test(doc.title)) {
       const count = readCount(doc.title);
-      if (count !== null) return { unread: count };
+      if (count !== null) return { unread: count, previews };
     }
     return null;
   }
   if (service !== "calendar" || origin !== "https://calendar.google.com") return null;
   const now = Date.now();
   const tomorrow = now + 48 * 60 * 60 * 1000;
-  let meeting = null;
+  const meetings = new Map();
   let sawEvent = false;
   for (const node of doc.querySelectorAll("[data-eventid], [data-event-id], [data-event-start], time[datetime]")) {
     const label = node.getAttribute("aria-label") ?? "";
@@ -142,14 +155,15 @@ function essentialStatus(doc, { origin, service }) {
     const startsAt = appointmentTime(timestamp, label);
     if (!Number.isFinite(startsAt)) continue;
     sawEvent = true;
-    if (startsAt < now || startsAt > tomorrow || (meeting && meeting.startsAt <= startsAt)) continue;
+    const endsAt = appointmentTime(node.getAttribute("data-event-end") ?? node.getAttribute("data-end-time"), "");
+    if ((Number.isFinite(endsAt) ? endsAt : startsAt + 30 * 60000) <= now || startsAt > tomorrow) continue;
     const title = node.getAttribute("data-event-title") || node.querySelector("[data-event-title]")?.getAttribute("data-event-title") ||
       label.split(",").filter(part => part.trim() && !/\d|\b(?:today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(part)).at(0)?.trim() ||
       "Upcoming meeting";
-    meeting = { id: node.getAttribute("data-eventid") ?? node.getAttribute("data-event-id") ?? String(startsAt),
-      title: title.slice(0, 140), startsAt };
+    const id = node.getAttribute("data-eventid") ?? node.getAttribute("data-event-id") ?? `${startsAt}:${title}`;
+    meetings.set(id, { id, title: title.slice(0, 140), startsAt, endsAt: Number.isFinite(endsAt) ? endsAt : null });
   }
-  return sawEvent ? { meeting } : null;
+  return sawEvent ? { meetings: [...meetings.values()].sort((a, b) => a.startsAt - b.startsAt) } : null;
 }
 
 function appointmentTime(timestamp, label) {

@@ -31,10 +31,12 @@ public struct Conversation: Codable, Equatable, Sendable {
 }
 
 public enum ChatMascot: String, Codable, Sendable {
-    case classic, builder, explorer, artist, analyst
+    case classic, builder, explorer, artist, analyst, chef, traveler
 
     public static func suggested(for text: String) -> Self {
         let words = Set(text.lowercased().split { !$0.isLetter }.map(String.init))
+        if !words.isDisjoint(with: ["recipe", "recipes", "cook", "cooking", "bake", "baking", "meal", "ingredients"]) { return .chef }
+        if !words.isDisjoint(with: ["travel", "trip", "itinerary", "flight", "flights", "vacation", "hotel", "hotels"]) { return .traveler }
         if !words.isDisjoint(with: ["research", "sources", "compare", "investigate", "browse"]) { return .explorer }
         if !words.isDisjoint(with: ["chart", "data", "analyze", "report", "statistics"]) { return .analyst }
         if !words.isDisjoint(with: ["design", "art", "draw", "write", "story"]) { return .artist }
@@ -53,6 +55,7 @@ public struct ConversationSummary: Codable, Equatable, Sendable {
     public var lastStatus: ChatMessage.Status?
     public var lastErrorKind: AgentFailureKind?
     public var lastProgress: AgentProgress?
+    public var mascot: ChatMascot? = nil
 }
 
 public enum ConversationEvent: Sendable {
@@ -115,7 +118,7 @@ public actor ConversationService {
             let reply = conversation.messages.last { $0.role == .assistant }
             return ConversationSummary(id: conversation.id, title: conversation.title, provider: conversation.provider,
                 updatedAt: conversation.updatedAt, running: running[conversation.id] != nil, workspaceID: conversation.workspaceID,
-                lastStatus: reply?.status, lastErrorKind: reply?.error?.kind, lastProgress: reply?.progress)
+                lastStatus: reply?.status, lastErrorKind: reply?.error?.kind, lastProgress: reply?.progress, mascot: conversation.mascot)
         }
     }
 

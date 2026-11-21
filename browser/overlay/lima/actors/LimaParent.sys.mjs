@@ -98,6 +98,12 @@ export class LimaParent extends JSWindowActorParent {
     const win = this.browsingContext.topChromeWindow;
     const browser = this.browsingContext.top.embedderElement;
     switch (kind) {
+      case "finishWelcome": {
+        if (lazy.PrivateBrowsingUtils.isWindowPrivate(win) || browser?.currentURI?.spec !== "about:lima?view=welcome") return null;
+        const { LimaWelcome } = ChromeUtils.importESModule("resource://lima/LimaWelcome.sys.mjs");
+        await LimaWelcome.finish(win, browser, payload);
+        return null;
+      }
       case "filesPrivacySettings": {
         const page = Services.io.newURI("x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders");
         Cc["@mozilla.org/uriloader/external-protocol-service;1"]
@@ -179,6 +185,20 @@ export class LimaParent extends JSWindowActorParent {
         const page = await global.getActor("PageExtractor").getText();
         if (global !== tab.linkedBrowser.browsingContext?.currentWindowGlobal) throw new Error("This tab navigated.");
         return String(page?.text ?? "").slice(0, 6000);
+      }
+      case "openAssistant":
+        win.dispatchEvent(new win.CustomEvent("LimaAssistantOpen"));
+        return null;
+      case "assistantFolders":
+      case "assistantLocalTask":
+      case "assistantRevealGroup": {
+        if (lazy.PrivateBrowsingUtils.isWindowPrivate(win) || !/^about:lima(?:\?view=assistant(?:&|$)|$)/.test(browser?.currentURI?.spec ?? "")) {
+          throw new Error("Open the Companion in a regular Lima window.");
+        }
+        const tasks = ChromeUtils.importESModule("resource://lima/LimaCompanionTasks.sys.mjs");
+        if (kind === "assistantFolders") return tasks.companionFolders(win);
+        if (kind === "assistantRevealGroup") return tasks.revealCompanionGroup(win, payload?.id) ?? null;
+        return tasks.runCompanionTask(win, payload);
       }
       case "closeAssistant":
         if (browser?.parentNode?.id === "lima-assistant-panel") win.dispatchEvent(new win.CustomEvent("LimaAssistantClose"));

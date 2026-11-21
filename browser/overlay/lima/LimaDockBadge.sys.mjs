@@ -39,7 +39,7 @@ export const LimaDockBadge = {
       dock.setBadgeImage(frames[index++ % frames.length]);
       shown = true;
       if (!reduce.matches && Services.prefs.getStringPref("lima.personality", "full") === "full") {
-        timer = setInterval(() => dock.setBadgeImage(frames[index++ % frames.length]), 440);
+        timer = setInterval(() => dock.setBadgeImage(frames[index++ % frames.length]), 260);
       }
     }
     reduce.addEventListener("change", paint);
@@ -54,7 +54,7 @@ export const LimaDockBadge = {
       }
       if (event === "host.unavailable") { active.clear(); paint(); }
     });
-    Promise.all([1, 2, 3].map(loadBadge)).then(loaded => { frames = loaded; paint(); }).catch(error => Cu.reportError(error));
+    Promise.all([1, 2, 3, 4, 5, 6].map(loadBadge)).then(loaded => { frames = loaded; paint(); }).catch(error => Cu.reportError(error));
     LimaBridge.request("chat.list").then(list => {
       for (const chat of list) if (chat.running && !changed.has(chat.id)) active.add(chat.id);
       paint();

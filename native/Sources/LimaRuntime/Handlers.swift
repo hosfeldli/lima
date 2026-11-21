@@ -26,8 +26,14 @@ extension Runtime {
         register("host.ping") { _, _ in .object(["pong": .bool(true), "time": .number(Date().timeIntervalSince1970)]) }
         register("host.shutdown") { [unowned self] _, context in
             // Build replacement and updates come from lima-host itself; agents can't stop the runtime.
-            guard context.origin == .browser || context.client?.peerIsLimaHost == true else {
+            guard context.origin == .browser, context.workspaceID == nil else {
                 throw BridgeError(.notAuthorized, "Only Lima can stop its runtime.")
+            }
+            let activeChats = await self.conversations.list()
+            let shells = await self.terminals.list()
+            guard !activeChats.contains(where: \.running),
+                  !shells.contains(where: { $0.state == .running || $0.userEditing == true }) else {
+                throw BridgeError(.badRequest, "A Lima agent or terminal is still active. Finish the work before replacing the runtime.")
             }
             await self.terminals.closeAll()
             DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { exit(0) }
@@ -394,6 +400,23 @@ extension Runtime {
         register("background.uninstall") { _, context in
             guard context.origin == .browser else { throw BridgeError(.notAuthorized, "requires the user") }
             try BackgroundAgent.uninstall()
+            return .null
+        }
+        register("integrations.messages.compose") { params, context in
+            try Self.requireLocalSettings(context)
+            let recipient = (params.optionalString("recipient") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let message = try params.string("message")
+            guard recipient.count <= 160, (1...5000).contains(message.count),
+                  !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw BridgeError(.badRequest, "Enter a message and an optional phone number or email address.")
+            }
+            try await MainActor.run {
+                guard let service = NSSharingService(named: .composeMessage), service.canPerform(withItems: [message]) else {
+                    throw BridgeError(.badRequest, "Messages is unavailable. Check Messages on this Mac.")
+                }
+                if !recipient.isEmpty { service.recipients = [recipient] }
+                service.perform(withItems: [message])
+            }
             return .null
         }
         register("integrations.status") { _, _ in try JSONValue.from(await Integrations.status()) }

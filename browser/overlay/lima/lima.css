@@ -178,6 +178,9 @@ zen-folder[lima-archiving] > .tab-group-label-container { opacity: .7; }
 }
 .lima-services-notice img { width: 33px; flex: none; }
 .lima-reminder-copy { display: grid; justify-items: start; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.lima-reminder-detail { font-size: 11px; color: var(--lima-ink-2); }
+.lima-reminder-actions { display: flex; align-items: center; flex-wrap: wrap; column-gap: 6px; }
+#lima-dock .lima-reminder-actions button[aria-label] { inline-size: 24px; block-size: 24px; }
 #lima-dock .lima-reminder-copy button { font-size: 11px; text-decoration: underline; text-underline-offset: 2px; }
 @keyframes lima-reminder-pop {
   from { opacity: 0; transform: translateY(6px) scale(.98); }
@@ -339,16 +342,14 @@ zen-folder[lima-archiving] > .tab-group-label-container { opacity: .7; }
 }
 .lima-music-transport { display: flex; align-items: center; justify-content: center; gap: 5px; }
 .lima-music-dj {
-  display: inline-flex; align-items: center; gap: 4px;
-  margin-left: 6px;
-  padding: 3px 8px !important;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  margin-inline-start: 4px;
   border-radius: var(--lima-radius) !important;
-  font-size: 10px !important;
-  font-weight: 700 !important;
-  letter-spacing: 0.04em;
-  border: 1px solid color-mix(in srgb, currentColor 18%, transparent) !important;
 }
-.lima-music-dj img { width: 18px; height: 17px; }
+.lima-music-dj img { width: 22px; height: 22px; }
 
 #lima-dictation { display: flex; align-items: center; gap: 7px; padding: 5px 5px 5px 10px; }
 .lima-dict-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--lima-accent); flex: none; }
@@ -577,11 +578,18 @@ zen-folder[lima-workspace][lima-attention] > .tab-group-label-container > .tab-g
 }
 
 zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon::after {
-  width: 18px;
-  height: 18px;
-  background: url("resource://lima-ui/marks/companion.svg") center / contain no-repeat;
+  width: 23px;
+  height: 23px;
+  background: var(--lima-workspace-mascot, url("resource://lima-ui/marks/companion.svg")) center / contain no-repeat;
   mask: none;
 }
+zen-folder[lima-mascot="builder"] { --lima-workspace-mascot: url("resource://lima-ui/marks/companion.svg#builder"); }
+zen-folder[lima-mascot="explorer"] { --lima-workspace-mascot: url("resource://lima-ui/marks/companion.svg#explorer"); }
+zen-folder[lima-mascot="chef"] { --lima-workspace-mascot: url("resource://lima-ui/marks/companion.svg#chef"); }
+zen-folder[lima-mascot="traveler"] { --lima-workspace-mascot: url("resource://lima-ui/marks/companion.svg#traveler"); }
+zen-folder[lima-mascot="artist"] { --lima-workspace-mascot: url("resource://lima-ui/marks/companion.svg#artist"); }
+zen-folder[lima-mascot="analyst"] { --lima-workspace-mascot: url("resource://lima-ui/marks/companion.svg#analyst"); }
+zen-folder[lima-mascot="classic"] { --lima-workspace-mascot: url("resource://lima-ui/marks/companion.svg"); }
 zen-folder[lima-workspace]:is([lima-motion="read"], [lima-motion="tabs"]) > .tab-group-label-container > .tab-group-folder-icon::after {
   animation: lima-assistant-glance 2.4s steps(16) infinite;
 }
@@ -701,4 +709,28 @@ zen-folder[collapsed] > .tab-group-label-container > .lima-workspace-disclosure:
 @keyframes lima-agent-typing { to { opacity: .25; } }
 @media (prefers-reduced-motion: reduce) {
   #lima-agent-pointer::before, #lima-agent-pointer::after { animation: none !important; }
+}
+
+#lima-assistant-toggle { flex-basis: 36px; width: 36px; height: 36px; background: var(--lima-bg); border: 1px solid var(--lima-line); }
+#lima-assistant-outside:not([hidden]) { position: fixed; inset: 0; z-index: 9; }
+#lima-assistant-outside[hidden], .lima-audio-outputs[hidden] { display: none; }
+#navigator-toolbox zen-folder[lima-workspace] > .tab-group-label-container { min-block-size: calc(var(--tab-min-height, 26px) * 1.25); }
+#navigator-toolbox zen-folder[lima-workspace] > .tab-group-label-container .tab-group-label { font-size: 14px; }
+#lima-music input[type="range"] { appearance: none; height: 4px; background: var(--lima-line); border-radius: 4px; }
+#lima-music input[type="range"]::-moz-range-thumb { width: 9px; height: 9px; border: 1px solid var(--lima-bg); border-radius: 100%; background: var(--lima-fg); }
+#lima-dock .lima-audio-outputs button { display: flex; gap: 7px; padding: 5px 7px; align-items: center; text-align: start; width: 100%; border: 0; border-radius: 6px; background: transparent; color: inherit; }
+#lima-assistant-toggle:not([floating]) { position: relative; z-index: 12; }
+#lima-music input[type="range"]::-moz-range-progress { height: 4px; background: var(--lima-ink-3); border-radius: 4px; }
+
+:root[lima-window] :is(#zen-workspaces-button, #zen-spaces-menubar, #context_zenWorkspaces,
+  #context_zenFolderChangeWorkspace, #context_zenFolderToSpace, #context_zen-add-domain-to-routing,
+  [command="cmd_zenOpenWorkspaceCreation"], [command="cmd_zenOpenSpaceRoutingSettings"],
+  .zen-current-workspace-indicator) { display: none !important; }
+
+@-moz-document url-prefix("about:preferences"), url-prefix("chrome://browser/content/preferences/"),
+               url-prefix("about:settings"), url-prefix("chrome://browser/content/zen-settings"),
+               url-prefix("about:library"), url-prefix("chrome://browser/content/zen-library") {
+  .zen-settings-group:has(> [data-l10n-id="zen-settings-window-spaces-header"], [data-action="open-space-routing"]),
+  .zen-settings-row:has([data-pref="zen.workspaces.continue-where-left-off"], [data-pref="zen.workspaces.separate-essentials"]),
+  [data-section="space-routing"] { display: none !important; }
 }

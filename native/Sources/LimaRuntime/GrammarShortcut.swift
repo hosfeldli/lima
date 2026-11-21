@@ -20,7 +20,7 @@ public final class GrammarShortcut: NSObject {
     private struct Selection {
         let element: AXUIElement
         let text: String
-        let range: CFTypeRef
+        let range: CFTypeRef?
     }
 
     public static func run() {
@@ -69,11 +69,22 @@ public final class GrammarShortcut: NSObject {
 
     private static func readSelection() -> Selection? {
         guard let element = focusedElement(),
-              (attribute(element, kAXSubroleAttribute as String) as? String) != (kAXSecureTextFieldSubrole as String),
-              let text = attribute(element, kAXSelectedTextAttribute as String) as? String,
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.count <= 8000,
-              let range = attribute(element, kAXSelectedTextRangeAttribute as String) else { return nil }
+              (attribute(element, kAXSubroleAttribute as String) as? String) != (kAXSecureTextFieldSubrole as String) else { return nil }
+        let range = attribute(element, kAXSelectedTextRangeAttribute as String)
+        var text = attribute(element, kAXSelectedTextAttribute as String) as? String
+        if (text ?? "").isEmpty, let range {
+            var value: CFTypeRef?
+            if AXUIElementCopyParameterizedAttributeValue(element, kAXStringForRangeParameterizedAttribute as CFString, range, &value) == .success {
+                text = value as? String
+            }
+        }
+        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.count <= 8000 else { return nil }
         return Selection(element: element, text: text, range: range)
+    }
+
+    private static func sameRange(_ lhs: CFTypeRef?, _ rhs: CFTypeRef?) -> Bool {
+        if let lhs, let rhs { return CFEqual(lhs, rhs) }
+        return lhs == nil && rhs == nil
     }
 
     private func open() {
@@ -85,7 +96,7 @@ public final class GrammarShortcut: NSObject {
         if panel == nil { buildPanel() }
         apply.isHidden = true
         message.stringValue = !AXIsProcessTrusted() ? "Allow Accessibility in Lima Settings."
-            : current == nil ? "Highlight up to 8,000 characters to check." : "Checking grammar…"
+            : current == nil ? "Choose editable text that this app exposes to Accessibility." : "Checking grammar…"
         position(near: current)
         if let panel {
             let animated = !panel.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -122,10 +133,10 @@ public final class GrammarShortcut: NSObject {
     private func position(near selection: Selection?) {
         guard let panel else { return }
         var anchor = NSEvent.mouseLocation
-        if let selection {
+        if let selection, let range = selection.range {
             var value: CFTypeRef?
             if AXUIElementCopyParameterizedAttributeValue(selection.element, kAXBoundsForRangeParameterizedAttribute as CFString,
-                                                         selection.range, &value) == .success, let value,
+                                                         range, &value) == .success, let value,
                CFGetTypeID(value) == AXValueGetTypeID(), let height = NSScreen.screens.first?.frame.height {
                 var bounds = CGRect.zero
                 if AXValueGetValue(value as! AXValue, .cgRect, &bounds), !bounds.isEmpty {
@@ -196,7 +207,7 @@ public final class GrammarShortcut: NSObject {
 
     @objc private func replace() {
         guard let prior = selection, let replacement, let current = Self.readSelection(),
-              CFEqual(prior.element, current.element), CFEqual(prior.range, current.range), prior.text == current.text else {
+              CFEqual(prior.element, current.element), Self.sameRange(prior.range, current.range), prior.text == current.text else {
             message.stringValue = "The selection changed. Press ⌘G again."
             apply.isHidden = true
             dismissAfter(.seconds(3))

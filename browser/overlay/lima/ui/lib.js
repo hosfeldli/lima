@@ -190,8 +190,8 @@ export function markdown(source, { onTaskToggle, attachments, embeds = false } =
   const root = el("div", { class: "md" });
   const lines = String(source ?? "").replace(/\r\n/g, "\n").split("\n");
   let i = 0;
-  let list = null;
-  const closeList = () => { list = null; };
+  const lists = [];
+  const closeList = () => { lists.length = 0; };
 
   while (i < lines.length) {
     const line = lines[i];
@@ -232,7 +232,14 @@ export function markdown(source, { onTaskToggle, attachments, embeds = false } =
     const item = /^(\s*)([-*+]|\d+\.)\s+(\[( |x|X)\]\s+)?(.*)$/.exec(line);
     if (item) {
       const ordered = /\d/.test(item[2]);
-      if (!list || list.ordered !== ordered) { list = { node: el(ordered ? "ol" : "ul"), ordered }; root.append(list.node); }
+      const indent = item[1].replace(/\t/g, "    ").length;
+      while (lists.length && lists.at(-1).indent > indent) lists.pop();
+      if (lists.at(-1)?.indent === indent && lists.at(-1).ordered !== ordered) lists.pop();
+      if (!lists.length || lists.at(-1).indent < indent) {
+        const node = el(ordered ? "ol" : "ul");
+        (lists.at(-1)?.node.lastElementChild ?? root).append(node);
+        lists.push({ node, ordered, indent });
+      }
       const li = el("li");
       if (item[3] !== undefined) {
         li.className = "task";
@@ -241,7 +248,7 @@ export function markdown(source, { onTaskToggle, attachments, embeds = false } =
         if (onTaskToggle) box.addEventListener("change", () => onTaskToggle(lineIndex, box.checked)); else box.disabled = true;
         li.append(box, " ");
       }
-      list.node.append(inline(li, item[5], attachments));
+      lists.at(-1).node.append(inline(li, item[5], attachments));
       i++;
       continue;
     }

@@ -1,8 +1,12 @@
 /* Lima chrome entry point, loaded once in the parent process from lima.cfg. */
 
 const lazy = {};
+ChromeUtils.defineESModuleGetters(lazy, { PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs" });
 ChromeUtils.defineESModuleGetters(lazy, {
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
+  flattenSidebar: "resource://lima/LimaSidebarLayout.sys.mjs",
+  disableSpaceRouting: "resource://lima/LimaSidebarLayout.sys.mjs",
+  LimaWelcome: "resource://lima/LimaWelcome.sys.mjs",
   LimaWindow: "resource://lima/LimaWindow.sys.mjs",
   LimaNotesBookmarks: "resource://lima/LimaNotesBookmarks.sys.mjs",
   LimaUrlbar: "resource://lima/LimaUrlbar.sys.mjs",
@@ -30,6 +34,7 @@ export const LimaStartup = {
   init() {
     if (initialized) return;
     initialized = true;
+    step("sidebar routing", () => lazy.disableSpaceRouting());
     log("bootstrap loaded");
 
     step("ui substitution", () => {
@@ -78,6 +83,12 @@ export const LimaStartup = {
     Services.obs.addObserver(win => {
       try {
         lazy.LimaWindow.attach(win);
+        if (!lazy.PrivateBrowsingUtils.isWindowPrivate(win)) {
+          lazy.flattenSidebar(win)
+            .catch(error => log(`Sidebar setup failed: ${error}`))
+            .then(() => lazy.LimaWelcome.install(win))
+            .catch(error => log(`Welcome setup failed: ${error}`));
+        }
         lazy.LimaNotebook.retire(win).catch(error => log(`Notebook sidebar migration failed: ${error}`));
       } catch (error) {
         log(`window attach failed: ${error}\n${error.stack}`);

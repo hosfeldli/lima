@@ -117,7 +117,9 @@ function offlineMap(spec, title, el) {
     const points = Array.isArray(route?.points) && route.points.slice(0, 1500).map(point =>
       Array.isArray(point) && project(...point.slice(0, 2)));
     return points?.length >= 2 && points.every(Boolean)
-      ? [{ points, label: typeof route.label === "string" ? route.label.slice(0, 100) : "Route" }] : [];
+      ? [{ points, label: typeof route.label === "string" ? route.label.slice(0, 100) : "Route",
+        minutes: Number.isFinite(route.durationMinutes) && route.durationMinutes > 0 ? Math.round(route.durationMinutes) : null,
+        mode: typeof route.mode === "string" ? route.mode.slice(0, 30) : null }] : [];
   });
   if (!markers.length && !routes.length) return null;
   const svg = (name, attributes) => {
@@ -125,7 +127,7 @@ function offlineMap(spec, title, el) {
     for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, value);
     return node;
   };
-  const canvas = svg("svg", { class: "offline-map-canvas", role: "img", "aria-label": title || "Map showing locations and routes" });
+  const canvas = svg("svg", { class: "offline-map-canvas", role: "group", "aria-label": title || "Map showing locations and routes" });
   const image = svg("image", { href: "resource://lima-ui/marks/offline-map.svg", width: W, height: H });
   canvas.append(image);
   for (const { points, label } of routes) {
@@ -150,8 +152,24 @@ function offlineMap(spec, title, el) {
     path.append(hint);
     canvas.append(path);
   }
+  const selectedLocation = el("p", { class: "offline-map-selection", hidden: true, role: "status" });
+  let selectedPin;
+  function selectPin(pin, label) {
+    selectedPin?.removeAttribute("data-selected");
+    selectedPin = pin;
+    pin.setAttribute("data-selected", "");
+    selectedLocation.textContent = label;
+    selectedLocation.hidden = false;
+  }
   const pins = markers.map(({ point: [x, y], label }) => {
-    const pin = svg("circle", { cx: x, cy: y, class: "offline-map-pin", "vector-effect": "non-scaling-stroke" });
+    const pin = svg("circle", { cx: x, cy: y, class: "offline-map-pin", "vector-effect": "non-scaling-stroke",
+      role: "button", tabindex: "0", "aria-label": label });
+    pin.addEventListener("click", () => selectPin(pin, label));
+    pin.addEventListener("keydown", event => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      selectPin(pin, label);
+    });
     const hint = svg("title", {});
     hint.textContent = label;
     pin.append(hint);
@@ -179,7 +197,7 @@ function offlineMap(spec, title, el) {
   function zoom(by) { update(box.x + box.width / 2, box.y + box.height / 2, box.width * by / W); }
   let drag;
   canvas.addEventListener("pointerdown", event => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || event.target.closest(".offline-map-pin")) return;
     drag = { x: event.clientX, y: event.clientY, start: box, ratio: box.width / canvas.getBoundingClientRect().width };
     canvas.setPointerCapture(event.pointerId);
   });
@@ -192,12 +210,16 @@ function offlineMap(spec, title, el) {
   canvas.addEventListener("lostpointercapture", () => { drag = undefined; });
   fit();
   const button = (label, name, onclick) => el("button", { class: "ghost", "aria-label": name, onclick }, label);
-  return el("div", { class: "offline-map" }, canvas,
+  const estimates = routes.filter(route => route.minutes != null);
+  return el("div", { class: "offline-map" }, canvas, selectedLocation,
+    estimates.length ? el("ul", { class: "offline-map-estimates", "aria-label": "Travel time estimates" },
+      estimates.map(route => el("li", {}, el("strong", { text: route.label }),
+        ` · about ${route.minutes} min${route.mode ? ` (${route.mode})` : ""}`))) : null,
     el("div", { class: "offline-map-controls row" },
       button("−", "Zoom out", () => zoom(1.7)), button("+", "Zoom in", () => zoom(1 / 1.7)),
       button("Fit", "Fit route and locations", fit), button("World", "Show world map", () => update(W / 2, H / 2, 1)),
       el("span", { class: "spacer" }), el("small", { text: "Made with Natural Earth" })),
     markers.length ? el("details", {}, el("summary", {}, "Locations"),
-      el("ul", {}, markers.map(({ point: [x, y], label }) => el("li", {},
-        button(label, `Center map on ${label}`, () => update(x, y, .025)))))) : null);
+      el("ul", {}, markers.map(({ point: [x, y], label }, index) => el("li", {},
+        button(label, `Center map on ${label}`, () => { update(x, y, .025); selectPin(pins[index], label); }))))) : null);
 }

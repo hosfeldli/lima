@@ -69,6 +69,8 @@ note appears in the workspace folder and the Notebook.
   on-device with the same `whisper-cli` + `ggml-small.en-tdrz` model 4.x shipped; the text goes into the focused
   note (or a new "Dictation" note), as in 4.x where dictation landed in Notes. The dock shows the recording pill
   (level, timer, stop/cancel) exactly while recording/transcribing.
+- The calendar start reminder also offers a short meeting note. Its microphone button asks the user to confirm
+  Apple Speech Recognition before recording. Apple may process that audio off-device.
 - Music: the 4.x now-playing pill lives at the bottom of the sidebar: artwork, title/artist, play/pause; expand
   for progress and previous/next/DJ; scroll on it to change volume. One volume control, and clicking or dragging
   the pill never opens Spotify (spec v2 §10).

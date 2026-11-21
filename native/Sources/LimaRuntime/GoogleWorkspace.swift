@@ -14,6 +14,15 @@ actor GoogleWorkspace {
         var id: String
         var title: String
         var startsAt: Double
+        var endsAt: Double? = nil
+        var link: String?
+    }
+
+    struct MailPreview: Codable, Sendable {
+        var id: String
+        var sender: String
+        var subject: String
+        var receivedAt: Double
         var link: String?
     }
 
@@ -28,6 +37,8 @@ actor GoogleWorkspace {
         var calendarIssue: String?
         var unread: Int?
         var meeting: Meeting?
+        var meetings: [Meeting]?
+        var mailPreviews: [MailPreview]?
     }
 
     enum State: String, Sendable {
@@ -70,7 +81,7 @@ actor GoogleWorkspace {
         // A setup verification must see the result of the new login, even
         // when a sidebar poll was already reading the previous credentials.
         while polling && force { try await Task.sleep(for: .milliseconds(100)) }
-        guard settings.enabled, !polling, force || Date().timeIntervalSince(lastPoll) >= 45 else { return status() }
+        guard settings.enabled, !polling, force || Date().timeIntervalSince(lastPoll) >= 20 else { return status() }
         guard let installation = installation() else {
             snapshot.mail = State.setup.rawValue
             snapshot.calendar = State.setup.rawValue
@@ -80,6 +91,8 @@ actor GoogleWorkspace {
             snapshot.calendarIssue = nil
             snapshot.unread = nil
             snapshot.meeting = nil
+            snapshot.meetings = nil
+            snapshot.mailPreviews = nil
             return status()
         }
         polling = true
@@ -90,13 +103,14 @@ actor GoogleWorkspace {
         let calendarParams: [String: JSONValue] = [
             "calendarId": .string("primary"), "singleEvents": .bool(true), "orderBy": .string("startTime"),
             "timeMin": .string(windowStart.ISO8601Format()), "timeMax": .string(windowStart.addingTimeInterval(30 * 60).ISO8601Format()),
-            "maxResults": .number(20), "fields": .string("kind,items(id,summary,start,htmlLink)"),
+            "maxResults": .number(30), "fields": .string("kind,items(id,summary,start,end,htmlLink,status,attendees(self,responseStatus))"),
         ]
         async let mail = fetch(installation.path, ["gmail", "users", "labels", "get"], params: [
             "userId": .string("me"), "id": .string("INBOX"), "fields": .string("id,messagesUnread"),
         ])
         async let events = fetch(installation.path, ["calendar", "events", "list"], params: calendarParams)
-        let (gmail, calendar) = await (mail, events)
+        async let previews = recentMail(installation.path, since: windowStart.addingTimeInterval(-180))
+        let (gmail, calendar, mailPreviews) = await (mail, events, previews)
         guard settings.enabled, generation == revision else { return status() }
         let unread = gmail.data.map { Int(min(max(0, $0["messagesUnread"]?.doubleValue ?? 0), 1e9)) }
         let meeting = calendar.data.flatMap { Self.nextMeeting($0, after: windowStart) }
@@ -105,12 +119,53 @@ actor GoogleWorkspace {
         if calendar.state == .connected { changed.connectedCalendar = true }
         snapshot = Snapshot(installed: true, enabled: true, mail: gmail.state.rawValue, calendar: calendar.state.rawValue,
                             mailReconnect: changed.connectedMail && gmail.issue == "permissions", calendarReconnect: changed.connectedCalendar && calendar.issue == "permissions",
-                            mailIssue: gmail.issue, calendarIssue: calendar.issue, unread: unread, meeting: meeting)
+                            mailIssue: gmail.issue, calendarIssue: calendar.issue, unread: unread, meeting: meeting,
+                            meetings: calendar.data.map(Self.meetings), mailPreviews: mailPreviews)
         if changed.connectedMail != settings.connectedMail || changed.connectedCalendar != settings.connectedCalendar {
             settings = changed
             try await store.put(changed, collection: "settings", id: "google.workspace")
         }
         return status()
+    }
+
+    private func recentMail(_ executable: String, since: Date) async -> [MailPreview]? {
+        let list = await fetch(executable, ["gmail", "users", "messages", "list"], params: [
+            "userId": .string("me"), "labelIds": .array([.string("INBOX")]),
+            "q": .string("after:\(Int(since.timeIntervalSince1970))"), "maxResults": .number(8),
+            "fields": .string("messages(id),resultSizeEstimate"),
+        ])
+        guard let data = list.data else { return nil }
+        let ids = data["messages"]?.arrayValue?.compactMap { $0["id"]?.stringValue } ?? []
+        let previous = Dictionary(uniqueKeysWithValues: (snapshot.mailPreviews ?? []).map { ($0.id, $0) })
+        return await withTaskGroup(of: MailPreview?.self) { group in
+            for id in Set(ids) {
+                group.addTask {
+                    if let cached = previous[id] { return cached }
+                    let message = await self.fetch(executable, ["gmail", "users", "messages", "get"], params: [
+                        "userId": .string("me"), "id": .string(id), "format": .string("metadata"),
+                        "metadataHeaders": .array([.string("From"), .string("Subject")]),
+                        "fields": .string("id,threadId,internalDate,payload(headers)"),
+                    ])
+                    return message.data.flatMap(Self.mailPreview)
+                }
+            }
+            var previews: [MailPreview] = []
+            for await preview in group { if let preview { previews.append(preview) } }
+            return previews.sorted { $0.receivedAt > $1.receivedAt }
+        }
+    }
+
+    static func mailPreview(_ message: JSONValue) -> MailPreview? {
+        guard let id = message["id"]?.stringValue, let stamp = message["internalDate"]?.stringValue,
+              let receivedAt = Double(stamp), let headers = message["payload"]?["headers"]?.arrayValue else { return nil }
+        func value(_ name: String) -> String? {
+            let header = headers.first { $0["name"]?.stringValue?.lowercased() == name }
+            return header?["value"]?.stringValue?.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        }
+        let thread = message["threadId"]?.stringValue
+        let link = thread.flatMap { $0.range(of: #"^[a-zA-Z0-9_-]+$"#, options: .regularExpression) == nil ? nil : "https://mail.google.com/mail/u/0/#inbox/\($0)" }
+        return MailPreview(id: id, sender: String((value("from") ?? "Unknown sender").prefix(160)),
+                           subject: String((value("subject") ?? "(No subject)").prefix(200)), receivedAt: receivedAt, link: link)
     }
 
     private typealias ServiceResult = (state: State, data: JSONValue?, issue: String?)
@@ -122,8 +177,15 @@ actor GoogleWorkspace {
                                                     timeout: 10, path: discovery.searchPaths, separateStandardError: true)
             let result = try JSONDecoder().decode(JSONValue.self, from: Data(output.utf8))
             if let failure = result["error"] { return Self.failureState(String(describing: failure)) }
-            let verified = command.first == "gmail" ? result["id"]?.stringValue == "INBOX" || result["messagesUnread"]?.doubleValue != nil
-                : result["kind"]?.stringValue == "calendar#events" || result["items"]?.arrayValue != nil
+            let verified: Bool
+            if command.contains("messages") {
+                verified = command.last == "list" ? result["messages"]?.arrayValue != nil || result["resultSizeEstimate"]?.doubleValue != nil
+                    : result["id"]?.stringValue != nil && result["payload"] != nil
+            } else if command.first == "gmail" {
+                verified = result["id"]?.stringValue == "INBOX" || result["messagesUnread"]?.doubleValue != nil
+            } else {
+                verified = result["kind"]?.stringValue == "calendar#events" || result["items"]?.arrayValue != nil
+            }
             return verified ? (.connected, result, nil) : (.unavailable, nil, "response")
         } catch {
             return Self.failureState(String(describing: error))
@@ -141,19 +203,28 @@ actor GoogleWorkspace {
     }
 
     static func nextMeeting(_ response: JSONValue, after time: Date) -> Meeting? {
+        meetings(response).first { $0.startsAt >= time.timeIntervalSince1970 * 1000 }
+    }
+
+    static func meetings(_ response: JSONValue) -> [Meeting] {
         let utc = ISO8601DateFormatter()
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions.insert(.withFractionalSeconds)
-        return response["items"]?.arrayValue?.compactMap { event -> Meeting? in
+        return (response["items"]?.arrayValue?.compactMap { event -> Meeting? in
             guard let id = event["id"]?.stringValue, let stamp = event["start"]?["dateTime"]?.stringValue,
-                  let start = utc.date(from: stamp) ?? fractional.date(from: stamp), start >= time else { return nil }
+                  let start = utc.date(from: stamp) ?? fractional.date(from: stamp), event["status"]?.stringValue != "cancelled",
+                  event["attendees"]?.arrayValue?.contains(where: {
+                    $0["self"]?.boolValue == true && $0["responseStatus"]?.stringValue == "declined"
+                  }) != true else { return nil }
+            let end = event["end"]?["dateTime"]?.stringValue.flatMap { utc.date(from: $0) ?? fractional.date(from: $0) }
             let link = event["htmlLink"]?.stringValue.flatMap { value -> String? in
                 guard let url = URL(string: value), url.scheme == "https", url.host == "calendar.google.com" || url.host == "www.google.com" else { return nil }
                 return url.absoluteString
             }
             let title = event["summary"]?.stringValue ?? "Upcoming meeting"
-            return Meeting(id: id, title: String(title.prefix(140)), startsAt: start.timeIntervalSince1970 * 1000, link: link)
-        }.min { $0.startsAt < $1.startsAt }
+            return Meeting(id: id, title: String(title.prefix(140)), startsAt: start.timeIntervalSince1970 * 1000,
+                           endsAt: end.map { $0.timeIntervalSince1970 * 1000 }, link: link)
+        } ?? []).sorted { $0.startsAt < $1.startsAt }
     }
 }
 

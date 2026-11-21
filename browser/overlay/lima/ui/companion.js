@@ -17,6 +17,11 @@ const ACCESSORIES = {
   delegate: "note", test: "checkbox", failed: "warning", blocked: "warning", complete: "check", paused: "pause",
 };
 
+export const MASCOTS = {
+  classic: "Classic", builder: "Coding", explorer: "Research", chef: "Cooking",
+  traveler: "Travel", artist: "Creative", analyst: "Analysis",
+};
+
 function svgElement(name, attributes, ...children) {
   const node = document.createElementNS("http://www.w3.org/2000/svg", name);
   for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, value);
@@ -47,7 +52,9 @@ function characterArt(size) {
     path("M31 40c1-14 9-21 21-21 13 0 22 9 23 21M27 41h52M49 22v10", { class: "mascot-accent builder", ...outline }),
     path("M62 49a9 9 0 1 0 18 0 9 9 0 1 0-18 0Zm15 7 10 11", { class: "mascot-accent explorer", ...outline }),
     path("M32 27c4-10 20-17 32-11 7 4 10 10 7 15-5 5-16 2-23 1-9-2-17 1-16-5Zm21-13 5-5", { class: "mascot-accent artist", ...outline, fill: "var(--panel-2)" }),
-    path("M31 49h18v13H31Zm24 0h18v13H55Zm-6 5h6", { class: "mascot-accent analyst", ...outline, "stroke-width": 1.8 }));
+    path("M31 49h18v13H31Zm24 0h18v13H55Zm-6 5h6", { class: "mascot-accent analyst", ...outline, "stroke-width": 1.8 }),
+    path("M35 35v-9c-8 1-12-3-11-9 1-5 7-8 13-5 1-6 6-9 12-8 6 0 10 4 11 9 5-3 12 0 13 5 2 6-3 10-10 9v8c-9 3-19 4-28 0Zm0-5c9 3 20 3 28 0m-21-12 1 7m11-8-1 8", { class: "mascot-accent chef", ...outline, fill: "var(--paper)" }),
+    path("M29 37c3-14 12-19 24-19 10 0 18 6 22 16m-50 3c0-6 13-10 30-9 17 0 27 4 27 8s-12 7-28 7c-16 1-29-1-29-6Zm42 24 11-6 8 4 11-4v18l-11 5-9-3-10 5Zm11-6-1 20m9-16v19", { class: "mascot-accent traveler", ...outline, fill: "var(--panel-2)" }));
   const scene = isWorkspace
     ? svgElement("g", { class: "companion-scene", ...outline, "stroke-width": 2 },
       path("M19 76h32l4 10H18c-2 0-3-2-2-4Z", { fill: "var(--panel-2)" }),

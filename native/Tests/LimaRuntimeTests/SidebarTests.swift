@@ -92,7 +92,7 @@ import LimaAuthorization
     let click = await call(runtime, "workspace.browserAction", ["url": url, "action": .string("click")], origin: .chat, workspace: id)
     #expect(click.error?.code == .confirmationRequired)
     let waiting = Task { await call(runtime, "workspace.browserPlan", [
-        "url": url, "goal": .string("Try the controls"), "plan": .string("Click the visible test button."), "actions": .string("click"), "paths": .string("/details, /search"),
+        "url": url, "goal": .string("Try the controls"), "plan": .string("Click the button to download a sample."), "actions": .string("click"), "paths": .string("/details, /search"),
     ], origin: .chat, workspace: id) }
     var prompt: JSONValue?
     for _ in 0..<40 {
@@ -222,4 +222,21 @@ import LimaAuthorization
     #expect(await waiting.value.result == .object(["approved": .bool(false)]))
     #expect(runtime.browserCalls.pendingIDs.isEmpty)
     if let terminal = created.result?["terminalID"]?.stringValue { try await runtime.terminals.close(terminal) }
+}
+
+@Test func routineBrowserPlansOpenTheRequestedTabWithoutAUserPrompt() async throws {
+    let (runtime, directory) = try await workspaceRuntime()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let id = try #require(await call(runtime, "workspace.create", ["name": .string("Routine plan")]).result?["id"]?.stringValue)
+    let url = "https://chatgpt.com/"
+    let params: [String: JSONValue] = ["url": .string(url), "goal": .string("Open a conversation"),
+                                      "plan": .string("Click the requested sidebar item."), "actions": .string("click")]
+    let routine = await call(runtime, "workspace.browserPlan", params, origin: .chat, workspace: id)
+    #expect(routine.result?["approved"]?.boolValue == true)
+    #expect(try await runtime.workspaces.get(id).tabs.contains { $0.url == url })
+    #expect(await runtime.workspacePrompts.list().arrayValue?.isEmpty == true)
+    let wager = await call(runtime, "workspace.browserPlan", params.merging(["plan": .string("Place a bet.")]) { _, new in new },
+                           origin: .chat, workspace: id)
+    #expect(wager.error?.code == .notAuthorized)
+    await runtime.terminals.closeAll()
 }
