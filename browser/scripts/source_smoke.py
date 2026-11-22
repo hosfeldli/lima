@@ -54,7 +54,57 @@ const compiled = COMPILED;
   const { SessionStore } = ChromeUtils.importESModule("moz-src:///browser/components/sessionstore/SessionStore.sys.mjs");
   await SessionStore.promiseInitialized;
   await gZenStartup.promiseInitialized;
+  // Search runs a command once; its result tab (opened, then reloaded) only
+  // displays the stored result.
+  const executionId = Services.uuid.generateUUID().toString().slice(1, -1);
+  const ran = await LimaBridge.request("capabilities.run", { id: "uuid.generate", input: "", executionId });
+  const tab = gBrowser.addTab(`about:lima?run=uuid.generate&execution=${executionId}`,
+    { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal() });
+  gBrowser.selectedTab = tab;
+  const loaded = () => new Promise(resolve => {
+    const poll = () => tab.linkedBrowser?.webProgress?.isLoadingDocument === false && tab.linkedBrowser.currentURI?.spec.startsWith("about:lima")
+      ? resolve() : window.setTimeout(poll, 100);
+    window.setTimeout(poll, 300);
+  });
+  await loaded();
+  await new Promise(resolve => window.setTimeout(resolve, 1500));
+  tab.linkedBrowser.reload();
+  await loaded();
+  await new Promise(resolve => window.setTimeout(resolve, 1500));
+  const countRuns = async () => (await LimaBridge.request("capabilities.runs", { limit: 200 })).filter(run => run.capability === "uuid.generate").length;
+  const uuidRuns = await countRuns();
+  const rendered = tab.label === "Generate UUID";
+  const stored = await LimaBridge.request("capabilities.execution", { executionId });
+  // Opened without an execution, the Run page runs once and records it, so
+  // a reload shows the same result.
+  tab.linkedBrowser.loadURI(Services.io.newURI("about:lima?run=uuid.generate"), { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal() });
+  await loaded();
+  await new Promise(resolve => window.setTimeout(resolve, 1500));
+  tab.linkedBrowser.reload();
+  await loaded();
+  await new Promise(resolve => window.setTimeout(resolve, 1500));
+  const directRuns = await countRuns();
+  const recorded = /[?&#]execution=/.test(tab.linkedBrowser.currentURI.spec);
+  gBrowser.removeTab(tab);
+  // Lima's own surfaces never sit on the right edge of the window.
+  const { LimaSearchPanel } = ChromeUtils.importESModule("resource://lima/LimaSearchPanel.sys.mjs");
+  LimaSearchPanel.open(window, "what is a browser?");
+  await new Promise(resolve => window.setTimeout(resolve, 300));
+  const input = document.getElementById("lima-search-input");
+  const askRow = !!document.querySelector('#lima-search-results [data-key="ask"]');
+  const rightEdge = [...document.querySelectorAll("[id^='lima-']")].filter(node => {
+    if (node.closest("#lima-search-scrim")) return false;
+    const box = node.getBoundingClientRect();
+    return box.width > 0 && box.height > 0 && box.left > window.innerWidth * 0.6;
+  }).map(node => node.id);
+  document.getElementById("lima-search-esc")?.click();
   const checks = {
+    commandsOnce: uuidRuns === 1 && rendered && stored?.status === "completed" && stored.result?.text === ran.text && directRuns === 2 && recorded
+      || { uuidRuns, rendered, status: stored?.status, directRuns, recorded },
+    search: input?.placeholder === "Search the web, find anything, or ask Lima…" && askRow,
+    pageActions: ["lima-tabctx-add", "lima-tabctx-ask", "lima-tabctx-send", "lima-page-summarize", "lima-page-save", "lima-page-ask",
+      "lima-folder-reveal", "lima-folder-rename"].every(id => document.getElementById(id)),
+    rightEdgeClear: rightEdge.length ? rightEdge.join(",") : true,
     branding: Services.appinfo.name === "Lima" && Services.appinfo.vendor === "Lima",
     profileIdentity: !compiled || (AppConstants.MOZ_APP_NAME === "lima" && AppConstants.MOZ_MACBUNDLE_ID === "dev.lima.browser"),
     noZenServices: !Services.prefs.getStringPref("zen.share.base-url", "") && !/zen-browser\\.app/.test(Services.prefs.getStringPref("zen.injections.match-urls", "")),

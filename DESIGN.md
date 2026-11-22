@@ -21,8 +21,24 @@ The browser chrome and internal pages use shared tokens. The terminal reads thos
 
 The macOS app mark places the folded-cap character at a white terminal with a graphite outline. Packaging renders the same drawing into the macOS icon sizes. The internal page character uses an inline SVG with independent layers for posture, expression, and activity. [macOS app mark](browser/branding/lima-app-icon.svg)
 
+## Layout rules
+
+Lima is a clean browser first. Its AI workspace lives in the left sidebar.
+
+- **The right edge stays free of Lima.** No inspector, drawer, assistant panel, code review drawer, agent timeline, notes panel, activity strip, floating utility column or second navigation rail. Web content keeps its full width and is never resized for Lima.
+- **The left sidebar is the navigation.** Browser tabs, workspaces, agents, notes, the Companion and utilities all live there, using Zen's folders, splits and session restore rather than copies of them.
+- **The center shows one task at a time:** a web page, or a Chat, Terminal or Note tab.
+- **Overlays are temporary and centered.** Search and Quick Ask cover the page only while open, dismiss cleanly, and never change its layout. The Companion panel opens from the sidebar on the left.
+- **Agent activity and approvals are compact indicators** on existing sidebar rows. Details, code review and multi-agent coordination belong in the workspace's own tabs.
+- **Browsing is never interrupted.** An agent changing what it works on never switches the selected tab.
+- **Every operation is visible and recoverable.** Failures show where the action started, with the draft, tab and results kept, and with Retry where it applies. Nothing fails only to a log or loads indefinitely.
+
 ## Navigation and execution
 
+- Universal Search (⌘T, or ⌘K in a Lima tab) is the single entry point. It finds websites, tabs, history, notes, workspaces and commands, and offers Ask Lima and Delegate Task for questions and tasks. Enter selects, ⌘Enter opens AI Chat, Escape closes. Local results paint first, and remote ones join without moving the selection.
+- Ask Lima streams a Quick Ask answer inside the Search panel, bounded in height, with Copy, Continue in Chat and Close. It reads no page or file unless the user shares one. Ask Lima About Page and Summarize Selection show a chip naming exactly what is shared.
+- Every command runs once per invocation. Search runs it, then the result tab shows the stored result by execution ID, so opening, refreshing or restoring the tab never runs it again. Run Again, Copy Result and View Details sit under the result.
+- Tab and page menus bring browser content into Lima: Add Tab to Workspace moves a page into a workspace's Tabs folder, Send Page to Agent puts the page into the Companion's draft, and Save Selection to Note quotes the selection with its source link. Sidebar actions report results and failures in a notice above the dock.
 - Home and Companion share a task handoff composer. An explicit creation instruction starts a named workspace. A selected workspace receives the objective in its own chat. A new workspace uses the last selected provider and its remembered model.
 - Companion shows workspace state and opens the actual agent tab. Its open-tab picker indexes regular browser windows. A handoff includes the tabs the user selects. Already loaded pages can contribute a bounded text excerpt.
 - A workspace lists its objective, directory, branch, agents, browser pages, and notes in Overview. Files and Changes share the terminal explorer. Zen owns tab navigation, tab groups, splits, and browser session restore.
@@ -38,23 +54,26 @@ Full uses character motion. Subtle keeps the drawing stationary. Off removes the
 
 ## Screen and state specifications
 
-The status column marks the surfaces implemented in this pass and the design targets that still need product work. Motion-disabled states use the same layout and controls throughout.
+Status is "Implemented" where the behavior ships, and "Target" where it is specified but still needs product work. Motion-disabled states use the same layout and controls throughout.
 
 | Screen | Normal and empty | Loading and failure | Status |
 | --- | --- | --- | --- |
 | Home | Centered companion and shared composer, with recent workspaces when available | Keep the composer stable during handoff, show the failure beside the preserved draft | Implemented |
-| Browser and inspector | Native Zen content, workspace navigation, and a collapsible left Companion panel | Browser owns page loading and errors, Companion shows tab references | Left panel implemented, resizable right inspector specified |
+| Browser and Companion | Native Zen content, workspace navigation, and the Companion panel opening from the left sidebar | Browser owns page loading and errors, Companion shows tab references | Implemented. No right-side surfaces |
+| Universal Search and Quick Ask | Centered palette, result rows with action labels, shortcut hints, inline Quick Ask answer | Commands show Running command… then close; failures stay in the panel with Retry and View Details | Implemented |
+| Command result | Stored result of one execution with Run Again, Copy Result, View Details | Command failed notice with Retry; an expired result says so instead of re-running | Implemented |
 | New workspace | New workspace destination and named creation from a prompt | The handoff row shows progress, errors preserve the draft | Implemented |
 | Workspace overview | Objective, directory, branch, agent rows, and links to its tabs | Keep header stable while branch and activity load, show workspace errors inline | Implemented |
-| Single-agent chat | Conversation, tool rows, bottom composer, model and provider controls | Active tool and stop control while running, failed turn shows retry state | Implemented |
-| Multi-agent orchestration | One row and own chat for each helper, browser access identified in the runtime | Starting and working states become completed or failed from the helper’s reply | Independent sessions implemented, side-by-side orchestration specified |
-| Terminal and Git | Live shell beside Files and Changes, diff preview on selection | Scrollback persists during tab switches, inline notices handle Git and shell failures | Implemented |
-| Notes and Canvas | White editor and precise canvas controls using shared colors | Keep note layout during load and show storage errors next to the editor | Existing editors use shared styling |
-| Universal Search and results | Stable light command palette, result rows, and native result view | Empty query keeps input focused, errors remain within the result surface | Existing surfaces use shared styling |
-| Context and weekly report | Compact timeline and readable report | Empty state describes the available activity, failures stay local to the list | Existing surfaces use shared styling |
-| Automation builder and history | Compact workflow tree and event timeline, with a first-run empty state | Stage-level progress, error details, and retry actions | Design target |
-| Integrations and Settings | Service status, provider settings, and Full/Subtle/Off control | Show connection errors per service and retain settings controls | Shared theme and appearance control implemented |
-| Screenshot Studio | Light gray tray and workspace, with an empty tray before capture | Keep an existing capture visible while OCR runs, report failures in the toolbar | Existing Studio uses shared styling |
-| Floating utility rail | Single compact strip with native utility actions | Show short action status on the originating control | Browser rail styled, native floating rail is a design target |
-| Onboarding and migration | Single choice per step with a small illustration | Preserve progress and display the specific operation that failed | Existing settings migration retained, new onboarding specified |
-| Offline and recovery | Preserve the surface and current draft | Show the affected operation and retry or reconnect where supported | Scoped state treatments implemented, unified offline view specified |
+| Single-agent chat | Conversation, tool rows, bottom composer, model and provider controls | Message not sent keeps the draft with Retry Message; Response interrupted marks a stopped reply | Implemented |
+| Multi-agent orchestration | One sidebar folder and own chat for each helper, Dismiss Finished Agent | Starting and working states become completed or failed from the helper’s reply | Implemented. Dependency view in the parent chat is a target |
+| Terminal and Git | Live shell beside Files and Changes, diff preview on selection | Ownership bar only during a handoff: Agent is requesting keyboard access, Agent has terminal control, Terminal control returned to you | Implemented. Stage Selected and Revert Selected are targets |
+| Notes and Canvas | White editor and precise canvas controls using shared colors | Keep note layout during load and show storage errors next to the editor | Implemented. Revision history is a target |
+| Context and weekly report | Compact timeline and readable report | Empty state describes the available activity, failures stay local to the list | Implemented |
+| Integrations and Settings | Provider rows: Ready, Not Installed, Sign-In Required, Unavailable; Full/Subtle/Off control | Disconnected when the runtime doesn't answer; Check Again, Sign In, Open Setup, View Details | Implemented |
+| Updates | Lima is up to date, Downloading update…, Ready to Restart | Update Failed keeps the current version, with Retry | Implemented |
+| Onboarding | Five optional steps in an ordinary tab: Meet Lima, Connect an AI, Try Search, Create a Workspace, You're Ready | Each step's failure stays on that step; detected setups are skipped | Implemented |
+| Screenshot Studio | Light gray tray and workspace, with an empty tray before capture | Keep an existing capture visible while OCR runs, report failures in the toolbar | Implemented |
+| Persistent task records | One record per task shared by runtime, Companion, chat and sidebar, with Planning through Canceled states | A handoff is not completion; the agent's result sets the final state | Target. Today the Companion and sidebar derive state from the workspace chat |
+| Attention popup | Count on the Companion icon, compact popup anchored to the sidebar listing requests | Requests stay until resolved | Partly implemented: the attention mark and prompts exist, the anchored popup is a target |
+| Shortcut registry | Keyboard Shortcuts settings with conflict detection | Shortcut Conflict names the other owner | Target |
+| UX regression suite | Screenshot coverage for Search, sidebar, Companion, Chat, Terminal, Notes, Settings | Failures block release | Target. `source_smoke.py` covers identity and runtime startup |

@@ -11,3 +11,11 @@ Key decisions this repo implements against:
 - Shared terminals with explicit keyboard leases; one worktree per concurrently writing agent.
 - Local, offline-capable encryption (Keychain-protected keys, no online key service).
 - Universal Search as the command surface; the sidebar plus a bottom-anchored vertical rail as the workspace.
+
+The Lima 5.0.1 UX specification (November 2026) refines the interface and wins where it conflicts with
+the documents above. Its layout rules are recorded in [`DESIGN.md`](../../DESIGN.md#layout-rules):
+- The right edge of the browser carries no Lima panel or persistent control. This retires the right-side
+  inspector and the native floating rail (§3.2 of v1.0). Utilities live in the left sidebar's dock.
+- Universal Search (⌘T) is the single entry point, including Quick Ask, commands and delegation.
+- Commands execute once per invocation, failures are shown where the action started, and agent
+  activity appears as compact marks on sidebar rows.
