@@ -55,8 +55,13 @@ export async function renderActivity(app, tab = "commands", reportId = null) {
 }
 
 // MARK: Run — one input, one result
+//
+// `execution` names a run that already happened (Search ran it). The page
+// shows that stored result; opening, refreshing or restoring the tab never
+// runs the command again. A run started here records its execution in the
+// URL for the same reason. Run Again is the only way to repeat it.
 
-export async function renderRun(app, id, initialInput) {
+export async function renderRun(app, id, initialInput, executionId = null) {
   const capability = (await capabilities()).find(c => c.id === id);
   if (!capability) {
     setPage("Unknown command", "warning");
@@ -64,28 +69,100 @@ export async function renderRun(app, id, initialInput) {
     return;
   }
   setPage(capability.title, capability.icon, hueFor(capability.category));
-  const output = el("div", { style: { marginTop: "16px" } });
-  const field = capability.input ? el("input", { type: "text", placeholder: capability.input.placeholder, value: initialInput ?? "", style: { flex: 1, minWidth: "240px", fontSize: "15px", padding: "10px 12px" } }) : null;
+  const status = el("div", { class: "run-status", role: "status" });
+  const output = el("div", { style: { marginTop: "12px" } });
+  const actions = el("div", { class: "row run-actions", hidden: true });
+  const field = capability.input ? el("input", { type: "text", placeholder: capability.input.placeholder, value: initialInput ?? "", "aria-label": capability.input.placeholder,
+    style: { flex: 1, minWidth: "240px", fontSize: "15px", padding: "10px 12px" } }) : null;
+  const runButton = el("button", { class: "primary", onclick: () => run() }, "Run");
   app.replaceChildren(
     bar(capability.title),
     page(el("p", { class: "muted", style: { margin: "0 0 12px" }, text: capability.summary }),
-      field ? el("div", { class: "row" }, field, el("button", { class: "primary", onclick: run }, "Run")) : null,
-      output));
+      field ? el("div", { class: "row" }, field, runButton) : null,
+      status, output, actions));
+
+  let running = false;
+  const details = () => el("button", { class: "ghost", onclick: () => bridge.openTab("about:lima?view=activity&tab=commands") }, "View Details");
+  const again = () => el("button", { class: "ghost", onclick: () => run() }, "Run Again");
+
+  function setStatus(text, tone = "") {
+    status.textContent = text;
+    status.dataset.tone = tone;
+  }
+
+  function show(result) {
+    setStatus("Command completed", "ok");
+    output.replaceChildren(resultView(result));
+    const copyable = result?.type === "text" ? result.text : result?.type === "markdown" ? result.markdown
+      : result?.type === "list" ? result.items.map(item => `${item.title}\t${item.subtitle}`).join("\n") : null;
+    actions.replaceChildren(again(),
+      copyable ? el("button", { class: "ghost", onclick: () => { bridge.copy(copyable); toast("Copied"); } }, icon("copy"), "Copy Result") : null,
+      details());
+    actions.hidden = false;
+  }
+
+  function showFailure(message) {
+    setStatus("Command failed", "bad");
+    output.replaceChildren(el("div", { class: "notice bad" }, icon("warning"),
+      el("span", {}, el("strong", { text: "Couldn't complete this action. " }), message)));
+    actions.replaceChildren(el("button", { class: "primary", onclick: () => run() }, "Retry"), details());
+    actions.hidden = false;
+  }
+
+  /** Records which execution this tab shows, without a new history entry.
+   * about: pages may only change the fragment, so it goes there; a reload
+   * or a restored session then displays it instead of running again. */
+  function remember(execution, input) {
+    const fragment = new URLSearchParams({ execution, ...(input ? { input } : {}) });
+    try { history.replaceState(null, "", `#${fragment}`); }
+    catch { try { location.hash = fragment.toString(); } catch {} }
+  }
 
   async function run() {
+    if (running) return;
+    const input = field?.value ?? "";
+    if (capability.input?.required && !input.trim()) { field?.focus(); return; }
+    running = true;
+    runButton.disabled = true;
+    actions.hidden = true;
+    setStatus("Running command…", "busy");
     output.replaceChildren(skeleton(2));
+    const execution = crypto.randomUUID();
+    remember(execution, input);
     try {
-      const result = await runCapability(capability.id, field?.value ?? "", { inPlace: true });
-      if (result) output.replaceChildren(resultView(result));
+      const result = await runCapability(capability.id, input, { inPlace: true, executionId: execution });
+      if (result) show(result);
     } catch (error) {
-      output.replaceChildren(el("div", { class: "notice bad" }, icon("warning"), errorText(error)));
+      showFailure(errorText(error));
+    } finally {
+      running = false;
+      runButton.disabled = false;
     }
   }
-  if (field) {
-    field.addEventListener("keydown", e => { if (e.key === "Enter") run(); });
-    field.focus();
-    if (initialInput || !capability.input.required) run(); else output.replaceChildren();
-  } else {
-    run();
+
+  async function display(execution) {
+    setStatus("Running command…", "busy");
+    output.replaceChildren(skeleton(2));
+    const stored = await call("capabilities.execution", { executionId: execution }).catch(() => null);
+    if (stored?.status === "completed") {
+      if (stored.result?.type === "open") { bridge.replaceURL(stored.result.url); return; }
+      show(stored.result);
+    } else if (stored?.status === "failed") {
+      showFailure(stored.error ?? "The command failed.");
+    } else {
+      // Lima restarted or the result aged out. Don't recreate it silently.
+      setStatus("");
+      output.replaceChildren(empty("activity", "This result is no longer available. Run the command again to get a new result."));
+      actions.replaceChildren(again(), details());
+      actions.hidden = false;
+    }
   }
+
+  field?.addEventListener("keydown", e => { if (e.key === "Enter") run(); });
+  field?.focus();
+  const fragment = new URLSearchParams(location.hash.slice(1));
+  executionId ??= fragment.get("execution");
+  if (field && fragment.has("input") && !initialInput) field.value = fragment.get("input");
+  if (executionId) await display(executionId);
+  else if (!field || initialInput || !capability.input.required) await run();
 }

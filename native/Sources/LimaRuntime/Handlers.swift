@@ -337,7 +337,11 @@ extension Runtime {
         }
         register("capabilities.run") { [unowned self] params, context in
             try await self.capabilities.run(try params.string("id"), input: params.optionalString("input") ?? "", runtime: self,
-                                            context: context, approvalDigest: params.optionalString("approvalDigest"))
+                                            context: context, approvalDigest: params.optionalString("approvalDigest"),
+                                            executionID: params.optionalString("executionId"))
+        }
+        register("capabilities.execution") { [unowned self] params, context in
+            await self.capabilities.execution(try params.string("executionId"), origin: context.origin) ?? .null
         }
         register("capabilities.runs") { [unowned self] params, _ in
             try JSONValue.from(self.capabilities.recentRuns(limit: params.int("limit", default: 100)))

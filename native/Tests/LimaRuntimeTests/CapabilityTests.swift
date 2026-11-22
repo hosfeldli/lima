@@ -66,6 +66,36 @@ func openRuntime() async throws -> (Runtime, URL) {
     #expect(created["url"]?.stringValue?.hasPrefix("about:lima?note=") == true)
 }
 
+// Search runs a command, then its result tab shows it: one execution only.
+@Test func commandsExecuteOncePerInvocation() async throws {
+    let (runtime, dir) = try await openRuntime()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let browser = CallContext(client: nil, origin: .browser)
+    let first = try await runtime.capabilities.run("uuid.generate", input: "", runtime: runtime, context: browser, executionID: "exec-1")
+    let again = try await runtime.capabilities.run("uuid.generate", input: "", runtime: runtime, context: browser, executionID: "exec-1")
+    #expect(first == again)
+    #expect(runtime.capabilities.recentRuns().filter { $0.capability == "uuid.generate" }.count == 1)
+
+    let shown = await runtime.capabilities.execution("exec-1", origin: .browser)
+    #expect(shown?["status"]?.stringValue == "completed")
+    #expect(shown?["result"] == first)
+    #expect(runtime.capabilities.recentRuns().filter { $0.capability == "uuid.generate" }.count == 1)
+    // Other origins can't read it, and an ID can't be reused for another command.
+    #expect(await runtime.capabilities.execution("exec-1", origin: .mcp) == nil)
+    await #expect(throws: BridgeError.self) {
+        try await runtime.capabilities.run("calc", input: "1+1", runtime: runtime, context: browser, executionID: "exec-1")
+    }
+
+    await #expect(throws: BridgeError.self) {
+        try await runtime.capabilities.run("json.format", input: "{nope", runtime: runtime, context: browser, executionID: "exec-2")
+    }
+    let failed = await runtime.capabilities.execution("exec-2", origin: .browser)
+    #expect(failed?["status"]?.stringValue == "failed")
+    #expect(failed?["error"]?.stringValue?.isEmpty == false)
+    #expect(runtime.capabilities.recentRuns().filter { $0.capability == "json.format" }.count == 1)
+    #expect(await runtime.capabilities.execution("unknown", origin: .browser) == nil)
+}
+
 // H5: local search stays within the spec's interactive budget.
 @Test func searchStaysFastAtScale() async {
     let service = SearchService()

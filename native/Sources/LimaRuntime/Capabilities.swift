@@ -92,6 +92,69 @@ public final class CapabilityRegistry: @unchecked Sendable {
 
     // MARK: Execution — the single policy point for every surface
 
+    /// One user invocation. A surface that shows the result later (a result
+    /// tab, a refresh, a restored session) reads it by ID instead of running
+    /// the capability again.
+    private struct Execution {
+        var capability: String
+        var origin: String
+        var input: String
+        var task: Task<JSONValue, Error>
+    }
+    private var executions: [String: Execution] = [:]
+    private var executionOrder: [String] = []
+    private static let keptExecutions = 50
+
+    /// Runs `id` once per `executionID`. Repeating the same ID returns the
+    /// first run's result (or waits for it) and never executes again.
+    func run(_ id: String, input: String, runtime: Runtime, context: CallContext, approvalDigest: String? = nil,
+             executionID: String?) async throws -> JSONValue {
+        guard let executionID, !executionID.isEmpty else {
+            return try await run(id, input: input, runtime: runtime, context: context, approvalDigest: approvalDigest)
+        }
+        guard executionID.count <= 64 else { throw BridgeError(.badRequest, "invalid execution ID") }
+        let (existing, task) = claim(executionID) {
+            Execution(capability: id, origin: context.origin.rawValue, input: input,
+                      task: Task { try await self.run(id, input: input, runtime: runtime, context: context, approvalDigest: approvalDigest) })
+        }
+        if let existing {
+            guard existing.capability == id, existing.origin == context.origin.rawValue, existing.input == input else {
+                throw BridgeError(.badRequest, "execution \(executionID) belongs to a different command")
+            }
+            return try await existing.task.value
+        }
+        return try await task.value
+    }
+
+    /// Returns the existing execution for `executionID`, or registers and
+    /// starts a new one, atomically.
+    private func claim(_ executionID: String, start: () -> Execution) -> (existing: Execution?, task: Task<JSONValue, Error>) {
+        lock.withLock {
+            if let existing = executions[executionID] { return (existing, existing.task) }
+            let execution = start()
+            executions[executionID] = execution
+            executionOrder.append(executionID)
+            while executionOrder.count > Self.keptExecutions { executions.removeValue(forKey: executionOrder.removeFirst()) }
+            return (nil, execution.task)
+        }
+    }
+
+    /// The stored outcome of an execution, for display only. Nil once the
+    /// execution has aged out or Lima restarted.
+    func execution(_ executionID: String, origin: ActionOrigin) async -> JSONValue? {
+        let execution = lock.withLock { executions[executionID] }
+        guard let execution, execution.origin == origin.rawValue else { return nil }
+        var outcome: [String: JSONValue] = ["capability": .string(execution.capability), "input": .string(execution.input)]
+        do {
+            outcome["result"] = try await execution.task.value
+            outcome["status"] = .string("completed")
+        } catch {
+            outcome["status"] = .string("failed")
+            outcome["error"] = .string((error as? BridgeError)?.message ?? String(describing: error))
+        }
+        return .object(outcome)
+    }
+
     func run(_ id: String, input: String, runtime: Runtime, context: CallContext, approvalDigest: String? = nil) async throws -> JSONValue {
         guard let definition = definition(id), let handler = handlers[id] else {
             throw BridgeError(.badRequest, "unknown capability \(id)")

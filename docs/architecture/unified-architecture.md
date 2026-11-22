@@ -41,6 +41,16 @@ capabilities.run(id, input)  ─┬─ authorize(risk, origin, mcpScope)   ← s
                               └─ capability.finished event + Context Shelf activity
 ```
 
+A surface passes `executionId` (a fresh UUID per user invocation). A repeated
+`capabilities.run` with the same ID returns the first run's result, or waits
+for it, and never executes again. `capabilities.execution(executionId)`
+returns `{ status: completed | failed, result | error }` for display only, or
+null once the execution has aged out (the last 50 are kept in memory) or Lima
+restarted. Search runs a command, then opens
+`about:lima?run=<id>&execution=<executionId>`. The Run page shows that stored
+result, so opening, refreshing or restoring the tab never repeats a command
+with side effects. Run Again starts a new execution.
+
 `TypedResult` is a closed set rendered identically everywhere:
 `text · list · table · markdown · image · devices · open(url) · notice`.
 

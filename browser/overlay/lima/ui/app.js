@@ -31,7 +31,7 @@ const routes = [
   [() => params.has("terminal") || params.get("view") === "terminal", () => renderTerminal(app, params.get("terminal"))],
   [() => params.has("chat") || params.get("view") === "chat", () => renderChat(app, params.get("chat") ?? "new", params.get("prompt"))],
   [() => params.has("ask"), () => renderAsk(app, params.get("ask"))],
-  [() => params.has("run"), () => renderRun(app, params.get("run"), params.get("input"))],
+  [() => params.has("run"), () => renderRun(app, params.get("run"), params.get("input"), params.get("execution"))],
   [() => params.has("tool"), () => renderRun(app, params.get("tool"), params.get("input"))],
   [() => params.get("view") === "activity", () => renderActivity(app, params.get("tab") ?? "commands")],
   [() => params.get("view") === "context", () => renderActivity(app, "reports", params.get("report"))],

@@ -707,3 +707,10 @@ button.change-row:hover { background: var(--panel-2); }
 .update-actions { flex-wrap: wrap; justify-content: space-between; }
 .welcome-permission { border-block-start: 1px solid var(--line); padding-block: 12px; }
 .welcome-permission .welcome-description { margin-block: 4px 8px; }
+
+/* Run page: one execution, its status, then the result and its actions. */
+.run-status { min-height: 18px; margin-top: var(--s2); color: var(--ink-3); font-size: var(--t-sm); }
+.run-status[data-tone="ok"] { color: var(--ink-2); }
+.run-status[data-tone="bad"] { color: var(--action-hover); font-weight: 600; }
+.run-actions { margin-top: var(--s2); }
+.run-actions[hidden] { display: none; }

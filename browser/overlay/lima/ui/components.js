@@ -40,9 +40,11 @@ export function toast(message, tone = "ok", iconName = tone === "bad" ? "warning
 }
 
 /** Runs a capability through the single runtime entry point. `open` results
- * navigate (same tab or new tab); everything else is returned for display. */
-export async function runCapability(id, input = "", { inPlace = false } = {}) {
-  const result = await call("capabilities.run", { id, input });
+ * navigate (same tab or new tab); everything else is returned for display.
+ * Each invocation has its own execution ID, so a repeated request returns
+ * the stored result instead of running the command again. */
+export async function runCapability(id, input = "", { inPlace = false, executionId = crypto.randomUUID() } = {}) {
+  const result = await call("capabilities.run", { id, input, executionId });
   if (result?.type === "open") {
     if (inPlace) bridge.replaceURL(result.url);
     else bridge.openTab(result.url);
