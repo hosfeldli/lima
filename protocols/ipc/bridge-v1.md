@@ -46,8 +46,8 @@ Structured questions accept one to eight fields with unique IDs, labels, and a t
 
 - A client states its origin in `host.identify`. `browser` is granted only to a peer whose code signature
   satisfies the daemon's own designated requirement (checked on the socket's audit token). The `--stdio`
-  relay claims it only after verifying that its parent is `Contents/MacOS/zen` from the same bundle, signed
-  by the same certificate; the grammar helper only when its parent is the daemon. Other claims fail with
+  relay claims it only after verifying that its parent is the bundle's engine, signed by the same
+  certificate: the compiled `Contents/MacOS/lima`, or `Contents/MacOS/zen` in a repacked bundle that has one; the grammar helper only when its parent is the daemon. Other claims fail with
   `not_authorized`. Debug builds accept any peer when `LIMA_TRUST_ANY_PEER=1`.
 - `host.shutdown` requires the browser origin or a signature-verified lima-host peer (build replacement).
 - The socket directory must be owned by the user with mode 0700, or neither side uses it.

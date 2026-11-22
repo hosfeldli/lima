@@ -8,7 +8,10 @@ import Security
 /// agent shells, so a client's claimed origin is not evidence. The `browser`
 /// origin is granted only when the chain is verifiable:
 ///
-///   Lima engine (`Contents/MacOS/zen`) → `lima-host --stdio` → daemon
+///   Lima engine (`Contents/MacOS/lima`) → `lima-host --stdio` → daemon
+///
+/// A repacked build keeps the engine at `Contents/MacOS/zen`, behind the
+/// `Contents/MacOS/lima` launcher; only that engine is trusted there.
 ///
 /// The relay checks that its parent is the engine from its own bundle, and
 /// the daemon checks that the peer is a lima-host signed like itself. A
@@ -91,12 +94,21 @@ enum CodeTrust {
         if developmentOverride { return true }
         guard let contents = bundleContents,
               SecCodeCheckValidity(code, [], nil) == errSecSuccess,
-              path(of: code) == (contents.appendingPathComponent("MacOS/zen").path as NSString).resolvingSymlinksInPath
+              path(of: code) == engineExecutable(in: contents)
         else { return false }
         if selfIsAdHoc { return true }
         var staticCode: SecStaticCode?
         guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode else { return false }
         return leafCertificate(staticCode) == selfLeafCertificate
+    }
+
+    /// The Gecko executable of a bundle: the compiled `MacOS/lima`, or the
+    /// repack's `MacOS/zen` when the bundle still carries one.
+    static func engineExecutable(in contents: URL) -> String {
+        let repacked = contents.appendingPathComponent("MacOS/zen")
+        let engine = FileManager.default.fileExists(atPath: repacked.path)
+            ? repacked : contents.appendingPathComponent("MacOS/lima")
+        return (engine.path as NSString).resolvingSymlinksInPath
     }
 
     static func parentIsLimaEngine() -> Bool {

@@ -23,6 +23,7 @@ OUT="${LIMA_BUILD_DIR:-$ROOT/build}"
 APP="$OUT/Lima.app"
 RELEASE="${LIMA_RELEASE:-0}"
 IDENTITY="${LIMA_SIGN_IDENTITY:--}"
+SOURCE_APP="${LIMA_SOURCE_APP:-}"
 
 json() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(eval('d'+sys.argv[2]))" "$1" "$2"; }
 step() { printf '\033[1m==> %s\033[0m\n' "$*"; }
@@ -57,6 +58,7 @@ fi
 # 1. Fetch the pinned Zen release and prove where it came from.
 mkdir -p "$CACHE"
 DMG="$CACHE/zen-${ZEN_TAG}.dmg"
+if [[ -z "$SOURCE_APP" ]]; then
 if [[ ! -f "$DMG" ]] || [[ "$(shasum -a 256 "$DMG" | cut -d' ' -f1)" != "$DMG_SHA" ]]; then
   step "Downloading Zen $ZEN_TAG"
   rm -f "$DMG"
@@ -64,6 +66,7 @@ if [[ ! -f "$DMG" ]] || [[ "$(shasum -a 256 "$DMG" | cut -d' ' -f1)" != "$DMG_SH
 fi
 ACTUAL_SHA="$(shasum -a 256 "$DMG" | cut -d' ' -f1)"
 [[ "$ACTUAL_SHA" == "$DMG_SHA" ]] || fail "$DMG_NAME checksum mismatch (expected $DMG_SHA, got $ACTUAL_SHA)"
+fi
 
 # 2. Verify third-party files Lima copies into the bundle.
 step "Verifying vendored assets"
@@ -90,12 +93,24 @@ step "Building lima-host"
 swift build -c release --package-path "$ROOT/native" --product lima-host
 HOST_BIN="$(swift build -c release --package-path "$ROOT/native" --show-bin-path)/lima-host"
 
-step "Building launcher"
 mkdir -p "$OUT"
-clang -O2 -Wall -Werror -arch arm64 -arch x86_64 -mmacosx-version-min=12.0 \
-  -o "$OUT/lima-launcher" "$BROWSER/launcher/lima-launcher.c"
+# A compiled engine carries Lima's name, profile and remoting identity
+# itself; only the repacked Zen engine needs the -app launcher.
+if [[ -z "$SOURCE_APP" ]]; then
+  step "Building launcher"
+  clang -O2 -Wall -Werror -arch arm64 -arch x86_64 -mmacosx-version-min=12.0 \
+    -o "$OUT/lima-launcher" "$BROWSER/launcher/lima-launcher.c"
+fi
 
 # 4. Extract the engine after checking Zen's own signature and notarization.
+ENTITLEMENTS="$OUT/zen-entitlements.json"
+if [[ -n "$SOURCE_APP" ]]; then
+  step "Verifying the compiled Gecko input"
+  python3 "$BROWSER/scripts/verify_source_bundle.py" "$SOURCE_APP" "${LIMA_SOURCE_MANIFEST:?}" "$RELEASE"
+  python3 "$BROWSER/scripts/lima_codesign.py" capture "$SOURCE_APP" "$ENTITLEMENTS"
+  rm -rf "$APP"
+  ditto "$SOURCE_APP" "$APP"
+else
 step "Verifying and extracting Zen.app"
 rm -rf "$APP"
 MOUNT="$(mktemp -d)"
@@ -113,34 +128,29 @@ elif [[ "$RELEASE" == 1 ]]; then
 else
   echo "    warning: notarization not confirmed (offline?): $ASSESSMENT"
 fi
-ENTITLEMENTS="$OUT/zen-entitlements.json"
 python3 "$BROWSER/scripts/lima_codesign.py" capture "$MOUNT/Zen.app" "$ENTITLEMENTS"
 ditto "$MOUNT/Zen.app" "$APP"
 cleanup_mount
 trap - EXIT
+fi
 
 C="$APP/Contents"
 R="$C/Resources"
 
 # 5. Apply Lima identity and overlay.
 step "Applying Lima overlay"
+mkdir -p "$R/defaults/pref" "$R/distribution"
+if [[ -z "$SOURCE_APP" ]]; then
 sed -e "s/@LIMA_VERSION@/$APP_VERSION/" -e "s/@BUILD_ID@/$BUILD_ID/" \
     -e "s/@SOURCE_STAMP@/$SOURCE_STAMP/" -e "s/@GECKO_VERSION@/$GECKO_VERSION/g" \
     "$BROWSER/overlay/application.ini" > "$R/browser/application.ini"
-mkdir -p "$R/defaults/pref" "$R/distribution"
 cp "$BROWSER/overlay/defaults/pref/lima-autoconfig.js" "$R/defaults/pref/"
 cp "$BROWSER/overlay/lima.cfg" "$R/lima.cfg"
 if [[ "$RELEASE" == 1 ]]; then
-  cat >> "$R/lima.cfg" <<'CFG'
-
-// Release builds: no chrome-privileged devtools or remote debugging, so no
-// other process of this user can drive Lima's privileged chrome. The bridge
-// also refuses to start lima-host while the browser is remote-controlled.
-lockPref("lima.release.hardened", true);
-lockPref("devtools.chrome.enabled", false);
-lockPref("devtools.debugger.remote-enabled", false);
-lockPref("devtools.debugger.prompt-connection", true);
-CFG
+  cat "$BROWSER/source/hardened.js" >> "$R/lima.cfg"
+fi
+else
+  cp "$LIMA_SOURCE_MANIFEST" "$R/lima-source.json"
 fi
 cp "$BROWSER/overlay/distribution/policies.json" "$R/distribution/policies.json"
 ditto "$BROWSER/overlay/lima" "$R/lima"
@@ -169,7 +179,10 @@ done
 rm -rf "$ICON_STAGE"
 trap - EXIT
 
-install -m 0755 "$OUT/lima-launcher" "$C/MacOS/lima"
+if [[ -z "$SOURCE_APP" ]]; then
+  install -m 0755 "$OUT/lima-launcher" "$C/MacOS/lima"
+fi
+[[ -z "$SOURCE_APP" || ! -e "$C/MacOS/zen" ]] || fail "A source-built engine must not carry Contents/MacOS/zen"
 install -m 0755 "$HOST_BIN" "$C/MacOS/lima-host"
 # On-device dictation: the whisper-cli 4.x shipped (pinned in vendor-assets.json).
 # The 466 MB model isn't copied; the runtime finds the one Lima 4 installed.
@@ -193,7 +206,12 @@ plutil -replace CFBundleIconFile -string lima.icns "$PLIST"
 plutil -remove CFBundleIconName "$PLIST" 2>/dev/null || true
 plutil -replace CFBundleShortVersionString -string "$VERSION" "$PLIST"
 plutil -replace CFBundleVersion -string "$BUILD_NUMBER" "$PLIST"
-plutil -replace LimaEngine -string "zen ${ZEN_TAG} / gecko ${GECKO_VERSION}" "$PLIST"
+if [[ -n "$SOURCE_APP" ]]; then
+  ENGINE_LABEL="lima source $(json "$LOCK" "['zen']['commit']" | cut -c1-12) / gecko ${GECKO_VERSION}"
+else
+  ENGINE_LABEL="zen ${ZEN_TAG} / gecko ${GECKO_VERSION}"
+fi
+plutil -replace LimaEngine -string "$ENGINE_LABEL" "$PLIST"
 plutil -replace LimaSourceCommit -string "$SOURCE_STAMP" "$PLIST"
 # Lima's runtime asks for these through the app, so the app must explain them.
 for key in NSMicrophoneUsageDescription NSSpeechRecognitionUsageDescription NSAppleEventsUsageDescription \
@@ -219,5 +237,5 @@ python3 "$BROWSER/scripts/lima_codesign.py" sign "$APP" "$ENTITLEMENTS" \
 python3 "$BROWSER/scripts/lima_codesign.py" verify "$APP" "$ENTITLEMENTS" ${CERT_SHA:+--certificate-sha256 "$CERT_SHA"}
 
 step "Built $APP"
-echo "    engine:  Zen $ZEN_TAG (Firefox $GECKO_VERSION)"
+echo "    engine:  $ENGINE_LABEL"
 echo "    version: $APP_VERSION ($BUILD_NUMBER)"

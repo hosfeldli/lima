@@ -4,6 +4,7 @@
     "tag": "1.24.3b",
     "commit": "300f9292ddbaaebf24626b4a7451e5426a11d3d8",
     "firefoxVersion": "160.0.1",
+    "firefoxSourceSha512": "e7a272b85aef9610b9e83d7b934ae1ac041a4bb2eec449e6671336f98c0986d5cf93e57efc23371f3665b0e7fa1bc9ff7448e9dabdc0d96aca0589fdaecea370",
     "signingTeam": "9V5K9TP787",
     "macosDmg": {
       "asset": "zen.macos-universal.dmg",

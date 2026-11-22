@@ -48,12 +48,15 @@ spctl --assess --type execute -vv "$mount/Zen.app" 2>&1 | grep -q "source=Notari
 gecko="$(awk -F= '$1 == "Milestone" {print $2}' "$mount/Zen.app/Contents/Resources/platform.ini")"
 [[ -n "$gecko" ]] || fail "could not read the Gecko milestone"
 old_gecko="$(json "$LOCK" "['zen']['firefoxVersion']")"
+source_digest="$(curl -fsSL --proto '=https' "https://archive.mozilla.org/pub/firefox/releases/$gecko/SHA512SUMS" |
+  awk -v path="source/firefox-$gecko.source.tar.xz" '$2 == path {print $1}')"
+[[ "$source_digest" =~ ^[0-9a-f]{128}$ ]] || fail "Mozilla does not list a source checksum for Firefox $gecko"
 
-python3 - "$LOCK" "$tag" "$commit" "$gecko" "$digest" <<'PY'
+python3 - "$LOCK" "$tag" "$commit" "$gecko" "$digest" "$source_digest" <<'PY'
 import json, sys
-path, tag, commit, gecko, digest = sys.argv[1:]
+path, tag, commit, gecko, digest, source_digest = sys.argv[1:]
 lock = json.load(open(path))
-lock["zen"].update(tag=tag, commit=commit, firefoxVersion=gecko)
+lock["zen"].update(tag=tag, commit=commit, firefoxVersion=gecko, firefoxSourceSha512=source_digest)
 lock["zen"]["macosDmg"]["sha256"] = digest
 open(path, "w").write(json.dumps(lock, indent=2) + "\n")
 PY

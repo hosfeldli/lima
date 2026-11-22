@@ -48,6 +48,8 @@ ENGINE_EXTRAS = {
     "com.apple.security.personal-information.calendars": True,
 }
 
+ENGINE_PATHS = ("Contents/MacOS/zen", "Contents/MacOS/lima")
+
 # Zen code Lima does not ship: its updater and privileged install helpers.
 REMOVED = (
     "Contents/MacOS/updater.app",
@@ -127,9 +129,14 @@ def entitlements_of(path):
     return plistlib.loads(data[start:])
 
 
-def policy(relative, upstream, executable):
-    """The entitlements Lima ships for one binary."""
-    if relative in LIMA_ENTITLEMENTS:
+def policy(relative, upstream, executable, compiled=False):
+    """The entitlements Lima ships for one binary.
+
+    `compiled` marks a binary that came from the engine bundle. In a source
+    build the Gecko executable itself is Contents/MacOS/lima; in a repack it
+    is Contents/MacOS/zen and Contents/MacOS/lima is Lima's launcher.
+    """
+    if relative in LIMA_ENTITLEMENTS and not (compiled and relative in ENGINE_PATHS):
         return dict(LIMA_ENTITLEMENTS[relative])
     granted = {key: value for key, value in upstream.items()
                if not key.startswith(RESTRICTED_PREFIXES) and key not in FORBIDDEN}
@@ -138,7 +145,7 @@ def policy(relative, upstream, executable):
         # match XUL and the other bundled libraries. They are sealed by the
         # app signature instead; DYLD_* injection stays blocked by the runtime.
         granted[DISABLE_LIBRARY_VALIDATION] = True
-    if relative == "Contents/MacOS/zen":
+    if relative in ENGINE_PATHS:
         granted.update(ENGINE_EXTRAS)
     return granted
 
@@ -171,7 +178,7 @@ def expected(app, captured):
             sys.exit(f"error: {relative} is neither from Zen nor a known Lima binary; add it to LIMA_ENTITLEMENTS")
         upstream = record["entitlements"] if record else {}
         executable = record["executable"] if record else is_executable_image(os.path.join(app, relative))
-        plan[relative] = policy(relative, upstream, executable)
+        plan[relative] = policy(relative, upstream, executable, compiled=record is not None)
     return plan
 
 

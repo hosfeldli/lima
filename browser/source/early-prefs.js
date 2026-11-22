@@ -1,0 +1,10 @@
+pref("browser.aboutwelcome.enabled", false);
+pref("startup.homepage_welcome_url", "");
+pref("startup.homepage_welcome_url.additional", "");
+pref("startup.homepage_override_url", "");
+pref("zen.welcome-screen.seen", true);
+pref("zen.welcome-screen.always-show", false);
+pref("zen.updates.show-update-notification", false);
+pref("zen.watermark.enabled", false);
+pref("app.update.auto", false);
+pref("app.update.enabled", false);
