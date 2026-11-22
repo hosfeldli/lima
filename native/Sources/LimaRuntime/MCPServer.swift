@@ -194,7 +194,7 @@ extension MCPServer {
              properties: ["name": ["type": "string"]], required: ["name"]) { args, client in
             try client.call("workspace.rename", params: .object(["name": args?["name"] ?? .null]))
         },
-        Tool(name: "workspace_open_tab", description: "Open a web page as a tab inside this workspace's folder in Zen (the user sees it appear).",
+        Tool(name: "workspace_open_tab", description: "Open a web page as a tab inside this workspace's folder in Lima (the user sees it appear).",
              properties: ["url": ["type": "string"], "title": ["type": "string"]], required: ["url"]) { args, client in
             try client.call("workspace.openTab", params: .object(["url": args?["url"] ?? .null, "title": args?["title"] ?? .null]))
         },
@@ -217,7 +217,7 @@ extension MCPServer {
         Tool(name: "workspace_files", description: "List files in this workspace's directory (or a sub-folder via path).", properties: ["path": ["type": "string"]], required: []) { args, client in
             try client.call("workspace.files", params: .object(["path": args?["path"] ?? .string("")]))
         },
-        Tool(name: "workspace_list_tabs", description: "The web pages currently in this workspace's Tabs folder in Zen, including ones the user added.", properties: [:], required: []) { _, client in
+        Tool(name: "workspace_list_tabs", description: "The web pages currently in this workspace's Tabs folder in Lima, including ones the user added.", properties: [:], required: []) { _, client in
             try client.call("workspace.listTabs")
         },
         Tool(name: "workspace_read_tab", description: "Read the text of a page in this workspace's Tabs folder (opens it there first if needed). The user sees which tab you are reading.",

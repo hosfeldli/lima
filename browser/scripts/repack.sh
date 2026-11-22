@@ -132,6 +132,9 @@ python3 "$BROWSER/scripts/lima_codesign.py" capture "$MOUNT/Zen.app" "$ENTITLEME
 ditto "$MOUNT/Zen.app" "$APP"
 cleanup_mount
 trap - EXIT
+# Zen's name, logos, links and default URLs live in its omni.ja archives.
+step "Rebranding the engine's strings and assets"
+python3 "$BROWSER/scripts/rebrand_omni.py" "$APP"
 fi
 
 C="$APP/Contents"

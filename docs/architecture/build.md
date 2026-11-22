@@ -1,10 +1,14 @@
 # Building Lima Browser
 
+The source-build migration is active. See [the migration and parity
+checklist](source-migration.md) for the source build commands and the stable
+cutover gates. This document describes the current stable packaging path.
+
 Lima.app is a **repack** of Zen's official, notarized macOS release, not a Gecko source build. Development and
 release builds run the same script (`browser/scripts/repack.sh`); a release only adds the pinned signing
 identity, the update feed and locked-down debugging prefs. Releasing is described in `docs/RELEASING.md`.
 
-## Why repack instead of building Gecko from source
+## Why stable currently uses the repack
 
 - **Same trust anchor.** Compiling Zen's source or installing Zen's binary both trust Zen's maintainers. The
   binary is built by Zen's CI and signed by Zen's Developer ID (team `9V5K9TP787`), and the repack checks that.
@@ -14,9 +18,8 @@ identity, the update feed and locked-down debugging prefs. Releasing is describe
 - **Zen's 79 compiled-code patches stay intact.** Firefox artifact builds would download stock Mozilla
   binaries without them.
 
-Build from source only if Lima needs Gecko/C++ patches, full branding, or a release cadence independent of
-Zen. The plan for that remains: copy `browser/zen-upstream` → `browser/work`, rewrite `surfer.json` branding,
-register `browser/overlay/lima` via `jar.mn`, then `surfer download && surfer import && surfer build` in CI.
+Lima is moving to a full source build for direct control over branding and startup.
+The repack remains the stable comparison and rollback path during migration.
 
 ## What `make browser` does
 
@@ -28,12 +31,13 @@ register `browser/overlay/lima` via `jar.mn`, then `surfer download && surfer im
    `browser/vendor-assets.json`.
 3. **Entitlement capture.** Records the entitlements of all 25 Zen binaries (`lima_codesign.py capture`),
    so a Zen bump carries Zen's own entitlement changes forward.
-4. **Overlay.** Lima identity in `application.ini` and `Info.plist` (`VERSION` → `CFBundleShortVersionString`,
+4. **Rebranding.** `rebrand_omni.py` replaces Zen's strings, logos and links inside `omni.ja`.
+5. **Overlay.** Lima identity in `application.ini` and `Info.plist` (`VERSION` → `CFBundleShortVersionString`,
    `CFBundleVersion` = `MMMmmmppp`), autoconfig bootstrap (`lima.cfg`), chrome modules, UI bundle, icons,
    `lima-host`, launcher, `whisper-cli`, and usage strings for the permissions the runtime asks for.
-5. **Removal.** Zen's `updater.app` and `Library/LaunchServices` helpers (updater, DMG install helper) don't
+6. **Removal.** Zen's `updater.app` and `Library/LaunchServices` helpers (updater, DMG install helper) don't
    ship. Zen's updater is also disabled by policy.
-6. **Signing.** Inside-out, never `--deep`, hardened runtime on every binary (`lima_codesign.py sign`):
+7. **Signing.** Inside-out, never `--deep`, hardened runtime on every binary (`lima_codesign.py sign`):
    - Zen binaries keep Zen's entitlements, minus the ones only Zen's provisioning profile can grant
      (`application-identifier`, `com.apple.developer.*`).
    - Every executable gets `disable-library-validation`. Self-signed code has no Team ID, so library
@@ -42,7 +46,7 @@ register `browser/overlay/lima` via `jar.mn`, then `surfer download && surfer im
    - `zen` also gets Apple Events and calendars, because it is the responsible process for permission prompts.
    - `lima-host`: microphone, Apple Events, calendars. The launcher and `whisper-cli` get none.
    - Never: `get-task-allow`, `allow-dyld-environment-variables`, `disable-executable-page-protection`.
-7. **Verification.** `lima_codesign.py verify` re-derives the policy and fails unless every binary has the
+8. **Verification.** `lima_codesign.py verify` re-derives the policy and fails unless every binary has the
    hardened runtime and exactly its policy entitlements. Release builds also need the pinned certificate.
 
 Dev builds are ad-hoc signed. macOS treats each rebuild as a new app, so it may ask for permissions again.
@@ -65,8 +69,12 @@ A release build (`make release-rehearsal` locally) uses the stable identity.
 
 ## Known repack limitations
 
-- Fluent strings (`brand.ftl`) live in Zen's optimized `omni.ja`, so the menu-bar name, window titles and
-  About dialog still say "Zen".
+- `rebrand_omni.py` rewrites both `omni.ja` archives during the repack. It sets Lima's `brand.ftl` and
+  `brand.properties`, changes `Zen` to `Lima` in every locale's strings, replaces the logos and About
+  links, and clears Zen's welcome, release-notes, share-server and page-injection URLs. Entries stay
+  stored, as in Zen's jars. A compiled identity is still Zen's: the engine binary `MacOS/zen` behind
+  the launcher, helper names such as "Zen GPU Helper", and `AppConstants`. Only the source build (see
+  [source-migration.md](source-migration.md)) changes those.
 - Autoconfig (`general.config.sandbox_enabled=false`) loads Lima's chrome. That is safe only because
   `lima.cfg` sits inside the sealed bundle. A source build would register the chrome through `jar.mn`.
 
