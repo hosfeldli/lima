@@ -61,5 +61,7 @@ import Testing
         slowPeer.send(frame)
         finished.signal()
     }
-    #expect(finished.wait(timeout: .now() + .seconds(1)) == .success)
+    // A blocking send never returns; the margin only absorbs copying the
+    // frames on a loaded CI runner.
+    #expect(finished.wait(timeout: .now() + .seconds(10)) == .success)
 }
