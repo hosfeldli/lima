@@ -48,6 +48,7 @@ public final class Runtime: @unchecked Sendable {
     public let context: ContextService
     public let workspaces: WorkspaceService
     public let capabilities: CapabilityRegistry
+    public let orchestrator: Orchestrator
     public let discovery = CLIDiscovery()
     public let focus = WorkspaceFocus()
     let browserCalls = BrowserCalls()
@@ -79,12 +80,24 @@ public final class Runtime: @unchecked Sendable {
         let search = SearchService(selections: selections)
         let context = try await ContextService(store: store)
         let workspaces = try await WorkspaceService(store: store)
-        return try await Runtime(paths: paths, store: store, notes: notes, conversations: conversations,
-                                 terminals: terminals, search: search, context: context, workspaces: workspaces, sink: sink)
+        let executor = RuntimeTaskExecutor()
+        let saved = try await store.all(OrchestratedTask.self, collection: Orchestrator.collection)
+        let budget = try await store.get(Int.self, collection: "settings", id: "orchestrator.maxAgents") ?? Orchestrator.defaultMaxActive
+        let orchestrator = Orchestrator(tasks: saved, executor: executor, maxActive: budget,
+            persist: { task in try await store.put(task, collection: Orchestrator.collection, id: task.id) },
+            emit: { task in sink.task(task) })
+        let runtime = try await Runtime(paths: paths, store: store, notes: notes, conversations: conversations,
+                                        terminals: terminals, search: search, context: context, workspaces: workspaces,
+                                        orchestrator: orchestrator, sink: sink)
+        executor.runtime = runtime
+        // Report turns a restart interrupted, and pick up queued work.
+        Task { await orchestrator.recover() }
+        return runtime
     }
 
     private init(paths: RuntimePaths, store: EncryptedStore, notes: NotesService, conversations: ConversationService,
-                 terminals: TerminalService, search: SearchService, context: ContextService, workspaces: WorkspaceService, sink: EventSink) async throws {
+                 terminals: TerminalService, search: SearchService, context: ContextService, workspaces: WorkspaceService,
+                 orchestrator: Orchestrator, sink: EventSink) async throws {
         self.paths = paths
         self.store = store
         self.notes = notes
@@ -93,6 +106,7 @@ public final class Runtime: @unchecked Sendable {
         self.search = search
         self.context = context
         self.workspaces = workspaces
+        self.orchestrator = orchestrator
         self.capabilities = CapabilityRegistry()
         sink.runtime = self
 
@@ -115,6 +129,7 @@ public final class Runtime: @unchecked Sendable {
         }
         registerWorkspaces()
         registerAssistant()
+        registerOrchestrator()
         registerWorkspaceActivity()
         registerDictation()
         registerUpdates()
@@ -268,6 +283,10 @@ public final class Runtime: @unchecked Sendable {
 final class EventSink: @unchecked Sendable {
     weak var runtime: Runtime?
 
+    func task(_ task: OrchestratedTask) {
+        runtime?.broadcast("task.updated", task.publicView)
+    }
+
     func terminal(_ event: TerminalEvent) {
         guard let runtime else { return }
         switch event {
@@ -291,6 +310,8 @@ final class EventSink: @unchecked Sendable {
         switch event {
         case .updated(let conversation):
             runtime.broadcast("chat.updated", (try? JSONValue.from(conversation)) ?? .null)
+            let id = conversation.id
+            Task { await runtime.orchestrator.observe(conversationID: id) }
             Task {
                 if let id = conversation.workspaceID, (try? await runtime.workspaces.get(id)) == nil { return }
                 runtime.search.index.upsert(SearchDocument(

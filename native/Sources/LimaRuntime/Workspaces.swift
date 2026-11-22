@@ -275,7 +275,8 @@ extension Runtime {
         } else {
             preamble = """
             You are the agent for the Lima workspace “\(workspace.name)”. Your working directory is \(workspace.directory). \(tools)
-            For parallel subtasks, spawn helper agents (agent_spawn) and check on them (agents_status); each gets its own chat, \
+            For a parallel subtask with a distinct objective inside a Lima task, use task_delegate (with depends_on for ordering) and task_status; \
+            outside a task, spawn helper agents (agent_spawn) and check on them (agents_status). Each helper gets its own chat, \
             tabs and terminal in this workspace. After collecting a finished helper’s results, close its tabs with agent_dismiss. For browser-only work, first open the HTTPS or loopback URL in this workspace,
             then call agent_spawn with browser_url and provider "claude" and give the helper its objective. Ask the Lima orchestrator for an explicit path plan. It returns routine permission directly and brings higher-risk plans to the user. Use
             workspace_browser to inspect or interact with a page visibly. Create a separate workspace only if the user asks (workspace_new).
@@ -387,6 +388,18 @@ extension Runtime {
         }
         register("agent.spawn") { [unowned self] params, context in
             let parent = try await self.workspaces.get(try target(params, context))
+            // Inside a Lima task the Orchestrator owns helpers: it records the
+            // assignment, applies dependencies and collects the result.
+            if let active = await self.orchestrator.activeTask(forWorkspace: parent.id), active.parentID == nil {
+                let task: OrchestratedTask
+                do {
+                    task = try await self.orchestrator.delegate(fromWorkspace: parent.id, name: try params.string("name"), objective: try params.string("task"),
+                        role: params.optionalString("browserUrl") == nil ? .general : .browser, provider: params.optionalString("provider"),
+                        browserURL: params.optionalString("browserUrl"))
+                } catch let error as OrchestratorError { throw BridgeError(.badRequest, error.description) }
+                return .object(["taskId": .string(task.id), "name": .string(task.title), "state": .string(task.state.rawValue),
+                                "helperWorkspaceId": task.workspaceID.map(JSONValue.string) ?? .null])
+            }
             let agent = try await self.spawnAgent(parent: parent, name: try params.string("name"), task: try params.string("task"),
                                                   provider: params.optionalString("provider").flatMap(CLIProvider.init(rawValue:)),
                                                   browserURL: params.optionalString("browserUrl"))
@@ -688,7 +701,8 @@ extension Runtime {
 
     /// A temporary helper agent inside `parent`: same directory, own chat;
     /// its terminal is created the first time it runs a command.
-    func spawnAgent(parent: Workspace, name: String, task: String, provider: CLIProvider?, browserURL: String? = nil, startTask: Bool = true) async throws -> Workspace {
+    func spawnAgent(parent: Workspace, name: String, task: String, provider: CLIProvider?, browserURL: String? = nil, startTask: Bool = true,
+                    directory: URL? = nil) async throws -> Workspace {
         guard parent.temporary != true else { throw BridgeError(.notAuthorized, "helper agents can't spawn more agents") }
         let siblings = await workspaces.list().filter { $0.parentID == parent.id }
         guard siblings.count < 8 else { throw BridgeError(.badRequest, "a workspace can run at most 8 helper agents; dismiss finished ones first") }
@@ -706,7 +720,7 @@ extension Runtime {
                 existingDirectory: isolation, temporary: true, startTask: startTask, browserTestURL: browserURL)
         }
         return try await createWorkspace(name: name, directory: nil, provider: provider ?? parent.provider, parentID: parent.id, task: task,
-                                         existingDirectory: URL(fileURLWithPath: parent.directory), temporary: true, startTask: startTask)
+                                         existingDirectory: directory ?? URL(fileURLWithPath: parent.directory), temporary: true, startTask: startTask)
     }
 
     func createWorkspace(name: String, directory: String?, provider: CLIProvider, parentID: String?, task: String?,

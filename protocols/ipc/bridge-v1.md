@@ -30,6 +30,10 @@ Live browser events are delivered to identified browser connections. Tool client
 
 Terminal state may include shellReady, userEditing, and activeCommand. Terminal startup returns the error from starting the requested shell or entering its directory.
 
+### Tasks (Orchestrator)
+
+`task.submit` (browser origin) accepts `text`, an optional workspace `id`, `name`, `provider`, `model`, `mascot`, `references`, `referenceCount`, and a `requestId` that makes the submission idempotent. It returns `{ task, workspace }`. `task.list` (optional `workspaceId`, `limit`) and `task.get` return `{ task, children }` trees. `task.cancel`, `task.pause` and `task.resume` take an `id`, and `task.concurrency` sets `maxAgents`. These methods accept only the browser origin. Workspace agents call `task.delegate` (`name`, `objective`, `role`, `dependsOn`, `successCriteria`, `provider`, `browserUrl`), `task.status`, `task.message` (`kind`, `text`) and `task.inbox`, all bound to their own workspace by token. Every change is broadcast as `task.updated` with the public record, which omits reference text and routed messages. See docs/architecture/orchestration.md.
+
 `workspace.reveal` (browser origin only) shows a workspace's project folder in Finder for the sidebar's Reveal Project Folder.
 
 Workspace deletion returns archivePath for a top-level workspace, directoryKept when its source stays in place, and recoveryPath when a verified archive exists alongside a staged recovery copy.

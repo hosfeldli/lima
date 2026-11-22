@@ -96,6 +96,7 @@ public enum MCPServer {
             if bound {
                 catalog.append(contentsOf: workspaceTools)
                 catalog.append(contentsOf: browserTools)
+                catalog.append(contentsOf: taskTools)
             }
             catalog.append(contentsOf: capabilityTools(client))
             tools = catalog
@@ -243,6 +244,40 @@ extension MCPServer {
         Tool(name: "workspace_new", description: "Create a new AI workspace (its own folder, terminal, agent and tab folder) when the user asks for one.",
              properties: ["name": ["type": "string"], "task": ["type": "string", "description": "first instruction for the new workspace's agent"]], required: ["name"]) { args, client in
             try client.call("workspace.create", params: .object(["name": args?["name"] ?? .null, "task": args?["task"] ?? .null]))
+        },
+    ]
+
+    static let delegateProperties: [String: [String: String]] = [
+        "name": ["type": "string", "description": "Short helper name, such as Research Agent"],
+        "objective": ["type": "string"],
+        "role": ["type": "string", "description": "research, implementation, testing, review, browser or general"],
+        "depends_on": ["type": "string", "description": "Comma-separated names or task IDs of helpers whose results this one needs"],
+        "success_criteria": ["type": "string", "description": "One criterion per line"],
+        "provider": ["type": "string"],
+        "browser_url": ["type": "string"],
+    ]
+    static let delegateArguments: [(String, String)] = [
+        ("name", "name"), ("objective", "objective"), ("role", "role"), ("depends_on", "dependsOn"),
+        ("success_criteria", "successCriteria"), ("provider", "provider"), ("browser_url", "browserUrl"),
+    ]
+
+    /// The orchestrator's task tools for workspace agents.
+    static let taskTools: [Tool] = [
+        Tool(name: "task_delegate", description: "Ask the Lima orchestrator for a helper agent with a distinct objective inside your current Lima task. Lima records the assignment, starts it when its dependencies succeed, limits concurrency, isolates concurrent code changes in a Git worktree, and returns the helper's structured result to you. Don't delegate work you can finish efficiently yourself.",
+             properties: delegateProperties, required: ["name", "objective"]) { args, client in
+            var params: [String: JSONValue] = [:]
+            for (tool, bridge) in delegateArguments { params[bridge] = args?[tool] ?? .null }
+            return try client.call("task.delegate", params: .object(params))
+        },
+        Tool(name: "task_status", description: "Your current Lima task and its helpers: state, dependencies, summaries and artifacts.", properties: [:], required: []) { _, client in
+            try client.call("task.status")
+        },
+        Tool(name: "task_message", description: "Send a structured message through the orchestrator to the agents that depend on you and to your coordinator. kind is finding, question, blocked, dependency_ready, artifact, completed or failed.",
+             properties: ["kind": ["type": "string"], "text": ["type": "string"]], required: ["kind", "text"]) { args, client in
+            try client.call("task.message", params: args)
+        },
+        Tool(name: "task_inbox", description: "Messages other agents sent you through the orchestrator (findings, dependency updates, artifacts).", properties: [:], required: []) { _, client in
+            try client.call("task.inbox")
         },
     ]
 
