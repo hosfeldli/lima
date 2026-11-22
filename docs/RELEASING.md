@@ -80,16 +80,23 @@ never block a security update. Only a missing Lima `brand.ftl` fails the build.
 | `lima-publish` SA | Usable only from `release-publish`. `objectUser` on the updates bucket; no secrets |
 | Update key | Public key pinned in `browser/release.json`. Private key in Secret Manager and at `~/Library/Application Support/RayPlacement/Signing/lima-update-ed25519-key`; back it up offline |
 
-The repo is private on GitHub Free, so **environments can't require reviewers and tag rulesets aren't
-available**. Anyone with write access can dispatch a release. The compensating controls:
-- GCP only issues credentials to `main`-dispatched jobs in the two environments.
-- Preflight refuses tags that aren't annotated, don't match `VERSION` or aren't on `origin/main`.
-- Publish needs the explicit `publish` input.
+### Repository settings (public since 2026-11-21)
 
-On GitHub Pro (or a public repo), add yourself as a required reviewer on both environments and a ruleset
-blocking updates and deletions of `v*` tags.
+The repo is public, so standard GitHub-hosted runners, macOS included, cost no Actions minutes. Commits
+made from this checkout use the GitHub noreply address (repo-local `user.email`). Commits from before the
+switch keep the original address.
 
-Settings → Actions: allow GitHub Actions to create pull requests, so `zen-bump.yml` can open PRs.
+- **Don't add required reviewers** to `release` or `release-publish`. Automatic security releases dispatch
+  both jobs unattended, so a reviewer rule would hold every update until someone approves it.
+- **Allow `github-actions[bot]` to push to `main`.** It commits each Zen bump and version bump directly. A
+  branch rule that requires pull requests or blocks that bot stops automatic releases.
+- **Tag ruleset (optional, recommended):** block updates and deletions of `v*` tags, but allow creation.
+  The bot creates tags; nothing should move one.
+- **Fork pull requests** run `ci.yml` only. They get a read-only token and no GCP credentials. GCP issues
+  credentials only to jobs dispatched from `main` in the two environments.
+
+The remaining controls are unchanged: preflight refuses tags that aren't annotated, don't match `VERSION`
+or aren't on `origin/main`, and publishing needs the explicit `publish` input.
 
 ## Rehearsing locally
 

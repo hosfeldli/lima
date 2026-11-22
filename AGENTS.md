@@ -16,6 +16,9 @@ Use macOS 14 or later and a Swift 6 toolchain. Run these commands from the repos
 - `make browser` repacks the pinned Zen release with the Lima overlay and host into `build/Lima.app`.
 - `make run` repacks and launches Lima with the local `build/dev-profile`.
 - `make lint` checks workflows and release scripts; `make release-rehearsal` builds a signed release locally without uploading. Releases follow `docs/RELEASING.md`.
+- `python3 browser/scripts/source_smoke.py build/Lima.app` runs the headless identity and runtime smoke test that gates automatic releases.
+
+The repack rebrands Zen as Lima inside `omni.ja` (`browser/scripts/rebrand_omni.py`). `zen-bump.yml` releases each new Zen tag automatically and commits to `main` as `github-actions[bot]`, so pull before starting work.
 
 ## Coding Style
 

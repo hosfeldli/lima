@@ -16,7 +16,9 @@ make bootstrap   # fetch pinned Zen source
 make test        # native tests
 make run         # build/Lima.app from the pinned Zen release + Lima overlay, launch with a dev profile
 ```
-See `docs/architecture/build.md` for how the repack works and why it isn't a source build, and
-`docs/RELEASING.md` for signing, the update feed and the release workflow.
+See `docs/architecture/build.md` for how the repack works, including how it rebrands Zen as Lima, and why
+it isn't a source build. `docs/RELEASING.md` covers signing, the update feed, and the automatic security
+releases: every new Zen release is verified, repacked and published without manual steps. The paused
+source build is described in `docs/architecture/source-migration.md`.
 
 Third-party: Zen Browser (MPL-2.0), Firefox (MPL-2.0); Orca (MIT) informs the agent-runtime design.

@@ -1,8 +1,7 @@
 # Building Lima Browser
 
-The source-build migration is active. See [the migration and parity
-checklist](source-migration.md) for the source build commands and the stable
-cutover gates. This document describes the current stable packaging path.
+This document describes how every Lima release is built. A from-source build of the Zen fork exists but
+is on hold (see [source-migration.md](source-migration.md)).
 
 Lima.app is a **repack** of Zen's official, notarized macOS release, not a Gecko source build. Development and
 release builds run the same script (`browser/scripts/repack.sh`); a release only adds the pinned signing
@@ -18,8 +17,11 @@ identity, the update feed and locked-down debugging prefs. Releasing is describe
 - **Zen's 79 compiled-code patches stay intact.** Firefox artifact builds would download stock Mozilla
   binaries without them.
 
-Lima is moving to a full source build for direct control over branding and startup.
-The repack remains the stable comparison and rollback path during migration.
+- **A source build can't ship a fix sooner.** It waits for Zen to rebase onto the new Firefox, and Zen
+  publishes its notarized binary at the same moment as that commit.
+
+The repack rebrands Zen's strings, logos and links as Lima (step 4 below). Only the compiled identity is
+left: the engine binary name, helper names and `AppConstants`.
 
 ## What `make browser` does
 
@@ -82,5 +84,5 @@ A release build (`make release-rehearsal` locally) uses the stable identity.
 
 `browser/scripts/bump-zen.sh [TAG]` updates `tag`, `commit`, `firefoxVersion` and the DMG `sha256` in
 `browser/lima.lock.json` together. It also moves the submodule, after verifying the new DMG's team and
-notarization. `zen-bump.yml` runs this daily and opens a PR that has already passed tests and a verified
-repack. Then run `make run` and release.
+notarization. `zen-bump.yml` runs it every three hours and releases the result automatically. See
+*Automatic security releases* in `docs/RELEASING.md`.
