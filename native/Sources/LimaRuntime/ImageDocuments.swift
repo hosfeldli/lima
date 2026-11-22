@@ -26,6 +26,11 @@ actor ImageDocuments {
         var receipts: [String: Receipt] = [:]
     }
 
+    private struct Selection: Codable {
+        let revision: String
+        let instances: [Int]
+    }
+
     private let root: URL
 
     init(root: URL) { self.root = root }
@@ -52,17 +57,14 @@ actor ImageDocuments {
             try? FileManager.default.removeItem(at: path(id))
             throw error
         }
+        try? StudioRecent.record(document.id, workspace: workspace, root: root)
         return try metadata(document, image: input.image)
     }
 
     func perform(_ method: String, workspace: String, directory: String, params: JSONValue?, browser: Bool) throws -> JSONValue {
+        if method == "recent" { return StudioRecent.read(workspace: workspace, root: root).map(JSONValue.string) ?? .null }
         let id = try params.string("document_id")
-        guard UUID(uuidString: id)?.uuidString == id else { throw ImageRaster.invalid("Invalid image document ID.") }
-        let manifest = path(id).appendingPathComponent("document.json")
-        guard let data = try? Data(contentsOf: manifest),
-              var document = try? JSONDecoder().decode(Document.self, from: data), document.workspace == workspace else {
-            throw BridgeError(.notAuthorized, "The image document is unavailable in this workspace.")
-        }
+        var document = try find(id, workspace: workspace)
         let source = params.optionalString("source_revision") ?? document.current
         guard let revision = document.revisions.first(where: { $0.id == source }) else {
             throw ImageRaster.invalid("This image revision does not exist.")
@@ -71,7 +73,7 @@ actor ImageDocuments {
             return .object(["document_id": .string(id), "revision_id": .string(document.current), "revisions": try JSONValue.from(document.revisions)])
         }
 
-        let mutable = ["crop", "resize", "rotate", "trim", "color_key", "mask", "undo", "redo", "checkout", "export", "convert"].contains(method)
+        let mutable = ["crop", "resize", "rotate", "trim", "color_key", "mask", "remove_background", "undo", "redo", "checkout", "export", "convert"].contains(method)
         let key = params.optionalString("idempotency_key")
         if mutable {
             guard let key, !key.isEmpty, key.utf8.count <= 128, params.optionalString("source_revision") != nil else {
@@ -87,6 +89,22 @@ actor ImageDocuments {
 
         let image = try load(document, revision.id)
         let settings = params?["parameters"]
+        if method == "select_subject" {
+            let result = try ImageSubject.select(image, requested: try settings?["instances"]?.decode(as: [Int].self))
+            let selectionID = UUID().uuidString
+            let encoded = try ImageRaster.encoded(result.mask, format: "png")
+            let destination = path(id)
+            let count = try FileManager.default.contentsOfDirectory(atPath: destination.path).filter { $0.hasPrefix("selection-") }.count
+            guard count < 24 else { throw ImageRaster.invalid("This document has reached its saved selection limit.") }
+            try encoded.write(to: selectionFile(id, selectionID, extension: "png"), options: .atomic)
+            try JSONEncoder().encode(Selection(revision: source, instances: result.instances))
+                .write(to: selectionFile(id, selectionID, extension: "json"), options: .atomic)
+            var fields: [String: JSONValue] = ["document_id": .string(id), "revision_id": .string(source),
+                "selection_id": .string(selectionID), "instances": try JSONValue.from(result.instances),
+                "warnings": .array([.string("Check fine details and ambiguous edges in the estimated mask.")])]
+            if browser { fields["preview"] = .string(try ImageRaster.preview(result.mask).base64EncodedString()) }
+            return .object(fields)
+        }
         if method == "sample_color" {
             let x = try ImageRaster.integer(settings, "x"), y = try ImageRaster.integer(settings, "y")
             let channels = try ImageRaster.sample(image, x: x, y: y)
@@ -97,6 +115,7 @@ actor ImageDocuments {
             var result = try metadata(document, image: image, revision: source).objectValue!
             if method == "preview" {
                 guard browser else { throw BridgeError(.notAuthorized, "Image previews are rendered in Lima.") }
+                try? StudioRecent.record(document.id, workspace: workspace, root: root)
                 result["preview"] = .string(try ImageRaster.preview(image).base64EncodedString())
             }
             return .object(result)
@@ -155,6 +174,20 @@ actor ImageDocuments {
                 output = try ImageRaster.colorKey(image, colors: settings.decode("target_colors", as: [String].self),
                                                   tolerance: settings.double("tolerance", default: 8), softness: settings.double("softness", default: 3),
                                                   connected: settings.bool("connected_only", default: true), invert: settings.bool("invert", default: false))
+            case "remove_background":
+                let mask: CGImage
+                if let selectionID = settings.optionalString("selection_id") {
+                    guard UUID(uuidString: selectionID)?.uuidString == selectionID,
+                          let saved = try? Data(contentsOf: selectionFile(id, selectionID, extension: "json")),
+                          let selection = try? JSONDecoder().decode(Selection.self, from: saved), selection.revision == source else {
+                        throw ImageRaster.invalid("This subject mask belongs to another revision. Select the subject again.")
+                    }
+                    mask = try ImageRaster.decode(Data(contentsOf: selectionFile(id, selectionID, extension: "png"))).image
+                } else {
+                    let instances = try settings?["instances"]?.decode(as: [Int].self)
+                    mask = try ImageSubject.select(image, requested: instances).mask
+                }
+                output = try ImageRaster.masked(image, by: mask, channel: "luminance", invert: false)
             case "mask":
                 let mask = try ImageWorkspaceFiles.read(root: directory, path: settings.string("path"))
                 output = try ImageRaster.masked(image, by: ImageRaster.decode(mask).image,
@@ -189,6 +222,27 @@ actor ImageDocuments {
         return result
     }
 
+    func snapshot(workspace: String, id: String, revision: String) throws -> Data {
+        let document = try find(id, workspace: workspace)
+        guard document.revisions.contains(where: { $0.id == revision }) else {
+            throw ImageRaster.invalid("This image revision does not exist.")
+        }
+        return try Data(contentsOf: revisionFile(document, revision))
+    }
+
+    private func find(_ id: String, workspace: String) throws -> Document {
+        guard UUID(uuidString: id)?.uuidString == id,
+              let data = try? Data(contentsOf: path(id).appendingPathComponent("document.json")),
+              let document = try? JSONDecoder().decode(Document.self, from: data), document.workspace == workspace else {
+            throw BridgeError(.notAuthorized, "The image document is unavailable in this workspace.")
+        }
+        return document
+    }
+
+    private func selectionFile(_ document: String, _ selection: String, extension suffix: String) -> URL {
+        path(document).appendingPathComponent("selection-" + selection + "." + suffix)
+    }
+
     private func load(_ document: Document, _ revision: String) throws -> CGImage {
         try ImageRaster.decode(Data(contentsOf: revisionFile(document, revision))).image
     }
@@ -213,21 +267,12 @@ actor ImageDocuments {
 extension Runtime {
     func registerImages() {
         let images = ImageDocuments(root: paths.data.appendingPathComponent("image-documents", isDirectory: true))
-        for method in ["open", "inspect", "history", "preview", "sample_color", "crop", "resize", "rotate", "trim", "color_key", "mask",
+        registerImageProduction(images: images)
+        for method in ["open", "recent", "inspect", "history", "preview", "sample_color", "select_subject", "crop", "resize", "rotate", "trim", "color_key", "mask", "remove_background",
                        "undo", "redo", "checkout", "export", "convert"] {
             register("image." + method) { [unowned self] params, context in
-                let id: String
-                if let bound = context.workspaceID {
-                    guard params.optionalString("workspace_id").map({ $0 == bound }) ?? true else {
-                        throw BridgeError(.notAuthorized, "Image tools are scoped to your workspace.")
-                    }
-                    id = bound
-                } else {
-                    guard context.origin == .browser else { throw BridgeError(.notAuthorized, "Open Image Studio from a workspace.") }
-                    id = try params.string("workspace_id")
-                }
-                let workspace = try await self.workspaces.get(id)
-                try await self.workspaces.requireActive(id)
+                let workspace = try await self.studioWorkspace(params, context)
+                let id = workspace.id
                 if method == "open" {
                     let source = try params.string("path")
                     let document = try await images.open(workspace: id, directory: workspace.directory, source: source)
@@ -240,7 +285,7 @@ extension Runtime {
                 }
                 let result = try await images.perform(method, workspace: id, directory: workspace.directory, params: params,
                                                       browser: context.origin == .browser)
-                if ["crop", "resize", "rotate", "trim", "color_key", "mask", "undo", "redo", "checkout"].contains(method),
+                if ["crop", "resize", "rotate", "trim", "color_key", "mask", "remove_background", "undo", "redo", "checkout"].contains(method),
                    !params.bool("preview_only", default: false) {
                     self.broadcast("image.changed", .object(["workspace_id": .string(id),
                         "document_id": result["document_id"] ?? .null, "revision_id": result["revision_id"] ?? .null]))
@@ -265,6 +310,8 @@ extension MCPServer {
             ("color_key", "Remove one to four #RRGGBB colors. CIELAB tolerance 0–100, softness 0–50. connected_only defaults true to protect enclosed details.",
                 [:], ["target_colors": .object(["type": .string("array"), "items": .object(["type": .string("string")])]),
                      "tolerance": .string("number"), "softness": .string("number"), "connected_only": .string("boolean"), "invert": .string("boolean")]),
+            ("remove_background", "Separate foreground with Apple Vision. Optionally supply selection_id returned for the current revision.",
+                [:], ["selection_id": .string("string"), "instances": .object(["type": .string("array"), "items": .object(["type": .string("integer")])])]),
             ("mask", "Apply an image-sized mask from a workspace-relative image. The mask uses luminance by default. White reveals and black conceals.",
                 [:], ["path": .string("string"), "channel": .string("string"), "invert": .string("boolean")]),
             ("undo", "Move the document back one revision.", [:], [:]),
@@ -305,6 +352,13 @@ extension MCPServer {
                  ]), "required": .array([.string("x"), .string("y")])])]) { args, client in
                 try client.call("image.sample_color", params: args)
             },
-        ] + tools
+            Tool(name: "image_select_subject", description: "Estimate foreground locally with Apple Vision. Returns a reusable selection_id scoped to the inspected revision.",
+                 properties: source, required: ["document_id", "source_revision"],
+                 structuredProperties: ["parameters": .object(["type": .string("object"), "properties": .object([
+                    "instances": .object(["type": .string("array"), "items": .object(["type": .string("integer")])]),
+                 ])])]) { args, client in
+                try client.call("image.select_subject", params: args)
+            },
+        ] + tools + productionTools
     }()
 }

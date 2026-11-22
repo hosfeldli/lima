@@ -8,10 +8,10 @@ const TASK_PHASES = {
   queued: ["waiting", "Waiting for available capacity", "waiting", "note"],
   waiting: ["waiting", "Waiting for other agents", "waiting", "note"],
   paused: ["waiting", "Paused", "paused", "pause"],
-  blocked: ["blocked", "Blocked", "waiting", "warning"],
+  blocked: ["blocked", "Needs you", "waiting", "warning"],
   verifying: ["working", "Verifying results…", "test", "checkbox"],
   completed: ["complete", "Task completed", "idle", "check"],
-  completed_with_warnings: ["complete", "Completed with warnings", "idle", "warning"],
+  completed_with_warnings: ["complete", "Done, with notes", "idle", "check"],
   failed: ["failed", "Task failed", "failed", "warning"],
   canceled: ["idle", "Stopped", "paused", "pause"],
 };
@@ -155,10 +155,16 @@ export class VisualState {
       if (!this.connected) activity = DISCONNECTED;
       else if (prompt) activity = { state: "blocked", label: prompt.approval ? "Needs approval" : "Waiting for input", motion: "waiting", icon: "note" };
       else if (task && TASK_PHASES[task.state]) {
-        const [state, label, motion, icon] = TASK_PHASES[task.state];
-        // A notice says why and what to do, not just that something is wrong.
+        let [state, label, motion, icon] = TASK_PHASES[task.state];
+        // A notice says why and what to do. Only something the user must do
+        // is an alarm; everything else is information they can dismiss.
+        const notice = task.attention && !task.attention.dismissed ? task.attention : null;
+        if (task.state === "blocked" && !notice?.needsUser) {
+          [state, label, motion, icon] = task.attention?.dismissed ? ["idle", "Stopped", "paused", "pause"] : ["waiting", "Paused", "waiting", "pause"];
+        }
+        if (task.state === "failed" && task.attention?.dismissed) [state, label, motion] = ["idle", "Task failed", "idle"];
         activity = { state, label, motion: this.celebrations.has(task.id) ? "complete" : motion, icon, startedAt: task.startedAt,
-          taskId: task.id, detail: task.attention?.reason ?? "", attention: task.attention ?? undefined };
+          taskId: task.id, detail: notice?.reason ?? "", notice: notice ?? undefined };
       } else if (task?.recovering && chat?.message?.status !== "streaming") {
         activity = { state: "starting", label: "Recovering…", motion: "recover", icon: "redo" };
       } else if (target?.surface === "terminal" && terminal?.state === "waitingForInput") {

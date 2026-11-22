@@ -3,6 +3,7 @@ import { bar, bridge, call, el, errorText, icon, markdown, onEvent, prefs, relat
 import { resultView } from "./components.js";
 import { agentControls, PROVIDERS } from "./composer.js";
 import { companion, setCompanionState } from "./companion.js";
+import { generationSettings } from "./studio-production.js";
 
 const page = (...children) => el("div", { class: "page narrow" }, ...children);
 const card = (title, ...children) => el("section", { class: "card" }, title ? el("h2", { text: title }) : null, ...children);
@@ -192,6 +193,7 @@ export async function renderIntegrations(app, section) {
     ]],
     ["sidebar", "Sidebar", "dock shortcuts edit order spotify music calendar mail dictation", [card("Sidebar shortcuts", sidebarSettings())]],
     ["agents", "AI providers", "claude codex opencode sign in install default model setup", [card("AI providers", providerSettings())]],
+    ["image-generation", "Image Generation", "local ComfyUI checkpoints model artwork generator", [card("Local provider", generationSettings())]],
     ["writing", "Writing tools", "grammar accessibility global shortcut ai replace", [card("Grammar checker", grammarSettings())]],
     ["connections", "Integrations", "gmail google calendar oauth github reminders login spotify automation", [
       card("Gmail & Google Calendar", googleSettings()), card("GitHub", services),

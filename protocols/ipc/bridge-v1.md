@@ -38,6 +38,8 @@ Terminal state may include shellReady, userEditing, and activeCommand. Terminal 
 
 Workspace-scoped `image.*` calls use revision IDs and idempotency keys for mutations. Browser callers supply `workspace_id`. Authenticated agents inherit their workspace from the connection. `image.changed` reports committed revision changes, and `image.preview` returns a reduced-size PNG to the browser. See [Image Studio](../../docs/architecture/image-studio.md) for supported operations.
 
+`image.generate` returns a persistent `operation_id` for the local provider job. `image.generation_status` reports verified assets as they are imported. The `vector.*` and `animation.*` families use the same workspace authorization, stable document and object IDs, and exact source revisions. `vector.render` and `animation.render_preview` return image bytes only to Lima's browser interface.
+
 `workspace.reveal` (browser origin only) shows a workspace's project folder in Finder for the sidebar's Reveal Project Folder.
 
 Workspace deletion returns archivePath for a top-level workspace, directoryKept when its source stays in place, and recoveryPath when a verified archive exists alongside a staged recovery copy.

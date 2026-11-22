@@ -766,10 +766,10 @@ zen-folder[lima-workspace][lima-chat-selected] > .tab-group-label-container {
   transform: translateY(-2px) rotate(45deg);
 }
 zen-folder[collapsed] > .tab-group-label-container > .lima-workspace-disclosure::before { transform: rotate(-45deg); }
-zen-folder:is([lima-agents], [lima-tabs]) > .tab-group-label-container > .tab-group-folder-icon > svg {
+zen-folder:is([lima-agents], [lima-tabs], [lima-images]) > .tab-group-label-container > .tab-group-folder-icon > svg {
   display: none;
 }
-zen-folder:is([lima-agents], [lima-tabs]) > .tab-group-label-container > .tab-group-folder-icon::after {
+zen-folder:is([lima-agents], [lima-tabs], [lima-images]) > .tab-group-label-container > .tab-group-folder-icon::after {
   content: "";
   display: block;
   width: 17px;
@@ -777,7 +777,7 @@ zen-folder:is([lima-agents], [lima-tabs]) > .tab-group-label-container > .tab-gr
   background: currentColor;
   mask: url("resource://lima-ui/icons/folder-open.svg") center / contain no-repeat;
 }
-zen-folder:is([lima-agents], [lima-tabs])[collapsed] > .tab-group-label-container > .tab-group-folder-icon::after {
+zen-folder:is([lima-agents], [lima-tabs], [lima-images])[collapsed] > .tab-group-label-container > .tab-group-folder-icon::after {
   mask-image: url("resource://lima-ui/icons/folder.svg");
 }
 

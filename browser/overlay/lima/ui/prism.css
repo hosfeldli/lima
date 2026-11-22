@@ -768,11 +768,13 @@ button.change-row:hover { background: var(--panel-2); }
 .image-studio-header { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; }
 .image-studio-header h1 { margin: 0; font-size: var(--t-md); }
 .image-studio-open, .image-studio-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.image-studio-toolbar[hidden] { display: none; }
 .image-studio-open input { width: min(220px, 50vw); }
 .image-studio-settings { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; width: 100%; padding: 9px; border: 1px solid var(--line); border-radius: var(--r); }
 .image-studio-settings[hidden] { display: none; }
 .image-studio-settings label { display: grid; gap: 3px; color: var(--ink-2); }
 .image-studio-settings input[type="number"] { width: 76px; }
+.image-studio-settings :is(textarea, input[type="text"]) { min-width: min(240px, 60vw); }
 .image-studio-settings input[type="checkbox"] { appearance: auto; min-height: 16px; justify-self: start; }
 .image-studio-canvas { flex: 1; min-height: 0; display: grid; overflow: auto; place-items: safe center; background: var(--panel); border: 1px solid var(--line); }
 .image-studio-canvas img { box-sizing: content-box; display: block; height: auto; max-width: none; background: conic-gradient(#e2e3e5 25%, #fafafa 0 50%, #e2e3e5 0 75%, #fafafa 0) 0 0 / 16px 16px; }
@@ -782,6 +784,11 @@ button.change-row:hover { background: var(--panel-2); }
 .image-studio-canvas[data-background="white"] img { background: white; }
 .image-studio footer { display: flex; gap: 6px 12px; flex-wrap: wrap; align-items: baseline; }
 .image-studio footer p { margin: 0; }
+.studio-control-strip:empty { display: none; }
+.studio-control-strip { display: flex; align-items: center; gap: 8px; padding-block-start: 5px; border-block-start: 1px solid var(--line); }
+.image-settings-form { display: grid; justify-items: start; gap: 8px; }
+.image-settings-form > label:not(.row) { display: grid; gap: 3px; }
+.image-settings-form input[type="checkbox"] { appearance: auto; }
 .page-body :is(td, th) { min-inline-size: 2rem; }
 .page-tools .fmt:disabled { opacity: .42; }
 

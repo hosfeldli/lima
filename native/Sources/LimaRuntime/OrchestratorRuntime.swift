@@ -152,6 +152,11 @@ extension Runtime {
             _ = try await Self.bridged { try await self.orchestrator.resume(try params.string("id")) }
             return try await self.orchestrator.tree(try params.string("id"))
         }
+        register("task.dismiss") { [unowned self] params, context in
+            guard context.origin == .browser else { throw BridgeError(.notAuthorized, "Only the user can dismiss a notice.") }
+            _ = try await Self.bridged { try await self.orchestrator.dismiss(try params.string("id")) }
+            return try await self.orchestrator.tree(try params.string("id"))
+        }
         register("task.concurrency") { [unowned self] params, context in
             guard context.origin == .browser else { throw BridgeError(.notAuthorized, "Only the user can change agent concurrency.") }
             let value = params.int("maxAgents", default: 0)

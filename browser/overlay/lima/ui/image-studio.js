@@ -1,4 +1,5 @@
-import { call, el, errorText, onEvent, prefs, setPage } from "./lib.js";
+import { bridge, call, el, errorText, onEvent, setPage } from "./lib.js";
+import { imageGenerationSettingsURL, studioURL, watchGeneration } from "./studio-production.js";
 
 export function renderImageStudio(app, workspace, documentID) {
   setPage("Image Studio", "image");
@@ -7,7 +8,8 @@ export function renderImageStudio(app, workspace, documentID) {
     return;
   }
   const request = (operation, data = {}) => call("image." + operation, { workspace_id: workspace, ...data });
-  let current, original, comparing = false, busy = false, zoom = "fit";
+  let current, original, selection, comparing = false, busy = false, zoom = "fit";
+  const lifetime = new AbortController();
   const path = el("input", { type: "text", placeholder: "assets/example.png", "aria-label": "Workspace image path", required: true });
   const notice = el("p", { class: "image-studio-status", role: "status" });
   const art = el("img", { alt: "Image preview", hidden: true, draggable: "false" });
@@ -18,16 +20,17 @@ export function renderImageStudio(app, workspace, documentID) {
   const open = el("form", { class: "image-studio-open", onsubmit: event => {
     event.preventDefault();
     run(async () => {
-      const doc = await request("open", { path: path.value });
-      prefs.set("image.last." + workspace, doc.document_id);
+      const doc = await request("open", { path: path.value, show_in_workspace: true });
       original = undefined;
       await load(doc.document_id);
     });
   } }, path, el("button", { class: "primary", type: "submit" }, "Open image"));
   const buttons = [];
-  const button = (label, action) => {
+  const needsImage = new Set();
+  const button = (label, action, requiresImage = true) => {
     const control = el("button", { type: "button", class: "ghost", onclick: action }, label);
     buttons.push(control);
+    if (requiresImage) needsImage.add(control);
     toolbar.append(control);
     return control;
   };
@@ -38,6 +41,25 @@ export function renderImageStudio(app, workspace, documentID) {
   const backplate = dropdown([["checker", "Checkerboard"], ["white", "White"], ["black", "Black"]], "Preview background");
   backplate.onchange = () => { canvas.dataset.background = backplate.value; };
   toolbar.append(zoomMenu, backplate);
+  button("Generate", () => run(async () => {
+    const config = await request("generation_config");
+    if (!config.configured) {
+      notice.replaceChildren("Choose a local checkpoint in ", el("button", { onclick: () => bridge.openTab(imageGenerationSettingsURL) }, "Image Generation Settings"));
+      return;
+    }
+    const prompt = el("textarea", { rows: 3, maxlength: 4000, required: true });
+    const name = el("input", { type: "text", value: "generated.png", required: true });
+    const fields = [
+      ["Prompt", prompt, "prompt", field => field.value],
+      number("Width", "width", 768, { min: 256, max: 1536, step: 8 }),
+      number("Height", "height", 768, { min: 256, max: 1536, step: 8 }),
+      number("Variations", "count", 1, { min: 1, max: 4 }),
+      ["Workspace export path", name, "output_name", field => field.value],
+    ];
+    edit("generate", fields, "Generate image");
+  }), false);
+  button("Vector", () => bridge.openTab(studioURL(workspace, "vector")), false);
+  button("Animation", () => bridge.openTab(studioURL(workspace, "animation")), false);
 
   function edit(operation, fields, label) {
     settings.hidden = false;
@@ -47,7 +69,20 @@ export function renderImageStudio(app, workspace, documentID) {
     settings.onsubmit = event => {
       event.preventDefault();
       const values = Object.fromEntries(fields.map(([, field, name, convert]) => [name, convert(field)]));
-      if (operation === "export") {
+      if (operation === "generate") {
+        run(async () => {
+          const job = await request("generate", { ...values, idempotency_key: crypto.randomUUID(), show_in_workspace: true });
+          settings.hidden = true;
+          await followGeneration(job.operation_id);
+        });
+      } else if (operation === "trace") {
+        run(async () => {
+          const result = await call("vector.trace", { workspace_id: workspace, ...revision(), parameters: values, show_in_workspace: true });
+          settings.hidden = true;
+          notice.replaceChildren(`${result.shape_count} editable paths. `, ...(result.warnings ?? []), " ",
+            el("button", { onclick: () => bridge.openTab(result.studio_url) }, "Open Vector Studio"));
+        });
+      } else if (operation === "export") {
         const { filename, ...parameters } = values;
         run(async () => {
           const saved = await request("export", { ...revision(), output_name: filename, parameters });
@@ -88,9 +123,23 @@ export function renderImageStudio(app, workspace, documentID) {
     ["Workspace mask path", el("input", { type: "text", placeholder: "assets/mask.png", required: true }), "path", field => field.value],
     ["Mask channel", dropdown([["luminance", "Luminance"], ["alpha", "Alpha"]], "Mask channel"), "channel", field => field.value],
   ], "Apply mask"));
+  button("Select subject", () => run(async () => {
+    selection = await request("select_subject", { document_id: current.document_id, source_revision: current.revision_id });
+    comparing = false;
+    paint();
+    notice.replaceChildren("Foreground mask ready. ", el("button", { onclick: () => finish("remove_background", { selection_id: selection.selection_id }) }, "Apply selection"),
+      el("button", { onclick: () => { selection = undefined; paint(); notice.textContent = ""; } }, "Discard"));
+  }));
+  button("Trace SVG", () => edit("trace", [
+    ["Trace style", dropdown([["flat_color", "Flat color"], ["monochrome", "Monochrome"], ["outline", "Outline"]], "Trace style"), "mode", field => field.value],
+    number("Max colors", "colors", 6, { min: 1, max: 16 }),
+    number("Tracing resolution", "max_edge", 256, { min: 32, max: 512 }),
+    number("Minimum area", "minimum_area", 2, { min: 1, max: 1000 }),
+  ], "Trace paths"));
   const undo = button("Undo", () => finish("undo"));
   const redo = button("Redo", () => finish("redo"));
   const compare = button("Compare", () => run(async () => {
+    selection = undefined;
     if (!original) {
       const history = await request("history", { document_id: current.document_id });
       original = await request("preview", { document_id: current.document_id, source_revision: history.revisions[0].id });
@@ -123,6 +172,7 @@ export function renderImageStudio(app, workspace, documentID) {
   async function load(id) {
     current = await request("preview", { document_id: id });
     comparing = false;
+    selection = undefined;
     setPage(current.source_path.split("/").at(-1) || "Image Studio", "image");
     paint();
   }
@@ -136,21 +186,37 @@ export function renderImageStudio(app, workspace, documentID) {
     if (!current) return;
     const display = comparing ? original : current;
     art.hidden = false;
-    art.src = "data:image/png;base64," + display.preview;
+    art.src = "data:image/png;base64," + (selection?.preview ?? display.preview);
     caption.textContent = [
       display.source_path, `${display.dimensions.width} × ${display.dimensions.height}`,
-      comparing ? "Original" : "Working revision", display.transparent ? "Transparency" : "",
+      selection ? "Estimated foreground mask" : comparing ? "Original" : "Working revision", !selection && display.transparent ? "Transparency" : "",
     ].filter(Boolean).join(" · ");
     compare.setAttribute("aria-pressed", String(comparing));
     applyZoom();
   }
   function updateControls() {
     for (const control of [...buttons, ...open.querySelectorAll("button, input"), ...settings.querySelectorAll("button, input, select")]) {
-      control.disabled = busy || (!current && buttons.includes(control));
+      control.disabled = busy || (!current && needsImage.has(control));
     }
     undo.disabled ||= !current?.can_undo;
     redo.disabled ||= !current?.can_redo;
     canvas.setAttribute("aria-busy", String(busy));
+  }
+
+  async function followGeneration(id) {
+    let phase;
+    const cancel = el("button", { onclick: () => request("generation_cancel", { operation_id: id }).catch(error => { notice.textContent = errorText(error); }) }, "Stop import");
+    const job = await watchGeneration(workspace, id, record => {
+      if (record.status === phase) return;
+      phase = record.status;
+      if (phase === "running" || phase === "queued") notice.replaceChildren(phase === "running" ? "Generating image… " : "Waiting for the local provider… ", cancel);
+    }, lifetime.signal);
+    if (!job) return;
+    if (job.status !== "completed") throw new Error([job.error || "Generation stopped.", job.artifact_ids.join(", ")].filter(Boolean).join(" "));
+    original = undefined;
+    await load(job.documents[0].document_id);
+    notice.replaceChildren("Generated ", job.artifact_ids.join(", "), ...job.documents.slice(1).map((document, index) =>
+      el("button", { onclick: () => bridge.openTab(document.studio_url) }, `Open variation ${index + 2}`)));
   }
   async function run(operation) {
     if (busy) return;
@@ -169,11 +235,15 @@ export function renderImageStudio(app, workspace, documentID) {
     el("header", { class: "image-studio-header" }, el("h1", { text: "Image Studio" }), open, toolbar, settings),
     canvas, el("footer", {}, caption, notice)));
   updateControls();
-  const last = documentID || prefs.get("image.last." + workspace, "");
-  if (last) run(() => load(last));
+  run(async () => {
+    if (documentID) { await load(documentID); return; }
+    const [last, job] = await Promise.all([request("recent"), request("generation_latest")]);
+    if (job && ["queued", "running"].includes(job.status)) await followGeneration(job.operation_id);
+    else if (last) await load(last);
+  });
   const unsubscribe = onEvent(({ event, data }) => {
     if (event === "image.changed" && data.workspace_id === workspace && data.document_id === current?.document_id &&
         !busy && data.revision_id !== current.revision_id) run(() => load(data.document_id));
   });
-  window.addEventListener("pagehide", unsubscribe, { once: true });
+  window.addEventListener("pagehide", () => { lifetime.abort(); unsubscribe(); }, { once: true });
 }

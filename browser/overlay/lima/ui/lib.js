@@ -11,6 +11,25 @@ function requestBridge() {
 
 export const bridge = requestBridge();
 
+// Conditional UI passes null for "nothing here". The DOM would print it as
+// the text "null", so Lima pages drop null, undefined and false children.
+for (const proto of [Element.prototype, DocumentFragment.prototype]) {
+  for (const name of ["append", "prepend", "replaceChildren"]) {
+    const original = proto[name];
+    if (original.limaFiltered) continue;
+    const filtered = function (...nodes) { return original.apply(this, nodes.filter(node => node !== null && node !== undefined && node !== false)); };
+    filtered.limaFiltered = true;
+    proto[name] = filtered;
+  }
+}
+for (const name of ["before", "after", "replaceWith"]) {
+  const original = Element.prototype[name];
+  if (original.limaFiltered) continue;
+  const filtered = function (...nodes) { return original.apply(this, nodes.filter(node => node !== null && node !== undefined && node !== false)); };
+  filtered.limaFiltered = true;
+  Element.prototype[name] = filtered;
+}
+
 export function call(method, params) {
   if (!bridge) return Promise.reject({ code: "bridge", message: "Lima bridge unavailable" });
   return bridge.request(method, params ?? null);

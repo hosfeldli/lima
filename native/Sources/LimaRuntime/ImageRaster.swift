@@ -134,7 +134,7 @@ enum ImageRaster {
                                    height: max(1, Int(Double(image.height) * scale)), mode: "stretch"), format: "png")
     }
 
-    private static func pixels(_ image: CGImage) throws -> [UInt8] {
+    static func pixels(_ image: CGImage) throws -> [UInt8] {
         var bytes = [UInt8](repeating: 0, count: image.width * image.height * 4)
         try bytes.withUnsafeMutableBytes { buffer in
             guard let context = CGContext(data: buffer.baseAddress, width: image.width, height: image.height,

@@ -184,8 +184,9 @@ async function initializeChat(app, chatId, compact, signal) {
     stopButton.hidden = !running;
     sendButton.hidden = running;
     sendButton.disabled = !loaded || pendingRequest || !controls.settings().provider;
-    drawSteps();
-    paintNow();
+    // Status and Activity must never stop the transcript from rendering.
+    try { drawSteps(); } catch (error) { console.error(error); }
+    try { paintNow(); } catch (error) { console.error(error); }
     const atBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 60;
     const ids = new Set(conversation.messages.map(message => message.id));
     for (const id of settledMessages.keys()) if (!ids.has(id)) settledMessages.delete(id);
@@ -267,8 +268,8 @@ async function initializeChat(app, chatId, compact, signal) {
   // task: its state, helpers, dependencies, history and outcome.
   const TASK_STATES = {
     accepted: "Preparing your task…", planned: "Planned", queued: "Waiting for available capacity", waiting: "Waiting for dependencies",
-    running: "Working", paused: "Work paused", blocked: "Blocked", verifying: "Verifying results…", completed: "Task completed",
-    completed_with_warnings: "Completed with warnings", failed: "Failed", canceled: "Stopped",
+    running: "Working", paused: "Work paused", blocked: "Needs you", verifying: "Verifying results…", completed: "Task completed",
+    completed_with_warnings: "Done, with notes", failed: "Failed", canceled: "Stopped",
   };
   const TASK_DONE = new Set(["completed", "completed_with_warnings", "failed", "canceled"]);
   let progressRequest = 0;
@@ -297,12 +298,13 @@ async function initializeChat(app, chatId, compact, signal) {
       el("section", { class: "task-card", "data-state": task.state },
         el("div", { class: "row" }, el("strong", { class: "grow", text: task.title }), el("span", { class: "badge", text: TASK_STATES[task.state] ?? task.state })),
         task.context?.length ? el("p", { class: "muted", text: task.context.join(" · ") }) : null,
-        task.attention ? el("p", { class: "task-attention" }, el("strong", { text: task.attention.reason }), " ", task.attention.remedy) : null,
+        task.attention && !task.attention.dismissed ? el("p", { class: "task-attention" }, el("strong", { text: task.attention.reason }), " ", task.attention.remedy) : null,
         task.outcome ? el("p", { class: "task-outcome", text: task.outcome }) : null,
         el("div", { class: "row" },
           !TASK_DONE.has(task.state) ? control("Stop Task", "task.cancel") : null,
           ["running", "waiting", "queued"].includes(task.state) ? control("Pause", "task.pause") : null,
-          ["paused", "blocked", "failed"].includes(task.state) ? control(task.state === "paused" ? "Resume" : "Retry", "task.resume") : null)),
+          ["paused", "blocked", "failed"].includes(task.state) ? control(task.state === "paused" ? "Resume" : "Retry", "task.resume") : null,
+          task.attention && !task.attention.dismissed ? control("Dismiss", "task.dismiss") : null)),
       children.length ? el("h3", { text: "Agents" }) : null,
       children.length ? el("ul", { class: "list" }, children.map(child => el("li", {
         class: child.conversationID ? "clickable" : "", title: child.objective,
@@ -377,7 +379,7 @@ async function initializeChat(app, chatId, compact, signal) {
 
   /** A task that needs the user says what to do next, with the button that does it. */
   function attentionActions(next) {
-    const attention = next.attention;
+    const attention = next.notice;
     if (!attention || !next.taskId) return [];
     const task = method => async () => {
       try { await call(method, { id: next.taskId }); } catch (error) { reportError(error); }
@@ -389,7 +391,8 @@ async function initializeChat(app, chatId, compact, signal) {
       review: el("button", { class: "ghost", onclick: () => showView("progress") }, "Review Task"),
     }[attention.action];
     return [el("span", { class: "attention-remedy", text: attention.remedy }), primary,
-      ["blocked", "waiting"].includes(next.state) || attention.action === "resume" ? el("button", { class: "ghost", onclick: task("task.cancel") }, "Stop Task") : null];
+      attention.needsUser ? el("button", { class: "ghost", onclick: task("task.cancel") }, "Stop Task") : null,
+      el("button", { class: "ghost", onclick: task("task.dismiss") }, "Dismiss")];
   }
 
   function paintNow() {
@@ -447,6 +450,17 @@ async function initializeChat(app, chatId, compact, signal) {
       const running = runningReply();
       if (previous?.id !== running?.id) requestError = undefined;
       draw();
+      // A reply just finished: render the stored final text, as a reload
+      // would, in case a streamed chunk arrived out of order.
+      if (previous && previous.id !== running?.id) {
+        const revision = eventRevision;
+        call("chat.get", { id: chatId }).then(fresh => {
+          if (signal.aborted || revision !== eventRevision || !fresh) return;
+          settledMessages.delete(previous.id);
+          conversation = fresh;
+          draw();
+        }).catch(() => {});
+      }
     } else if (message.event === "chat.updated" && helperChats.has(data.id)) {
       const avatar = [...agents.children].find(row => row.dataset.agentChat === data.id)?.firstElementChild;
       if (avatar) avatar.dataset.variant = data.mascot ?? "classic";

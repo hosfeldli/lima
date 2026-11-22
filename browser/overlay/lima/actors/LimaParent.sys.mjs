@@ -13,7 +13,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
 
 const ALLOWED_PREFIXES = [
   "notes.", "chat.", "terminal.", "search.", "context.", "capture.", "audio.", "media.", "tools.",
-  "assistant.", "agents.", "integrations.", "mcp.grants.", "storage.", "background.", "capabilities.", "workspace.", "agent.", "agents.", "fs.", "dictation.", "task.", "image.",
+  "assistant.", "agents.", "integrations.", "mcp.grants.", "storage.", "background.", "capabilities.", "workspace.", "agent.", "agents.", "fs.", "dictation.", "task.", "image.", "vector.", "animation.",
 ];
 const ALLOWED_METHODS = new Set(["quickAsk", "auth.approve", "auth.evaluate", "system.openApp", "host.hello"]);
 
@@ -79,8 +79,15 @@ export class LimaParent extends JSWindowActorParent {
       }
       case "openTab": {
         const win = this.browsingContext.topChromeWindow;
+        const { url, background } = message.data;
+        const { LimaWorkspaces, imageWorkspaceForURL } = ChromeUtils.importESModule("resource://lima/LimaWorkspaces.sys.mjs");
+        const workspace = imageWorkspaceForURL(url);
+        if (workspace) {
+          await LimaWorkspaces.openImageStudio(win, workspace, { url, background });
+          return null;
+        }
         const { LimaTabs } = ChromeUtils.importESModule("resource://lima/LimaTabs.sys.mjs");
-        LimaTabs.openOrFocus(win, message.data.url, { background: message.data.background });
+        LimaTabs.openOrFocus(win, url, { background });
         return null;
       }
       case "replaceURL": {

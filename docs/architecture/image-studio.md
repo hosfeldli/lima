@@ -2,6 +2,8 @@
 
 Image Studio uses a workspace tab, a compact toolbar, a scrollable canvas, and temporary controls for individual operations. Open it from **Open Image Studio** in a workspace's sidebar menu, then enter a workspace-relative file path. For automation, a workspace agent can run the same local operations through Lima's MCP tools.
 
+Raster images, vector documents, and animation timelines with open Studio tabs appear in the workspace's **Images** folder, alongside **Tabs**. The folder starts collapsed, and background additions preserve the selected tab and the folder's current open or closed state. Source and export files keep their original project paths.
+
 ## Local editing foundation
 
 The Swift runtime accepts single-image PNG, JPEG, and TIFF sources. It inspects dimensions, source format, color space, and pixel transparency. The editor supports exact crop and resize, rotation, transparent-margin trim, image masks, and color keying in CIELAB. Connected color keying starts at the perimeter, which keeps enclosed details with the same color. The original file stays in the project. An editable document holds immutable PNG revisions and a revision tree in the local Lima runtime.
@@ -23,6 +25,20 @@ The tool surface is limited to the authenticated workspace. Relative paths can r
 
 Browser calls include `workspace_id`. The workspace-bound MCP tools use underscore names such as `image_color_key` and take their scope from token authentication. Browser-only helpers receive no filesystem image tools.
 
-## Remaining phases
+## Generation and subject selection
 
-The local foundation uses full raster revisions. Vector tracing and structured SVG editing require a separately validated geometry engine. Semantic generation and segmentation require provider adapters, upload authorization, and usage controls. Editable mixed-media layers, path handles, animation authoring, and character reference profiles build on those later components.
+The first generation adapter uses a user-configured ComfyUI server at `127.0.0.1`. Open **Settings → Image Generation**, check the connection, and choose an installed compatible Stable Diffusion checkpoint. Checkpoint selection and permission for workspace agents are independent of the chat provider. The adapter builds a text-to-image workflow from standard ComfyUI nodes. It does not accept arbitrary workflow graphs or send project files. [ComfyUI server routes](https://docs.comfy.org/development/comfyui-server/comms_routes)
+
+Companion handles simple prompt-to-image requests. Confirm the destination when it uses an existing workspace. Requests with multiple production steps run through the existing Orchestrator. Jobs expose an operation ID through `image.generate` and retain prompt, seed, model, provider job ID, and verified asset paths. Poll `image.generation_status` before retrying or reporting completion. Cancel stops Lima's import, and an already-running provider workflow can continue. Lima keeps successfully imported variants and opens their preview tabs in the background.
+
+`image.select_subject` uses Apple Vision to estimate foreground objects. The selection ID belongs to the exact image revision. The browser can preview the mask before applying it with `image.remove_background`. Agents can choose returned instance IDs or ask Vision to select the foreground while applying the operation. Check fine hair, thin lines, and ambiguous edges against the original. [Apple Vision foreground masking](https://developer.apple.com/documentation/vision/vninstancemaskobservation/generatescaledmaskforimage%28forinstances%3Afrom%3A%29)
+
+## Vector and animation
+
+`vector.trace` takes an exact raster document revision and produces SVG paths with stable IDs. Flat color, monochrome, and outline modes form closed contours around connected regions, including holes. Color count, resolution, and minimum region area control complexity. Tracing simplifies pixel detail and is most suitable for graphic artwork. The result reports a normalized RGBA difference and opaque coverage change against the source preview.
+
+Vector Studio opens solid-fill paths, simple SVG shapes, and transforms. The import parser rejects scripts, external resources, and unsupported features. Convert advanced SVG features such as gradients, embedded images, and unsupported path commands before importing. Agents can inspect and change individual paths, nodes, fills, strokes, transforms, groups, and stacking order. Export reparses the result and verifies that it renders with the same shape IDs. Vector and animation edits use immutable revisions with Undo and Redo.
+
+Animation Studio supports up to 60 same-size frames, with individual durations, loop control, and a playback preview. Frames can come from workspace images, supported SVGs, or exact Studio revisions. `animation.tween` interpolates selected vector shapes between translation, rotation, and scale poses. Use `animation.export` for GIF or APNG and `animation.export_spritesheet` for PNG and frame-coordinate JSON. ImageIO reopens animated exports and verifies their format, dimensions, and frame count.
+
+Model-backed reference edits, image inpainting, advanced SVG boolean geometry, mixed-media composition, and persistent character-reference profiles are outside these four delivered workflows.

@@ -59,6 +59,8 @@ public struct OrchestratedTask: Codable, Sendable, Equatable {
         public var verification: [String]
         public var remainingIssues: [String]
         public var nextSteps: [String]
+        /// What the agent needs from the user to continue; empty when nothing.
+        public var needsUser: String? = nil
     }
 
     /// Why a task needs the user, in plain words, and what to do about it.
@@ -69,6 +71,11 @@ public struct OrchestratedTask: Codable, Sendable, Equatable {
         public var remedy: String
         /// The button that resolves it: retry, resume, settings or review.
         public var action: String
+        /// Only the user can unblock it (sign-in, a decision, a resume after
+        /// restart). Everything else is information, never an alarm.
+        public var needsUser: Bool? = nil
+        /// The user dismissed the notice; the task record keeps it.
+        public var dismissed: Bool? = nil
     }
 
     public var id: String
@@ -313,7 +320,7 @@ public actor Orchestrator {
             if let failed = prerequisites.first(where: { $0.state.isTerminal && !$0.state.succeeded }) {
                 task.state = .blocked
                 task.attention = .init(reason: "\(failed.title) \(failed.state == .canceled ? "was stopped" : "failed"), and this step needs its result.",
-                                       remedy: "Retry \(failed.title) from Task Progress, or stop the task.", action: "review")
+                                       remedy: "The workspace agent decides how to continue. Retry \(failed.title) from Task Progress if you want to.", action: "review", needsUser: false)
                 append(&task, "blocked", "Blocked: \(failed.title) \(failed.state == .canceled ? "was stopped" : "failed")")
                 await commit(task)
                 continue
@@ -375,7 +382,7 @@ public actor Orchestrator {
             task.state = .failed
             task.finishedAt = Self.now()
             task.issues.append(String(describing: error))
-            task.attention = .init(reason: "The agent couldn't start: \(error)", remedy: "Check the AI provider in Settings, then Retry.", action: "settings")
+            task.attention = .init(reason: "The agent couldn't start: \(error)", remedy: "Check the AI provider in Settings, then Retry.", action: "settings", needsUser: true)
             append(&task, "failed", "Couldn't start: \(error)")
             task.outcome = "Couldn't start \(task.title): \(error)"
             await commit(task)
@@ -434,9 +441,14 @@ public actor Orchestrator {
         var state: OrchestratedTask.State
         if let report {
             switch report.status.lowercased() {
-            case "blocked": state = .blocked
+            // Blocked means only the user can unblock it. A tool that can't do
+            // part of the job is a partial result for the coordinator.
+            case "blocked": state = report.needsUser == nil ? .completed : .blocked
             case "failed": state = .failed
             default: state = .completed
+            }
+            if report.status.lowercased() == "blocked", report.needsUser == nil, report.remainingIssues.isEmpty {
+                issues.append(report.summary.isEmpty ? "The agent couldn't finish everything." : report.summary)
             }
             if !report.verification.isEmpty, tools.isEmpty {
                 issues.append("The agent says it verified the work, but it didn't run any tools in that turn, so the claim is unconfirmed.")
@@ -473,7 +485,7 @@ public actor Orchestrator {
         guard var task = tasks[id] else { return }
         if error.kind == .cancelled {
             task.state = .paused
-            task.attention = .init(reason: "The agent was stopped before it finished.", remedy: "Resume to continue from where it stopped.", action: "resume")
+            task.attention = .init(reason: "The agent was stopped before it finished.", remedy: "Resume to continue from where it stopped.", action: "resume", needsUser: false)
             append(&task, "paused", "Agent stopped. Ready to resume.")
             await commit(task)
             return
@@ -664,11 +676,34 @@ public actor Orchestrator {
         return try get(id)
     }
 
+    /// Hides a notice without changing the task; the record keeps it.
+    public func dismiss(_ id: String) async throws -> OrchestratedTask {
+        guard var task = tasks[id] else { throw OrchestratorError.notFound(id) }
+        if task.attention != nil {
+            task.attention?.dismissed = true
+            append(&task, "dismissed", "Notice dismissed")
+            await commit(task)
+        }
+        return task
+    }
+
     // MARK: Restart
 
     /// After a runtime restart: a turn that was running was interrupted (the
     /// conversation records that); report it honestly instead of replaying it.
     public func recover() async {
+        // Older records marked a partial result "blocked" with nothing for
+        // the user to do; they become partial completions.
+        for id in tasks.values.filter({ $0.state == .blocked && $0.report?.status == "blocked" && $0.report?.needsUser == nil }).map(\.id) {
+            guard var task = tasks[id] else { continue }
+            task.state = .completedWithWarnings
+            task.finishedAt = task.finishedAt ?? task.updatedAt
+            if task.issues.isEmpty { task.issues = task.report?.remainingIssues ?? [] }
+            task.attention = Self.attention(state: .completedWithWarnings, report: task.report, issues: task.issues)
+            append(&task, "reclassified", "Partly done: nothing is needed from you")
+            await commit(task)
+            await settled(task)
+        }
         for id in tasks.values.filter({ $0.state.isActive }).map(\.id) {
             guard var task = tasks[id], let conversation = task.conversationID,
                   let current = await executor.conversation(conversation),
@@ -677,7 +712,7 @@ public actor Orchestrator {
             if reply?.status == .complete, let reply { await finish(id, reply: reply); continue }
             if reply?.status == .streaming || reply?.status == .queued { continue }
             task.state = .blocked
-            task.attention = .init(reason: "Lima restarted while the agent was working.", remedy: "Resume to continue from the current state. Nothing is replayed.", action: "resume")
+            task.attention = .init(reason: "Lima restarted while the agent was working.", remedy: "Resume to continue from the current state. Nothing is replayed.", action: "resume", needsUser: true)
             append(&task, "interrupted", "Agent session interrupted when Lima restarted. Resume to continue from the current state.")
             await commit(task)
         }
@@ -729,8 +764,10 @@ public actor Orchestrator {
         lines.append("""
             When you finish, end your reply with exactly one fenced block:
             ```lima-report
-            {"status":"completed | blocked | failed","summary":"one or two sentences","actionsTaken":["…"],"artifacts":["changed files, notes, URLs"],"verification":["checks you actually ran and their observed result"],"remainingIssues":["…"],"nextSteps":["…"]}
+            {"status":"completed | blocked | failed","summary":"one or two sentences","actionsTaken":["…"],"artifacts":["changed files, notes, URLs"],"verification":["checks you actually ran and their observed result"],"remainingIssues":["…"],"nextSteps":["…"],"needsUser":""}
             ```
+            Use "blocked" only when you can't continue without the user, and put what you need from them in needsUser \
+            (a sign-in, a decision, a file). If your tools can't do part of the job, report "completed" and list what you couldn't check in remainingIssues.
             List a verification item only for a check you ran and observed. Separate observations from assumptions. \
             Never report a command or action as successful without its result.
             """)
@@ -753,7 +790,8 @@ public actor Orchestrator {
         return .init(status: ["completed", "blocked", "failed"].contains(status) ? status : "completed",
                      summary: String((value["summary"]?.stringValue ?? "").prefix(1200)),
                      actionsTaken: list("actionsTaken"), artifacts: list("artifacts"), verification: list("verification"),
-                     remainingIssues: list("remainingIssues"), nextSteps: list("nextSteps"))
+                     remainingIssues: list("remainingIssues"), nextSteps: list("nextSteps"),
+                     needsUser: value["needsUser"]?.stringValue.map { String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(600)) }.flatMap { $0.isEmpty ? nil : $0 })
     }
 
     static func outcome(for task: OrchestratedTask, helpers: [OrchestratedTask]) -> String {
@@ -785,18 +823,17 @@ public actor Orchestrator {
         switch state {
         case .completed: return nil
         case .blocked:
-            let why = report?.remainingIssues.first ?? report?.summary ?? "The agent couldn't continue."
-            let more = (report?.remainingIssues.count ?? 0) > 1 ? " (and \(report!.remainingIssues.count - 1) more)" : ""
-            return .init(reason: "The agent couldn't finish: \(sentence(why))\(more)",
-                         remedy: suggestion ?? "Read its report in the chat, then Retry or stop the task.", action: "review")
+            let need = report?.needsUser ?? report?.remainingIssues.first ?? "The agent can't continue without you."
+            return .init(reason: sentence(need), remedy: "Answer or fix this, then Retry. Or stop the task.", action: "retry", needsUser: true)
         case .failed:
             return .init(reason: sentence(report?.summary ?? issues.first ?? "The agent reported a failure."),
-                         remedy: suggestion ?? "Retry, or stop the task.", action: "retry")
+                         remedy: suggestion ?? "Retry, or dismiss this.", action: "retry", needsUser: false)
         default:
             guard let first = issues.first else { return nil }
             let more = issues.count > 1 ? " (and \(issues.count - 1) more)" : ""
-            return .init(reason: sentence(first) + more,
-                         remedy: suggestion ?? "Review the agent's reply to confirm the result.", action: "review")
+            let partial = report?.status.lowercased() == "blocked"
+            return .init(reason: (partial ? "Partly done. Not checked: " : "") + sentence(first) + more,
+                         remedy: suggestion ?? "Nothing is needed from you. Review the reply if you want the details.", action: "review", needsUser: false)
         }
     }
 
@@ -804,17 +841,17 @@ public actor Orchestrator {
         let name = provider.flatMap(CLIProvider.init(rawValue:)).map(RuntimeTaskExecutor.name) ?? "the AI provider"
         switch error.kind {
         case .authentication:
-            return .init(reason: "\(name) isn't signed in.", remedy: "Sign in under Settings → AI providers, then Retry.", action: "settings")
+            return .init(reason: "\(name) isn't signed in.", remedy: "Sign in under Settings → AI providers, then Retry.", action: "settings", needsUser: true)
         case .missingExecutable:
-            return .init(reason: "\(name) isn't installed on this Mac.", remedy: "Install it under Settings → AI providers, then Retry.", action: "settings")
+            return .init(reason: "\(name) isn't installed on this Mac.", remedy: "Install it under Settings → AI providers, then Retry.", action: "settings", needsUser: true)
         case .modelRejected:
-            return .init(reason: "\(name) rejected the selected model.", remedy: "Choose another model in the chat, then Retry.", action: "retry")
+            return .init(reason: "\(name) rejected the selected model.", remedy: "Choose another model in the chat, then Retry.", action: "retry", needsUser: true)
         case .incompatibleVersion:
-            return .init(reason: "This version of \(name) isn't supported.", remedy: "Update it under Settings → AI providers, then Retry.", action: "settings")
+            return .init(reason: "This version of \(name) isn't supported.", remedy: "Update it under Settings → AI providers, then Retry.", action: "settings", needsUser: true)
         case .permissionDenied:
-            return .init(reason: "macOS or the provider denied a permission: \(sentence(error.message))", remedy: "Grant the permission, then Retry.", action: "retry")
+            return .init(reason: "macOS or the provider denied a permission: \(sentence(error.message))", remedy: "Grant the permission, then Retry.", action: "retry", needsUser: true)
         default:
-            return .init(reason: "\(failureLabel(error)) twice in a row: \(sentence(error.message))", remedy: "Retry when the connection is back, or stop the task.", action: "retry")
+            return .init(reason: "\(failureLabel(error)) twice in a row: \(sentence(error.message))", remedy: "Retry when the connection is back, or dismiss this.", action: "retry", needsUser: false)
         }
     }
 

@@ -5,6 +5,7 @@
  *     Terminal        about:lima?terminal=<id>  (files | terminal)
  *     <notes>         notes the agent wrote
  *     ▸ Tabs          web pages the agent works in (and any you drop in)
+ *     ▸ Images        raster, vector, and animation Studio tabs
  *     ▸ Agents        helper agents, each a folder: Chat, Terminal, pages
  *
  * The runtime holds desired state; this module reconciles it into folders
@@ -52,6 +53,12 @@ export function tabURL(tab) {
 function sameURL(a, b) {
   const norm = u => String(u ?? "").replace(/#.*$/, "").replace(/\/$/, "");
   return !!a && norm(a) === norm(b);
+}
+
+export function imageWorkspaceForURL(url) {
+  if (!url?.startsWith("about:lima?")) return null;
+  const params = new URL(url).searchParams;
+  return params.get("view") === "image" ? params.get("imageWorkspace") : null;
 }
 
 class Workspaces {
@@ -222,8 +229,8 @@ class Workspaces {
     const entries = [];
     if (workspace.conversationID) entries.push({ url: `about:lima?chat=${workspace.conversationID}`, title: "Chat", icon: MASCOT });
     if (workspace.terminalID) entries.push({ url: `about:lima?terminal=${workspace.terminalID}`, title: "Terminal", icon: TERMINAL_ICON });
-    for (const tab of workspace.tabs.filter(t => t.url.startsWith("about:lima"))) {
-      entries.push({ url: tab.url, title: tab.title, icon: tab.url.startsWith("about:lima?view=image") ? IMAGE_ICON : NOTE_ICON });
+    for (const tab of workspace.tabs.filter(t => t.url.startsWith("about:lima") && !imageWorkspaceForURL(t.url))) {
+      entries.push({ url: tab.url, title: tab.title, icon: NOTE_ICON });
     }
     return entries;
   }
@@ -336,6 +343,7 @@ class Workspaces {
       added.forEach(tab => this.#animateTab(tab));
     }
     this.folderFor(workspace.id, "tabs", win)?.setAttribute("lima-tabs", workspace.id);
+    this.#reconcileImages(win, workspace, folder, map, entry);
     this.#orderCore(win, folder);
     // Restored lazy tabs come back without our icons.
     for (const tab of allTabs()) {
@@ -350,13 +358,45 @@ class Workspaces {
         }
       }
       if (!tab.hasAttribute("pending") || tab.getAttribute("image")) continue;
-      const icon = url?.startsWith("about:lima?chat=") ? MASCOT : url?.startsWith("about:lima?terminal=") ? TERMINAL_ICON : url?.startsWith("about:lima?note=") ? NOTE_ICON : null;
+      const icon = imageWorkspaceForURL(url) ? IMAGE_ICON : url?.startsWith("about:lima?chat=") ? MASCOT
+        : url?.startsWith("about:lima?terminal=") ? TERMINAL_ICON : url?.startsWith("about:lima?note=") ? NOTE_ICON : null;
       if (icon) { tab.setAttribute("lima-icon", icon); try { win.gBrowser.setIcon(tab, icon); } catch {} }
     }
     this.#paintFocus(workspace.id);
   }
 
-  /** Chat, Terminal, notes first; sub-folders (Tabs, Agents) after them. */
+  #reconcileImages(win, workspace, parent, map, entry) {
+    const id = workspace.id;
+    const desired = new Set(workspace.tabs.filter(tab => imageWorkspaceForURL(tab.url) === id).map(tab => tab.url));
+    let folder = this.folderFor(id, "images", win);
+    if (folder?.group !== parent) folder = null;
+    const existing = [...win.gBrowser.tabs].filter(tab => !tab.closing && imageWorkspaceForURL(tabURL(tab)) === id &&
+      (!this.workspaceForTab(tab) || this.workspaceForTab(tab) === id));
+    const present = new Set(existing.map(tabURL));
+    const moving = existing.filter(tab => !folder || tab.group !== folder);
+    for (const tab of moving) {
+      const url = tabURL(tab);
+      const title = tab.label || "Image Studio";
+      this.#configureTab(win, tab, workspace, { url, title, icon: IMAGE_ICON });
+      if (!desired.has(url)) {
+        desired.add(url);
+        lazy.LimaBridge.request("workspace.openTab", { id, url, title }).catch(error => log(error.message));
+      }
+    }
+    const added = workspace.tabs.filter(tab => desired.has(tab.url) && !present.has(tab.url))
+      .map(tab => this.#makeTab(win, workspace, { ...tab, icon: IMAGE_ICON }));
+    const tabs = [...moving, ...added];
+    if (!folder && tabs.length) {
+      folder = this.#createFolder(win, tabs, "Images", parent, true);
+      entry.images = folder.id;
+      map[id] = entry;
+      this.#saveMap(map);
+    } else if (tabs.length) preserveFolderDisclosure(folder, () => folder.addTabs(tabs));
+    folder?.setAttribute("lima-images", id);
+    if (added.length) this.#label(win, added);
+  }
+
+  /** Chat, Terminal, notes first; subfolders after them. */
   #orderCore(win, folder) {
     const rank = tab => {
       const url = tabURL(tab);
@@ -427,7 +467,7 @@ class Workspaces {
         const owner = lazy.SessionStore.getCustomTabValue(tab, "lima-workspace");
         const current = tab.linkedBrowser?.currentURI?.spec;
         const url = current && current !== "about:blank" ? current : tabURL(tab);
-        if (urls.has(url) || (owner === id && /^about:lima\?(workspace|chat|terminal)=/.test(url))) {
+        if (urls.has(url) || imageWorkspaceForURL(url) === id || (owner === id && /^about:lima\?(workspace|chat|terminal)=/.test(url))) {
           win.gBrowser.removeTab(tab, { animate: true });
         }
       }
@@ -566,7 +606,7 @@ class Workspaces {
     const id = this.workspaceForTab(tab);
     const url = tabURL(tab);
     const folder = tab.closest("zen-folder[lima-workspace]");
-    if (!id || !url || (url.startsWith("about:lima") && !url.startsWith("about:lima?view=image"))) return;
+    if (!id || !url || (url.startsWith("about:lima") && imageWorkspaceForURL(url) !== id)) return;
     tab.ownerDocument.defaultView.setTimeout(() => {
       const workspace = this.#workspaces.get(id);
       if (!workspace || this.#deleting.has(id) || this.#deleting.has(workspace.parentID) || !folder?.isConnected) return;
@@ -603,13 +643,19 @@ class Workspaces {
     if (url) win.gBrowser.selectedTab = win.gBrowser.addTab(url, { triggeringPrincipal: system() });
   }
 
-  async openImageStudio(win, id) {
-    const url = `about:lima?view=image&imageWorkspace=${encodeURIComponent(id)}`;
-    await lazy.LimaBridge.request("workspace.openTab", { id, url, title: "Image Studio" });
+  async openImageStudio(win, id, { url = `about:lima?view=image&imageWorkspace=${encodeURIComponent(id)}`, background = false } = {}) {
+    if (lazy.PrivateBrowsingUtils.isWindowPrivate(win)) throw new Error("Open Image Studio in a regular Lima window.");
+    if (imageWorkspaceForURL(url) !== id) throw new Error("Open Image Studio from its workspace.");
+    const params = new URL(url).searchParams;
+    const title = params.has("vectorDocument") ? "Vector Studio" : params.has("animationDocument") ? "Animation Studio" : "Image Studio";
+    await lazy.LimaBridge.request("workspace.openTab", { id, url, title });
     for (let attempt = 0; attempt < 40; attempt++) {
-      const folder = this.folderFor(id, "folder", win);
-      const tab = folder?.tabs.find(tab => tabURL(tab) === url);
-      if (tab) { win.gBrowser.selectedTab = tab; return; }
+      const owner = lazy.BrowserWindowTracker.orderedWindows.find(window => this.folderFor(id, "images", window));
+      const tab = owner && this.folderFor(id, "images", owner)?.tabs.find(tab => tabURL(tab) === url);
+      if (tab) {
+        if (!background) owner.gBrowser.selectedTab = tab;
+        return;
+      }
       await new Promise(resolve => win.setTimeout(resolve, 100));
     }
     throw new Error("Image Studio did not appear in this workspace.");

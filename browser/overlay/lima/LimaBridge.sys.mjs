@@ -10,6 +10,9 @@ ChromeUtils.defineESModuleGetters(lazy, {
 
 const PROTOCOL_VERSION = 1;
 const REQUEST_TIMEOUT_MS = 15000;
+const STUDIO_RENDER_TIMEOUT_MS = 90000;
+const STUDIO_RENDER_METHODS = new Set(["image.select_subject", "image.remove_background", "vector.trace",
+  "animation.tween", "animation.render_preview", "animation.export", "animation.export_spritesheet"]);
 const MAX_RESTARTS = 3;
 
 const encoder = new TextEncoder();
@@ -64,7 +67,8 @@ class Bridge {
           this.#pending.delete(id);
           reject(new Error(`lima-host: ${method} timed out`));
         },
-        ["workspace.delete", "assistant.plan", "assistant.delegate"].includes(method) ? 600000 : method === "integrations.google.refresh" ? 30000 : REQUEST_TIMEOUT_MS,
+        ["workspace.delete", "assistant.plan", "assistant.delegate"].includes(method) ? 600000
+          : STUDIO_RENDER_METHODS.has(method) ? STUDIO_RENDER_TIMEOUT_MS : method === "integrations.google.refresh" ? 30000 : REQUEST_TIMEOUT_MS,
         Ci.nsITimer.TYPE_ONE_SHOT
       );
       this.#pending.set(id, handle);

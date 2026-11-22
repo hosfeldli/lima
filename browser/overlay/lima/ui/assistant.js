@@ -3,10 +3,12 @@ import { agentControls } from "./composer.js";
 import { companion, cueCompanion, setCompanionState, watchVisualActivity } from "./companion.js";
 import { workspacePrompts } from "./workspace-prompts.js";
 import { failureActivity, isFolderPermissionError } from "./tool-activity.sys.mjs";
+import { imageGenerationSettingsURL, watchGeneration } from "./studio-production.js";
 
 export async function renderAssistant(app, _initialWorkspace, { home = false } = {}) {
   setPage(home ? "Lima" : "Lima Companion", "lima");
   const workspaces = new Map();
+  const generationLifetime = new AbortController();
   const input = el("textarea", { rows: home ? 3 : 2, placeholder: "What would you like Lima to do?", "aria-label": "Question or task" });
   const character = companion(home ? "home" : "status");
   const send = el("button", { class: "primary", onclick: delegate, disabled: true }, icon("send"), "Send");
@@ -146,6 +148,51 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
         el("button", { class: "ghost", onclick: () => paintTask(task, "complete", "Handoff canceled.") }, "Cancel")));
   }
 
+  async function generateArtwork(task, action, agentSettings) {
+    const settingsButton = () => el("button", { class: "ghost", onclick: () => bridge.openTab(imageGenerationSettingsURL) }, "Image Generation Settings");
+    try {
+      const config = await call("image.generation_config");
+      if (!config.configured) {
+        paintTask(task, "failed", "Choose a local ComfyUI checkpoint to generate artwork.", settingsButton());
+        return;
+      }
+      const target = action.workspaceId && workspaces.get(action.workspaceId);
+      if (action.workspaceId && !target) throw new Error("The requested workspace is unavailable.");
+      const launch = async () => {
+        try {
+          paintTask(task, "working", "Starting image generation…");
+          const workspace = target ?? await call("workspace.create", { name: String(action.title || "Image Studio").trim().slice(0, 60), ...agentSettings });
+          const job = await call("image.generate", { workspace_id: workspace.id, prompt: action.prompt, count: action.count ?? 1,
+            output_name: action.outputName || "generated.png", idempotency_key: task.requestId, show_in_workspace: true });
+          let status;
+          const stop = el("button", { class: "ghost", onclick: async () => {
+            try { await call("image.generation_cancel", { workspace_id: workspace.id, operation_id: job.operation_id }); }
+            catch (error) { paintTask(task, "failed", errorText(error)); }
+          } }, "Stop import");
+          const result = await watchGeneration(workspace.id, job.operation_id, entry => {
+            if (status === entry.status) return;
+            status = entry.status;
+            if (status === "queued" || status === "running") paintTask(task, "working",
+              status === "running" ? "Generating image… " : "Waiting for local ComfyUI… ", stop);
+          }, generationLifetime.signal);
+          if (!result) return;
+          if (result.status !== "completed") {
+            paintTask(task, "failed", result.error ?? "Image generation stopped.", result.artifact_ids.join(", "), settingsButton());
+            return;
+          }
+          paintTask(task, "complete", el("strong", { text: "Image ready" }),
+            ...result.documents.map(document => el("button", { class: "ghost", onclick: () => bridge.openTab(document.studio_url) },
+              icon("image"), `Open ${document.source_path}`)));
+        } catch (error) { paintTask(task, "failed", errorText(error), settingsButton()); }
+      };
+      if (target) {
+        paintTask(task, "approval", el("strong", { text: `Save generated artwork in ${target.name}?` }),
+          el("div", { class: "row" }, el("button", { class: "primary", onclick: launch }, "Generate"),
+            el("button", { class: "ghost", onclick: () => paintTask(task, "complete", "Generation canceled.") }, "Cancel")));
+      } else await launch();
+    } catch (error) { paintTask(task, "failed", errorText(error), settingsButton()); }
+  }
+
   async function delegate() {
     const text = input.value.trim();
     const agentSettings = agent.settings();
@@ -186,6 +233,10 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
       }));
       const plan = pages.some(page => page?.excerpt) ? await planWith() : first;
       if (plan.localAction) {
+        if (plan.localAction.kind === "image_generation") {
+          await generateArtwork(task, plan.localAction, agentSettings);
+          return;
+        }
         const note = plan.localAction.kind === "note";
         paintTask(task, "working", note ? "Creating your note…" : "Creating your tab folder…");
         const result = await bridge.browser("assistantLocalTask", plan.localAction);
@@ -238,8 +289,8 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
 
   const STATES = {
     accepted: "Preparing your task…", planned: "Assigned", queued: "Waiting for available capacity", waiting: "Waiting for agents",
-    running: "Working", paused: "Work paused", blocked: "Blocked", verifying: "Verifying results…", completed: "Task completed",
-    completed_with_warnings: "Completed with warnings", failed: "Failed", canceled: "Stopped",
+    running: "Working", paused: "Work paused", blocked: "Needs you", verifying: "Verifying results…", completed: "Task completed",
+    completed_with_warnings: "Done, with notes", failed: "Failed", canceled: "Stopped",
   };
   const TERMINAL = new Set(["completed", "completed_with_warnings", "failed", "canceled"]);
   const orchestrated = new Map();
@@ -250,19 +301,21 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     const active = children.filter(child => ["running", "verifying"].includes(child.state)).length;
     const queued = children.filter(child => ["queued", "waiting"].includes(child.state)).length;
     const last = item.events.at(-1)?.message ?? "";
+    const notice = item.attention && !item.attention.dismissed ? item.attention : null;
     const workspace = workspaces.get(item.workspaceID);
     const where = workspace ? (item.state === "accepted" || item.state === "planned" ? `Assigned to ${workspace.name}` : workspace.name) : "";
     const agents = [active ? `${active} ${active === 1 ? "agent" : "agents"} working` : "", queued ? `${queued} queued` : ""].filter(Boolean).join(" · ");
     const actions = [];
     if (workspace) actions.push(el("button", { class: "ghost", onclick: () => openWorkspace(workspace) }, TERMINAL.has(item.state) ? "Review Result" : "Open Workspace"));
     if (!TERMINAL.has(item.state)) actions.push(el("button", { class: "ghost", onclick: () => control("task.cancel", item.id) }, "Stop Task"));
-    if (item.attention?.action === "settings") actions.push(el("button", { class: "ghost", onclick: () => bridge.openTab("about:lima?view=integrations&section=agents") }, "Open Settings"));
+    if (notice) actions.push(el("button", { class: "ghost", onclick: () => control("task.dismiss", item.id) }, "Dismiss"));
+    if (notice?.action === "settings") actions.push(el("button", { class: "ghost", onclick: () => bridge.openTab("about:lima?view=integrations&section=agents") }, "Open Settings"));
     if (["paused", "blocked", "failed"].includes(item.state)) actions.push(el("button", { class: "ghost", onclick: () => control("task.resume", item.id) }, item.state === "paused" ? "Resume" : "Retry"));
     return el("div", { class: "companion-task-status", "data-state": item.state },
       el("p", { class: "companion-task-line" }, el("strong", { text: STATES[item.state] ?? item.state }),
         where ? el("span", { class: "muted", text: ` · ${where}` }) : null),
-      item.attention ? el("p", { text: item.attention.reason }) : last && last !== STATES[item.state] ? el("p", { class: "muted", text: last }) : null,
-      item.attention ? el("p", { class: "muted", text: item.attention.remedy }) : null,
+      notice ? el("p", { text: notice.reason }) : last && last !== STATES[item.state] ? el("p", { class: "muted", text: last }) : null,
+      notice ? el("p", { class: "muted", text: notice.remedy }) : null,
       agents ? el("p", { class: "muted", text: agents }) : null,
       TERMINAL.has(item.state) && item.outcome ? el("p", { class: "companion-task-outcome", text: item.outcome }) : null,
       el("div", { class: "row" }, ...actions));
@@ -355,7 +408,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
       label.title = next.detail ?? "";
     }
   });
-  window.addEventListener("pagehide", () => { unsubscribe(); unwatch(); }, { once: true });
+  window.addEventListener("pagehide", () => { generationLifetime.abort(); unsubscribe(); unwatch(); }, { once: true });
 
   async function load() {
     requestError = undefined;

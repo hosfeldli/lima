@@ -35,6 +35,10 @@ const TOOLS = {
   notes_get: ["Reading note", "note", "read"],
   notes_append: ["Updating note", "note", "write"],
   image_open: ["Opening image", "image", "read"],
+  image_generate: ["Queuing image generation", "image", "planning"],
+  image_generation_status: ["Checking image generation", "image", "read"],
+  image_select_subject: ["Selecting foreground", "image", "read"],
+  image_remove_background: ["Applying foreground mask", "image", "write"],
   image_inspect: ["Inspecting image", "image", "read"],
   image_sample_color: ["Sampling image color", "image", "read"],
   image_color_key: ["Removing background color", "image", "write"],
@@ -42,6 +46,11 @@ const TOOLS = {
   image_crop: ["Cropping image", "image", "write"],
   image_resize: ["Resizing image", "image", "write"],
   image_export: ["Exporting image", "image", "test"],
+  vector_trace: ["Tracing vector paths", "image", "write"],
+  vector_edit_nodes: ["Editing path nodes", "image", "write"],
+  vector_export: ["Verifying SVG export", "image", "test"],
+  animation_tween: ["Rendering in-between frames", "image", "write"],
+  animation_export: ["Verifying animation export", "image", "test"],
   lima_search: ["Searching Lima", "search", "read"],
   mcp_tool_call: ["Using an MCP tool", "integrations", "tool"],
 };
@@ -51,7 +60,7 @@ export function toolActivity(raw) {
   const qualified = separator < 0 ? raw : raw.slice(0, separator);
   let detail = separator < 0 ? "" : raw.slice(separator + 2);
   const match = /^mcp__(.+?)__(.+)$/.exec(qualified);
-  const name = (match?.[2] ?? qualified.replace(/^lima_(?=workspace_|agent_|agents_|notes_|image_)/, "")).toLowerCase();
+  const name = (match?.[2] ?? qualified.replace(/^lima_(?=workspace_|agent_|agents_|notes_|image_|vector_|animation_)/, "")).toLowerCase();
   const key = { websearch: "web_search", webfetch: "web_fetch" }[name] ?? name;
   const browserActions = { inspect: "Inspecting page", click: "Clicking page", type: "Typing on page", scroll: "Scrolling page", screenshot: "Taking screenshot" };
   const browserAction = key === "workspace_browser" ? /"action"\s*:\s*"([a-z]+)"/.exec(detail)?.[1] : null;

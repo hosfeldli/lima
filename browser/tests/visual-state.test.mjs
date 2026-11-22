@@ -51,7 +51,7 @@ test("celebration follows verified transition once and never plays when rehydrat
   assert.equal(state.snapshot(930).workspaces.main.motion, "idle");
   assert.equal(setup({ tasks: [task("completed", 40)] }).snapshot(30).workspaces.main.motion, "idle");
   update(state, "task.updated", task("completed_with_warnings", 50), 50);
-  assert.equal(state.snapshot(50).workspaces.main.label, "Completed with warnings");
+  assert.equal(state.snapshot(50).workspaces.main.label, "Done, with notes");
   assert.equal(state.snapshot(50).workspaces.main.motion, "idle");
 });
 
@@ -92,4 +92,26 @@ test("recovering and stopped states survive reconnect and unrelated chat updates
   assert.equal(state.snapshot().workspaces.main.label, "Stopped");
   update(state, "chat.updated", { ...chat(parent, "streaming", { createdAt: 50 }), updatedAt: 50 });
   assert.equal(state.snapshot().workspaces.main.state, "starting");
+});
+
+test("only what the user must do raises attention, and notices dismiss", () => {
+  const blocked = (attention, updatedAt = 1) => ({ ...task("blocked", updatedAt, helper.id), attention });
+  const partial = { reason: "Partly done. Not checked: console errors.", remedy: "Nothing is needed from you.", action: "review", needsUser: false };
+  const state = setup({ tasks: [task("running", 1)] });
+  // A helper whose tools couldn't finish: information, not an alarm.
+  update(state, "task.updated", blocked(partial, 2));
+  assert.equal(state.snapshot().workspaces.helper.state, "waiting");
+  assert.equal(state.snapshot().workspaces.main.attention, undefined);
+  // A real blocker names what's needed and flags the parent.
+  const signIn = { reason: "Claude Code isn't signed in.", remedy: "Sign in, then Retry.", action: "settings", needsUser: true };
+  update(state, "task.updated", blocked(signIn, 3));
+  assert.equal(state.snapshot().workspaces.helper.state, "blocked");
+  assert.equal(state.snapshot().workspaces.helper.label, "Needs you");
+  assert.equal(state.snapshot().workspaces.helper.detail, "Claude Code isn't signed in.");
+  assert.equal(state.snapshot().workspaces.main.attention, true);
+  // Dismissed: the mark and notice go away; the task is unchanged.
+  update(state, "task.updated", blocked({ ...signIn, dismissed: true }, 4));
+  assert.equal(state.snapshot().workspaces.helper.state, "idle");
+  assert.equal(state.snapshot().workspaces.helper.notice, undefined);
+  assert.equal(state.snapshot().workspaces.main.attention, undefined);
 });

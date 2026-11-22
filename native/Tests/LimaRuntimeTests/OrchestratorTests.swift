@@ -120,7 +120,8 @@ func orchestrator(_ agents: MockAgents, tasks: [OrchestratedTask] = [], maxActiv
 
     // An agent reporting a blocker is blocked, not completed.
     let stuck = try await lima.submit(requestID: nil, title: "D", request: "Do D", workspaceID: "d")
-    agents.reply("conv-root-d", report("blocked", summary: "Needs a signing key"))
+    agents.reply("conv-root-d", report("blocked", summary: "Needs a signing key")
+        .replacingOccurrences(of: "\"nextSteps\":[]", with: "\"nextSteps\":[],\"needsUser\":\"Add the signing key.\""))
     await lima.observe(conversationID: "conv-root-d")
     #expect(try await lima.get(stuck.id).state == .blocked)
 }
@@ -277,9 +278,10 @@ func orchestrator(_ agents: MockAgents, tasks: [OrchestratedTask] = [], maxActiv
 }
 
 
-@Test func blockedAndWarningTasksSayWhyAndWhatToDo() async throws {
+@Test func onlyRealBlockersNeedTheUserAndNoticesCanBeDismissed() async throws {
     let agents = MockAgents()
     let (lima, _) = orchestrator(agents)
+    // The QA helper's tools couldn't scroll or read the console: a partial result, not a request for the user.
     let qa = try await lima.submit(requestID: nil, title: "QA", request: "QA the site", workspaceID: "qa")
     let body: [String: Any] = ["status": "blocked", "summary": "Partial visual QA: hero observed working.", "actionsTaken": [], "artifacts": [],
         "verification": ["Page rendered"], "remainingIssues": ["Console errors not checked (no console access)", "375px layout not checked"],
@@ -287,21 +289,48 @@ func orchestrator(_ agents: MockAgents, tasks: [OrchestratedTask] = [], maxActiv
     let json = String(decoding: try JSONSerialization.data(withJSONObject: body), as: UTF8.self)
     agents.reply("conv-root-qa", "```lima-report\n\(json)\n```", tools: ["mcp__lima__workspace_browser screenshot"])
     await lima.observe(conversationID: "conv-root-qa")
-    let blocked = try await lima.get(qa.id)
-    #expect(blocked.state == .blocked)
-    #expect(blocked.attention?.reason == "The agent couldn't finish: Console errors not checked (no console access). (and 1 more)")
-    #expect(blocked.attention?.remedy == "Suggested next step: Check console errors and the 375px layout with a tool that can read the console (e.g. Playwright).")
-    #expect(blocked.attention?.action == "review")
-    _ = try await lima.resume(qa.id)
-    #expect(try await lima.get(qa.id).attention == nil)
+    let partial = try await lima.get(qa.id)
+    #expect(partial.state == .completedWithWarnings)
+    #expect(partial.attention?.needsUser == false)
+    #expect(partial.attention?.reason == "Partly done. Not checked: Console errors not checked (no console access). (and 1 more)")
+    #expect(partial.attention?.remedy == "Suggested next step: Check console errors and the 375px layout with a tool that can read the console (e.g. Playwright).")
+    // Dismissing hides the notice; the record keeps it.
+    let dismissed = try await lima.dismiss(qa.id)
+    #expect(dismissed.attention?.dismissed == true)
+    #expect(dismissed.state == .completedWithWarnings && dismissed.issues.count == 2)
+
+    // An agent that needs the user says what, and only that needs attention.
+    let key = try await lima.submit(requestID: nil, title: "K", request: "Deploy", workspaceID: "k")
+    agents.reply("conv-root-k", report("blocked", summary: "Can't deploy").replacingOccurrences(of: "\"nextSteps\":[]", with: "\"nextSteps\":[],\"needsUser\":\"Add the DEPLOY_TOKEN secret, then retry.\""))
+    await lima.observe(conversationID: "conv-root-k")
+    let needs = try await lima.get(key.id)
+    #expect(needs.state == .blocked)
+    #expect(needs.attention?.needsUser == true)
+    #expect(needs.attention?.reason == "Add the DEPLOY_TOKEN secret, then retry.")
+    _ = try await lima.resume(key.id)
+    #expect(try await lima.get(key.id).attention == nil)
 
     let signIn = try await lima.submit(requestID: nil, title: "S", request: "Do S", workspaceID: "s")
     agents.reply("conv-root-s", "", status: .failed, error: AgentFailure(.authentication, "401"))
     await lima.observe(conversationID: "conv-root-s")
     #expect(try await lima.get(signIn.id).attention?.action == "settings")
+    #expect(try await lima.get(signIn.id).attention?.needsUser == true)
 
     let quiet = try await lima.submit(requestID: nil, title: "Q", request: "Do Q", workspaceID: "q")
     agents.reply("conv-root-q", "All done")
     await lima.observe(conversationID: "conv-root-q")
-    #expect(try await lima.get(quiet.id).attention?.reason == "The agent finished without saying what it checked, so the result is unverified.")
+    #expect(try await lima.get(quiet.id).attention?.needsUser == false)
+}
+
+@Test func olderPartialResultsMarkedBlockedAreReclassified() async throws {
+    let agents = MockAgents()
+    var legacy = Orchestrator.make(title: "Motion QA", request: "QA", objective: "QA", role: .coordinator, parentID: nil)
+    legacy.workspaceID = "w"
+    legacy.state = .blocked
+    legacy.report = Orchestrator.parseReport(report("blocked", summary: "Partial QA", issues: ["Console not checked"]))
+    let (lima, _) = orchestrator(agents, tasks: [legacy])
+    await lima.recover()
+    let task = try await lima.get(legacy.id)
+    #expect(task.state == .completedWithWarnings)
+    #expect(task.attention?.needsUser == false)
 }

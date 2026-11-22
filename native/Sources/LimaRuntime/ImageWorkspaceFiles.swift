@@ -38,6 +38,15 @@ enum ImageWorkspaceFiles {
         }
     }
 
+    static func verifyNewOutput(root: String, path: String) throws {
+        try withParent(root, path) { parent, name in
+            var info = stat()
+            guard fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) != 0, errno == ENOENT else {
+                throw ImageRaster.invalid("The export filename is unavailable. Choose a new name.")
+            }
+        }
+    }
+
     private static func withParent<T>(_ root: String, _ path: String, _ body: (Int32, String) throws -> T) throws -> T {
         let parts = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
         guard (1...24).contains(parts.count), parts.allSatisfy({ !$0.isEmpty && !$0.hasPrefix(".") && !$0.contains("\0") && $0.utf8.count <= 255 }),
