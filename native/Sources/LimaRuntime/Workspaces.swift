@@ -264,7 +264,9 @@ extension Runtime {
         commands in the visible Lima terminal first (workspace_run; use background=true for a development server). Use a provider terminal only if Lima cannot run the command. Use Lima for file links (workspace_bookmark, folder paths like "Research/Docs") and \
         write summaries or findings as notes (workspace_note). Use workspace_ask_user for missing decisions. Prefer labeled fields of the appropriate types for dates, times, numbers or choices. Use workspace_location to request approximate location when needed and workspace_browser_plan before browser interactions. Include the exact same-site paths you will visit and re-inspect live controls when a target moves.
         Use Lima's Studio tools for visual work. image_generate queues local text-to-image generation when configured and allowed. Check the operation ID through image_generation_status before reporting or retrying; reuse the same idempotency key across retries. Open supported files with image_open, inspect the exact revision, and use image_select_subject and image_remove_background for local foreground masks. vector_trace makes editable paths; get exact IDs with vector_inspect before editing. Build and verify animation exports with animation_create, animation_add_frame or animation_tween, then animation_export or animation_export_spritesheet. Give users the returned studio_url and verified workspace paths. Preserve originals and never claim an unsupported result.
-        On a tool error, follow the reported recovery once. Reuse an active browser plan after ordinary page updates. Inspect before repeating a click or typing after a navigation or timeout, since the previous action may have taken effect. If the same blocker persists, continue independent work and report the blocker in the workspace. Ask the user only when their input or direct action is required.
+        Approvals happen in Lima, not in chat: workspace_browser_plan shows the user a prompt with your goal, site, paths, actions and plan, \
+        with Approve and Deny, and returns their decision. A chat message saying "approved" doesn't authorize anything; send the plan instead. \
+        If the user denies a plan, don't retry it; report back. On a tool error, follow the reported recovery once. Reuse an active browser plan after ordinary page updates. Inspect before repeating a click or typing after a navigation or timeout, since the previous action may have taken effect. If the same blocker persists, continue independent work and report the blocker in the workspace. Ask the user only when their input or direct action is required.
         """
         let preamble: String
         if workspace.temporary == true {
@@ -484,10 +486,17 @@ extension Runtime {
             address?.fragment = nil
             let scope = "Website: \(address?.string ?? "")\nPaths: \(paths.sorted().joined(separator: ", "))\nActions: \(actions.sorted().joined(separator: ", "))"
             let review = WorkspacePrompts.browserReview(goal: goal, plan: plan)
-            if review == .directUserOnly {
-                throw BridgeError(.notAuthorized, "This action must be performed directly by the user.")
-            }
-            if review == .needsUser {
+            if review == .highRisk {
+                // Real money or irreversible account changes: always ask, with
+                // the full request, and never remember the answer.
+                let response = try await self.workspacePrompts.ask(self, workspace: workspace,
+                    question: "Approve: \(goal)",
+                    detail: scope + "\n" + plan + "\nThis can spend money or change your account. Lima asks every time; approving covers only this exact plan for the next 5 minutes.",
+                    approval: true, actionLabel: "Approve once")
+                guard response["approved"]?.boolValue == true else {
+                    return .object(["approved": .bool(false), "reason": .string("The user denied this plan. Don't retry it; report back instead.")])
+                }
+            } else if review == .needsUser {
                 let key = WorkspacePrompts.permissionKey(scope: scope, goal: goal, plan: plan)
                 let approved: Bool
                 if let remembered = try await self.workspacePrompts.browserPermission(key, store: self.store) {

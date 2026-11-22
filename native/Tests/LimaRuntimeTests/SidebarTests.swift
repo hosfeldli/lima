@@ -225,7 +225,7 @@ import LimaAuthorization
     if let terminal = created.result?["terminalID"]?.stringValue { try await runtime.terminals.close(terminal) }
 }
 
-@Test func routineBrowserPlansOpenTheRequestedTabWithoutAUserPrompt() async throws {
+@Test func routineBrowserPlansSkipThePromptAndRealMoneyPlansAlwaysAsk() async throws {
     let (runtime, directory) = try await workspaceRuntime()
     defer { try? FileManager.default.removeItem(at: directory) }
     let id = try #require(await call(runtime, "workspace.create", ["name": .string("Routine plan")]).result?["id"]?.stringValue)
@@ -236,8 +236,24 @@ import LimaAuthorization
     #expect(routine.result?["approved"]?.boolValue == true)
     #expect(try await runtime.workspaces.get(id).tabs.contains { $0.url == url })
     #expect(await runtime.workspacePrompts.list().arrayValue?.isEmpty == true)
-    let wager = await call(runtime, "workspace.browserPlan", params.merging(["plan": .string("Place a bet.")]) { _, new in new },
-                           origin: .chat, workspace: id)
-    #expect(wager.error?.code == .notAuthorized)
+    // A real-money plan asks every time, with the full request, and never remembers the answer.
+    for answer in [false, true, false] {
+        let wager = Task { await call(runtime, "workspace.browserPlan", params.merging(["plan": .string("Place a bet of 0.30 SC.")]) { _, new in new },
+                                      origin: .chat, workspace: id) }
+        var prompt: JSONValue?
+        for _ in 0..<80 {
+            prompt = await runtime.workspacePrompts.list().arrayValue?.first
+            if prompt != nil { break }
+            try await Task.sleep(for: .milliseconds(15))
+        }
+        let request = try #require(prompt?["id"]?.stringValue)
+        #expect(prompt?["approval"]?.boolValue == true)
+        #expect(prompt?["question"]?.stringValue == "Approve: Open a conversation")
+        #expect(prompt?["detail"]?.stringValue?.contains("Place a bet of 0.30 SC.") == true)
+        #expect(prompt?["detail"]?.stringValue?.contains("spend money") == true)
+        _ = await call(runtime, "workspace.promptReply", ["id": .string(request), "approved": .bool(answer)])
+        let result = await wager.value
+        #expect(result.result?["approved"]?.boolValue == answer)
+    }
     await runtime.terminals.closeAll()
 }

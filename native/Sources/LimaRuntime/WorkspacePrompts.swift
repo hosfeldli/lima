@@ -100,13 +100,15 @@ actor WorkspacePrompts {
     static let browserActions: Set<String> = ["click", "type", "scroll"]
 
     enum BrowserReview {
-        case routine, needsUser, directUserOnly
+        /// highRisk: real money or irreversible account changes. The user
+        /// approves each exact plan in Lima, and the decision is never remembered.
+        case routine, needsUser, highRisk
     }
 
     static func browserReview(goal: String, plan: String) -> BrowserReview {
         let intent = goal + " " + plan
         if intent.range(of: #"\b(?:place (?:a |the |any )?bets?|betting|wagers?|stake cash|submit payment|place order|transfer funds|delete account|send message|publish|change password)\b"#, options: [.regularExpression, .caseInsensitive]) != nil {
-            return .directUserOnly
+            return .highRisk
         }
         if intent.range(of: #"\b(?:payment|purchase|checkout|deposit|withdraw|credentials|password|private key|authorization|sign[ -]?in|unsubscribe|delete|remove|download|upload|submit|external sharing)\b"#, options: [.regularExpression, .caseInsensitive]) != nil {
             return .needsUser

@@ -307,3 +307,9 @@ private func archivedText(_ archive: URL, _ entry: String) throws -> String {
     #expect(process.terminationStatus == 0)
     return String(decoding: data, as: UTF8.self)
 }
+
+@Test func consequentialBrowserPlansAskTheUserInsteadOfRefusing() {
+    #expect(WorkspacePrompts.browserReview(goal: "Play 20 rounds of blackjack", plan: "Switch to Stake Cash and place bets of 0.30 SC") == .highRisk)
+    #expect(WorkspacePrompts.browserReview(goal: "Buy the book", plan: "Go to checkout") == .needsUser)
+    #expect(WorkspacePrompts.browserReview(goal: "Read the docs", plan: "Scroll the page") == .routine)
+}

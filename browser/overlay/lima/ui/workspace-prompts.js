@@ -24,7 +24,7 @@ export function workspacePrompts({ workspace = () => null, signal } = {}) {
     const input = !prompt.approval && !fields.length ? el("textarea", { required: true, "aria-label": "Answer", rows: 2 }) : null;
     const status = el("div", { class: "prompt-status", role: "status" });
     const send = el("button", { class: "primary", type: "submit" }, prompt.approval ? prompt.actionLabel || "Approve session" : "Send answer");
-    const cancel = el("button", { class: "ghost", type: "button", onclick: () => reply(false) }, prompt.approval ? "Decline" : "Dismiss");
+    const cancel = el("button", { class: "ghost", type: "button", onclick: () => reply(false) }, prompt.approval ? "Deny" : "Dismiss");
     const form = el("form", { onsubmit: event => { event.preventDefault(); reply(true); } },
       input && el("label", { class: "prompt-answer" }, el("span", { text: "Your answer" }), input),
       fields.length ? el("div", { class: "workspace-question-fields" }, controls.map(({ field, control }) => {
