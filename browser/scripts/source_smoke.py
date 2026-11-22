@@ -87,6 +87,27 @@ const compiled = COMPILED;
   const recorded = /[?&#]execution=/.test(tab.linkedBrowser.currentURI.spec);
   gBrowser.removeTab(tab);
   const tasks = await LimaBridge.request("task.list", { limit: 5 }).catch(() => null);
+  // Zen's and Firefox's updaters never appear: the About window shows Lima's
+  // updater, and Settings hides Firefox's update section and policy banner.
+  const about = await new Promise(resolve => {
+    const opened = { observe(subject, topic) {
+      if (topic !== "domwindowopened") return;
+      Services.obs.removeObserver(opened, "domwindowopened");
+      subject.addEventListener("load", () => window.setTimeout(() => resolve(subject), 1500), { once: true });
+    } };
+    Services.obs.addObserver(opened, "domwindowopened");
+    window.openAboutDialog();
+    window.setTimeout(() => resolve(null), 8000);
+  });
+  const aboutText = about?.document.getElementById("zen-about-update-text")?.textContent ?? "";
+  about?.close();
+  const prefsTab = gBrowser.addTab("about:preferences", { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal() });
+  gBrowser.selectedTab = prefsTab;
+  await new Promise(resolve => window.setTimeout(resolve, 2500));
+  const prefsDoc = prefsTab.linkedBrowser.contentDocument;
+  const shown = id => { const node = prefsDoc?.getElementById(id); return !!node && prefsDoc.defaultView.getComputedStyle(node).display !== "none"; };
+  const firefoxUpdates = ["updateApp", "policies-container"].filter(shown);
+  gBrowser.removeTab(prefsTab);
   // Lima's own surfaces never sit on the right edge of the window.
   const { LimaSearchPanel } = ChromeUtils.importESModule("resource://lima/LimaSearchPanel.sys.mjs");
   LimaSearchPanel.open(window, "what is a browser?");
@@ -107,6 +128,8 @@ const compiled = COMPILED;
       "lima-folder-reveal", "lima-folder-rename"].every(id => document.getElementById(id)),
     rightEdgeClear: rightEdge.length ? rightEdge.join(",") : true,
     orchestrator: Array.isArray(tasks),
+    limaUpdaterOnly: (/Lima|updates are off/.test(aboutText) && !/organization|Zen/.test(aboutText) && !firefoxUpdates.length && !!prefsDoc)
+      || { aboutText, firefoxUpdates },
     branding: Services.appinfo.name === "Lima" && Services.appinfo.vendor === "Lima",
     profileIdentity: !compiled || (AppConstants.MOZ_APP_NAME === "lima" && AppConstants.MOZ_MACBUNDLE_ID === "dev.lima.browser"),
     noZenServices: !Services.prefs.getStringPref("zen.share.base-url", "") && !/zen-browser\\.app/.test(Services.prefs.getStringPref("zen.injections.match-urls", "")),

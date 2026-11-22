@@ -214,6 +214,11 @@ extension Runtime {
 
     func registerNotes() {
         register("notes.list") { [unowned self] _, _ in try JSONValue.from(await self.notes.list()) }
+        // Embeds in Notes show a natively fetched preview; most sites refuse to be framed.
+        register("notes.linkPreview") { params, context in
+            guard context.origin == .browser else { throw BridgeError(.notAuthorized, "Link previews are for the Lima interface.") }
+            return try await LinkPreviews.shared.preview(try params.string("url"))
+        }
         register("notes.get") { [unowned self] params, _ in try JSONValue.from(try await self.notes.get(try params.string("id"))) }
         register("notes.create") { [unowned self] params, context in
             try self.requireNotesWrite(context)

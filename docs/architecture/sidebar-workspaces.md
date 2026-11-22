@@ -20,6 +20,8 @@ Creation is in one place, twice: Zen's bottom **＋** (`zenCreateNewPopup`) and 
 (empty area, a folder, or a tab): New Tab · New Note · New Terminal · New AI Workspace (· from Folder…).
 Right-clicking a folder creates the item inside that folder.
 
+New workspace, Tabs, and Agents folders start collapsed. Background additions preserve existing open and closed states and leave the selected tab in place. The workspace row opens Chat, and its chevron toggles the workspace contents. The Tabs and Agents folder glyphs follow the actual collapsed state.
+
 ## Where the AI is working
 
 The runtime tracks one focus per workspace/agent and broadcasts `workspace.activity {id, surface, url}`:

@@ -37,6 +37,7 @@ export const LimaWindow = {
     win.document.documentElement.setAttribute("lima-window", "true");
     lazy.LimaSidebar.attach(win);
     lazy.LimaAssistant.attach(win);
+    lazy.LimaWorkspaces.keepChatFoldersCollapsed(win);
     const applyPersonality = () => win.document.documentElement.dataset.limaPersonality =
       Services.prefs.getStringPref("lima.personality", "full");
     applyPersonality();

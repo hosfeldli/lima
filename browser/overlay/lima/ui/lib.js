@@ -86,10 +86,12 @@ export function activityStatus() {
   let timer;
   function tick() {
     if (!node.isConnected) { clearInterval(timer); timer = undefined; return; }
+    if (document.hidden) return;
     const seconds = Math.max(0, Math.floor((Date.now() - since) / 1000));
     elapsed.textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
   }
   function update({ state, label: title, detail: description = "", icon: glyph = "", motion, startedAt }) {
+    if (!["working", "starting"].includes(state)) startedAt = undefined;
     node.dataset.activity = state;
     indicator.dataset.motion = motion ?? "";
     if (indicator.dataset.glyph !== glyph) {
@@ -161,29 +163,86 @@ export const prefs = {
 
 /** Small, safe Markdown renderer: everything is escaped; links are limited
  * to http(s) and about:lima; images to data:/lima attachments. */
+/** An embed in a note. Most sites refuse to be framed, so a web page shows
+ * a preview Lima reads natively (title, description, image) with Open Side
+ * by Side, which opens the live page next to the note in a Zen split.
+ * Players built for embedding (YouTube, Spotify) can also play in place.
+ *
+ * The card carries no listeners: the editor can insert it as one undoable
+ * edit, and `installEmbedActions` handles its buttons by delegation. */
 export function noteEmbed(value) {
   let url;
   try { url = new URL(value); } catch { return null; }
   const local = url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
   if ((url.protocol !== "https:" && !local) || url.username || url.password) return null;
-  const source = new URL(url);
+  const player = embedPlayer(url);
+  const button = (action, label, extra = {}) => el("button", { type: "button", class: "ghost", "data-embed-action": action, ...extra }, label);
+  return el("figure", { class: "note-embed", contenteditable: "false", "data-note-embed": url.href, "data-embed-kind": player ? "player" : "link" },
+    el("div", { class: "note-embed-preview" }, el("strong", { class: "note-embed-title", text: url.hostname }),
+      el("span", { class: "note-embed-description muted", text: url.href })),
+    el("figcaption", {},
+      player ? button("play", "Play here") : null,
+      button("side", "Open Side by Side"), button("tab", "Open in Tab"),
+      el("span", { class: "spacer" }),
+      button("remove", "Remove", { title: "Remove embed", "aria-label": "Remove embed" })));
+}
+
+function embedPlayer(url) {
   if (url.hostname === "open.spotify.com" && /^\/(track|episode|album|playlist|artist)\//.test(url.pathname)) {
-    source.pathname = "/embed" + url.pathname;
-    source.search = "";
+    return `https://open.spotify.com/embed${url.pathname}`;
   }
   const video = ["www.youtube.com", "youtube.com", "youtu.be"].includes(url.hostname)
     ? (url.hostname === "youtu.be" ? url.pathname.slice(1) : url.searchParams.get("v")) : null;
-  if (video && /^[\w-]{11}$/.test(video)) source.href = "https://www.youtube-nocookie.com/embed/" + video;
-  const card = el("figure", { class: "note-embed", contenteditable: "false", "data-note-embed": url.href });
-  const load = el("button", { class: "ghost", onclick: () => {
-    const iframe = el("iframe", { src: source.href, title: `Embed from ${url.hostname}`, sandbox: "allow-scripts",
-      referrerpolicy: "strict-origin-when-cross-origin", loading: "lazy" });
-    card.append(iframe, el("small", { class: "muted", text: "If the site blocks embedded access, choose Open in tab." }));
-    load.remove();
-  } }, "Load interactive content");
-  const open = el("button", { class: "ghost", onclick: () => bridge.openTab(url.href) }, "Open in tab");
-  card.append(el("figcaption", {}, el("strong", { text: url.hostname }), load, open));
-  return card;
+  return video && /^[\w-]{11}$/.test(video) ? `https://www.youtube-nocookie.com/embed/${video}` : null;
+}
+
+/** Fills each embed in `root` with its native preview (once per card). */
+export function hydrateEmbeds(root) {
+  for (const card of root.querySelectorAll(".note-embed:not([data-hydrated])")) {
+    card.dataset.hydrated = "";
+    const preview = card.querySelector(".note-embed-preview");
+    call("notes.linkPreview", { url: card.dataset.noteEmbed }).then(data => {
+      if (!preview) return;
+      preview.replaceChildren(
+        data.image ? el("img", { class: "note-embed-image", src: data.image, alt: "" }) : null,
+        el("div", { class: "note-embed-text" },
+          el("strong", { class: "note-embed-title", text: data.title || new URL(card.dataset.noteEmbed).hostname }),
+          data.description ? el("span", { class: "note-embed-description", text: data.description }) : null,
+          el("small", { class: "muted", text: data.site || new URL(card.dataset.noteEmbed).hostname })));
+    }).catch(() => {
+      preview?.querySelector(".note-embed-description")?.replaceChildren("Preview unavailable. Open the page side by side to use it.");
+    });
+  }
+}
+
+let embedActions = false;
+/** One delegated handler for every embed's buttons. Remove dispatches
+ * `lima-embed-remove` so the editor that owns the card deletes it (with Undo). */
+export function installEmbedActions() {
+  if (embedActions) return;
+  embedActions = true;
+  document.addEventListener("mousedown", event => { if (event.target.closest?.("[data-embed-action]")) event.preventDefault(); }, true);
+  document.addEventListener("click", event => {
+    const button = event.target.closest?.("[data-embed-action]");
+    const card = button?.closest(".note-embed");
+    if (!card) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const url = card.dataset.noteEmbed;
+    const action = button.dataset.embedAction;
+    if (action === "tab") bridge.openTab(url);
+    else if (action === "side") bridge.browser("openBeside", { url }).catch(() => bridge.openTab(url));
+    else if (action === "remove") card.dispatchEvent(new CustomEvent("lima-embed-remove", { bubbles: true }));
+    else if (action === "play") {
+      const source = embedPlayer(new URL(url));
+      if (!source) return;
+      card.querySelector("iframe")?.remove();
+      card.querySelector(".note-embed-preview").after(el("iframe", { src: source, title: `Player from ${new URL(url).hostname}`,
+        sandbox: "allow-scripts allow-same-origin allow-presentation", allow: "encrypted-media; fullscreen; picture-in-picture",
+        referrerpolicy: "strict-origin-when-cross-origin", loading: "lazy" }));
+      button.remove();
+    }
+  });
 }
 
 export function markdown(source, { onTaskToggle, attachments, embeds = false } = {}) {
@@ -259,6 +318,7 @@ export function markdown(source, { onTaskToggle, attachments, embeds = false } =
     while (i < lines.length && lines[i].trim() && !markdownTableAt(lines, i) && !/^(#{1,6}\s|\s*```|\s*[-*+]\s|\s*\d+\.\s|\s*>|\s*::embed\s|\s*<iframe\s)/i.test(lines[i])) para.push(lines[i++]);
     root.append(inline(el("p"), para.join(" "), attachments));
   }
+  if (embeds) hydrateEmbeds(root);
   return root;
 }
 

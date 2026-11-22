@@ -12,6 +12,7 @@ import { renderChat } from "./chat.js";
 import { renderStudio } from "./studio.js";
 import { renderWelcome } from "./welcome.js";
 import { renderAsk, renderAudio, renderIntegrations } from "./views.js";
+import { renderImageStudio } from "./image-studio.js";
 
 const params = new URLSearchParams(location.search);
 const app = document.getElementById("app");
@@ -23,6 +24,7 @@ function renderStart(root) {
 
 const routes = [
   [() => params.get("view") === "welcome", () => renderWelcome(app)],
+  [() => params.get("view") === "image", () => renderImageStudio(app, params.get("imageWorkspace"), params.get("imageDocument"))],
   [() => params.get("view") === "assistant", () => renderAssistant(app, params.get("workspaceId"))],
   [() => params.has("workspace"), () => renderWorkspace(app, params.get("workspace"))],
   [() => ["workspaces", "agents"].includes(params.get("view")), () => renderStart(app)],

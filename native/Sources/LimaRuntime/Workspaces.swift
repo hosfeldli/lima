@@ -263,6 +263,7 @@ extension Runtime {
         (workspace_open_tab), see and read the pages in your Tabs folder (workspace_list_tabs, workspace_read_tab), run shell \
         commands in the visible Lima terminal first (workspace_run; use background=true for a development server). Use a provider terminal only if Lima cannot run the command. Use Lima for file links (workspace_bookmark, folder paths like "Research/Docs") and \
         write summaries or findings as notes (workspace_note). Use workspace_ask_user for missing decisions. Prefer labeled fields of the appropriate types for dates, times, numbers or choices. Use workspace_location to request approximate location when needed and workspace_browser_plan before browser interactions. Include the exact same-site paths you will visit and re-inspect live controls when a target moves.
+        Use Lima's image tools for local PNG, JPEG and TIFF production. Start with image_open and inspect the exact revision. Use image_color_key, image_crop, image_resize or image_mask for precise changes, then image_export with a new workspace-relative name. Share the returned studio_url or verified artifact path when useful. These tools preserve originals and do not upload source images.
         On a tool error, follow the reported recovery once. Reuse an active browser plan after ordinary page updates. Inspect before repeating a click or typing after a navigation or timeout, since the previous action may have taken effect. If the same blocker persists, continue independent work and report the blocker in the workspace. Ask the user only when their input or direct action is required.
         """
         let preamble: String
@@ -433,6 +434,7 @@ extension Runtime {
             let workspace = try await self.workspaces.get(try target(params, context))
             let url = try params.string("url")
             self.setFocus(workspace.id, .tab, url: url)
+            defer { self.setFocus(workspace.id, .chat, replacing: .init(surface: .tab, url: url)) }
             return try await self.browserCalls.call(self, kind: "readTab", workspaceID: workspace.id, payload: ["url": .string(url)], timeout: 30)
         }
         register("workspace.prompts") { [unowned self] _, context in
@@ -529,6 +531,7 @@ extension Runtime {
                 payload["paths"] = .array(paths.sorted().map(JSONValue.string))
             }
             self.setFocus(workspace.id, .tab, url: url)
+            defer { self.setFocus(workspace.id, .chat, replacing: .init(surface: .tab, url: url)) }
             return try await self.browserCalls.call(self, kind: "action", workspaceID: workspace.id, payload: payload)
         }
         register("workspace.note") { [unowned self] params, context in
@@ -558,7 +561,7 @@ extension Runtime {
                     workspace.tabs.append(.init(url: url, title: title))
                 }
             }
-            self.setFocus(workspace.id, .tab, url: url)
+            if !url.hasPrefix("about:lima?view=image") { self.setFocus(workspace.id, .tab, url: url) }
             changed(workspace)
             return .object(["opened": .string(url), "tabs": .number(Double(workspace.tabs.count))])
         }
@@ -599,7 +602,7 @@ extension Runtime {
                     let shell = try await self.terminals.info(terminalID)
                     try await Self.authorizeTerminalCommand(command, cwd: shell.cwd, context: context, approvalDigest: params.optionalString("approvalDigest"))
                     self.setFocus(workspace.id, .terminal)
-                    defer { self.setFocus(workspace.id, .chat) }
+                    defer { self.setFocus(workspace.id, .chat, replacing: .init(surface: .terminal)) }
                     let background = params?["background"]?.boolValue == true
                     if background {
                         let logs = self.paths.data.appendingPathComponent("terminal-jobs", isDirectory: true)

@@ -64,12 +64,9 @@ with side effects. Run Again starts a new execution.
 | MCP | `mcpScope != nil` | hand-written | generated `lima_<id>` tools + content tools |
 | Activity timeline (new) | run events | — | every run, from every surface |
 
-### 3. Prism design system (`ui/prism.css`, `ui/components.js`)
-- **Tokens**: surfaces (`--surface-0…3`), text, border, the prismatic accent as a gradient token,
-  radii, spacing (4-pt), type scale, elevation, motion durations. Light/dark, reduced motion and
-  reduced transparency all handled at token level.
-- **Shell**: every page = `PageShell(icon, title, subtitle, status, actions, content)` with an
-  ambient aurora backdrop, glass header, prismatic hairline.
+### 3. Lima design system (`ui/prism.css`, `ui/components.js`)
+- **Tokens** define white work surfaces, soft-gray navigation, graphite type, restrained borders, rounding, and motion.
+- **Shell** uses compact page headers, tab content, and a left-side Companion. See [visual activity](visual-activity.md) for current behavior and animation preferences.
 - **Components**: Button, IconButton, Badge, Card, Tile, List, Empty, Skeleton, Toast, Toggle,
   ResultView (renders every `TypedResult`), CommandPalette.
 - **Icons**: one inline-SVG set keyed by capability `icon`, shared by pages, rail and address bar.
@@ -113,5 +110,4 @@ New things are created as a **Tab, Folder or AI Workspace** from the rail's ＋,
 - Home: search box, Continue (recency-merged workspaces/notes/chats/terminals), six actions. Removed the
   stats panel, chart and 2,000-event load.
 - Run page: one input, one result.
-- Visual cost: static backdrop (no blur filter, no animation), blur only on header and palette, no
-  perpetual shimmer/drift.
+- Keep the workspace backdrop static and confine character animation to status surfaces.

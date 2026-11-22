@@ -127,12 +127,13 @@ import LimaAuthorization
         requestID = runtime.browserCalls.pendingIDs.first
     }
     let pending = try #require(requestID)
+    #expect(runtime.focus.state(id) == .init(surface: .tab, url: "https://example.com"))
     let notBrowser = await call(runtime, "workspace.browserReply", ["requestId": .string(pending), "result": .string("x")], origin: .chat, workspace: id)
     #expect(notBrowser.error?.code == .notAuthorized)
     _ = await call(runtime, "workspace.browserReply", ["requestId": .string(pending), "result": .object(["text": .string("Example Domain")])])
     let answered = await request.value
     #expect(answered.result?["text"]?.stringValue == "Example Domain")
-    #expect(runtime.focus.state(id) == .init(surface: .tab, url: "https://example.com"))
+    #expect(runtime.focus.state(id) == .init(surface: .chat))
     try await runtime.terminals.close(workspace.terminalID!)
 }
 

@@ -76,11 +76,20 @@
 #navigator-toolbox .tab-label,
 #navigator-toolbox .tab-group-label,
 #navigator-toolbox .bookmark-item { font-size: 11.5px; }
-#navigator-toolbox zen-folder[lima-workspace]:not([lima-agent]) {
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--lima-bg) 44%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lima-border) 54%, transparent);
-  margin-block: 3px;
+/* Agent folders match every other tab. A top-level workspace, where the
+   coordinating agent works, is 25% larger. */
+#navigator-toolbox zen-folder[lima-workspace]:not([lima-agent]) > .tab-group-label-container {
+  /* A tab row is the min height plus 4px of margin and padding (30px). */
+  min-block-size: calc((var(--tab-min-height, 26px) + 4px) * 1.25);
+}
+#navigator-toolbox zen-folder[lima-workspace]:not([lima-agent]) > .tab-group-label-container .tab-group-label { font-size: calc(11.5px * 1.25); }
+#navigator-toolbox zen-folder[lima-workspace]:not([lima-agent]) > .tab-group-label-container > .tab-group-folder-icon::after {
+  width: calc(16px * 1.25);
+  height: calc(16px * 1.25);
+}
+#navigator-toolbox zen-folder[lima-workspace][lima-agent] > .tab-group-label-container > .tab-group-folder-icon::after {
+  width: 16px;
+  height: 16px;
 }
 #navigator-toolbox .bookmark-item { padding-block: 2px; }
 :root[lima-window]:not([zen-private-window="true"]) zen-folder:is([lima-notebook], [lima-section]) > .tab-group-label-container > .tab-group-folder-icon {
@@ -291,7 +300,6 @@ zen-folder[lima-archiving] > .tab-group-label-container { opacity: .7; }
   border-radius: 50%;
   background: conic-gradient(#a89ab7 0 24%, #62556e 24% 58%, #c1afcc 58% 68%, #62556e 68%);
 }
-#lima-music[data-personality="off"] .lima-dj-scene { display: none; }
 #lima-music[data-playing][data-personality="full"] .lima-dj-mascot { animation: dj-groove 1.8s steps(24) infinite; }
 #lima-music[data-playing][data-personality="full"] .lima-dj-record { animation: dj-spin .9s linear infinite; }
 #lima-music[data-personality="full"][data-gesture] .lima-dj-mascot { animation: dj-cue 620ms steps(10) both; }
@@ -577,12 +585,12 @@ zen-folder[lima-archiving] > .tab-group-label-container { opacity: .7; }
 #lima-assistant-toggle[aria-expanded="true"] { background: var(--lima-hover); color: var(--lima-ink); }
 #lima-assistant-toggle:focus-visible { outline: 2px solid var(--lima-accent); outline-offset: -2px; }
 #lima-assistant-toggle > html|span {
-  width: 17px;
-  height: 17px;
+  width: 24px;
+  height: 24px;
   background: currentColor;
   mask: var(--lima-character) center / contain no-repeat;
 }
-#lima-assistant-toggle[data-activity] > html|span {
+#lima-assistant-toggle:is([data-activity="think"], [data-activity="planning"], [data-activity="read"], [data-activity="tabs"], [data-activity="write"], [data-activity="terminal"], [data-activity="test"]) > html|span {
   animation: lima-assistant-breathe 2s ease-in-out infinite;
 }
 #lima-assistant-toggle:is([data-activity="read"], [data-activity="tabs"]) > html|span {
@@ -591,14 +599,26 @@ zen-folder[lima-archiving] > .tab-group-label-container { opacity: .7; }
 #lima-assistant-toggle:is([data-activity="write"], [data-activity="terminal"], [data-activity="test"]) > html|span {
   animation-name: lima-assistant-tap;
 }
-#lima-assistant-toggle[data-activity="delegate"] > html|span { animation-name: lima-assistant-hop; }
-#lima-assistant-toggle[lima-attention] > html|span,
-zen-folder[lima-workspace][lima-attention] > .tab-group-label-container > .tab-group-folder-icon::after,
-zen-folder[lima-workspace][lima-task="blocked"] > .tab-group-label-container > .tab-group-folder-icon::after {
-  mask: url("resource://lima-ui/marks/attention.svg") center / contain no-repeat !important;
-  color: #b55d67;
-  background: currentColor !important;
-  animation: none !important;
+#lima-assistant-toggle:is([data-activity="delegate"], [data-activity="complete"]) > html|span { animation: lima-assistant-hop 650ms steps(9) 1; }
+/* Attention is a small dot on the character, not a replacement for it.
+   The reason and next step are in the chat and the Companion. */
+#lima-assistant-toggle[lima-attention]::after,
+zen-folder[lima-workspace]:is([lima-attention], [lima-task="blocked"]) > .tab-group-label-container > .tab-group-folder-icon::before {
+  content: "";
+  position: absolute;
+  inset-block-start: 3px;
+  inset-inline-end: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #b55d67;
+  box-shadow: 0 0 0 1.5px var(--lima-bg);
+  pointer-events: none;
+}
+zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon { position: relative; }
+zen-folder[lima-workspace]:is([lima-attention], [lima-task="blocked"]) > .tab-group-label-container > .tab-group-folder-icon::before {
+  inset-block-start: -1px;
+  inset-inline-end: -2px;
 }
 
 #lima-assistant-panel {
@@ -676,8 +696,15 @@ zen-folder[lima-workspace]:is([lima-motion="read"], [lima-motion="tabs"]) > .tab
 zen-folder[lima-workspace]:is([lima-motion="write"], [lima-motion="terminal"], [lima-motion="test"]) > .tab-group-label-container > .tab-group-folder-icon::after {
   animation: lima-assistant-tap 1.5s steps(12) infinite;
 }
-zen-folder[lima-workspace][lima-motion="delegate"] > .tab-group-label-container > .tab-group-folder-icon::after {
-  animation: lima-assistant-hop 2s steps(14) infinite;
+zen-folder[lima-workspace]:is([lima-motion="delegate"], [lima-motion="complete"]) > .tab-group-label-container > .tab-group-folder-icon::after {
+  animation: lima-assistant-hop 650ms steps(9) 1;
+}
+zen-folder[lima-workspace] > .tab-group-label-container[lima-offscreen] > .tab-group-folder-icon::after,
+:root[lima-window]:-moz-window-inactive zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon::after {
+  animation-play-state: paused;
+}
+@media (prefers-reduced-motion: reduce) {
+  zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon::after { animation: none !important; }
 }
 :root[lima-window] .lima-archive-panel {
   --panel-background: var(--lima-bg);
@@ -703,6 +730,10 @@ zen-folder[lima-workspace][lima-motion="delegate"] > .tab-group-label-container 
 .lima-archive-actions button:disabled { opacity: .55; cursor: wait; }
 
 :root[data-lima-personality]:not([data-lima-personality="full"]) zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon::after {
+  animation: none;
+}
+:root[data-lima-personality]:not([data-lima-personality="full"]) .tabbrowser-tab[lima-ai] > .tab-stack > .tab-background,
+:root[data-lima-personality]:not([data-lima-personality="full"]) .tabbrowser-tab[lima-ai] .tab-icon-stack::after {
   animation: none;
 }
 
@@ -735,6 +766,20 @@ zen-folder[lima-workspace][lima-chat-selected] > .tab-group-label-container {
   transform: translateY(-2px) rotate(45deg);
 }
 zen-folder[collapsed] > .tab-group-label-container > .lima-workspace-disclosure::before { transform: rotate(-45deg); }
+zen-folder:is([lima-agents], [lima-tabs]) > .tab-group-label-container > .tab-group-folder-icon > svg {
+  display: none;
+}
+zen-folder:is([lima-agents], [lima-tabs]) > .tab-group-label-container > .tab-group-folder-icon::after {
+  content: "";
+  display: block;
+  width: 17px;
+  height: 17px;
+  background: currentColor;
+  mask: url("resource://lima-ui/icons/folder-open.svg") center / contain no-repeat;
+}
+zen-folder:is([lima-agents], [lima-tabs])[collapsed] > .tab-group-label-container > .tab-group-folder-icon::after {
+  mask-image: url("resource://lima-ui/icons/folder.svg");
+}
 
 #lima-agent-pointer {
   position: fixed;
@@ -794,8 +839,6 @@ zen-folder[collapsed] > .tab-group-label-container > .lima-workspace-disclosure:
 #lima-assistant-toggle { flex-basis: 36px; width: 36px; height: 36px; background: var(--lima-bg); border: 1px solid var(--lima-line); }
 #lima-assistant-outside:not([hidden]) { position: fixed; inset: 0; z-index: 9; }
 #lima-assistant-outside[hidden], .lima-audio-outputs[hidden] { display: none; }
-#navigator-toolbox zen-folder[lima-workspace] > .tab-group-label-container { min-block-size: calc(var(--tab-min-height, 26px) * 1.25); }
-#navigator-toolbox zen-folder[lima-workspace] > .tab-group-label-container .tab-group-label { font-size: 14px; }
 #lima-music input[type="range"] { appearance: none; height: 4px; background: var(--lima-line); border-radius: 4px; }
 #lima-music input[type="range"]::-moz-range-thumb { width: 9px; height: 9px; border: 1px solid var(--lima-bg); border-radius: 100%; background: var(--lima-fg); }
 #lima-dock .lima-audio-outputs button { display: flex; gap: 7px; padding: 5px 7px; align-items: center; text-align: start; width: 100%; border: 0; border-radius: 6px; background: transparent; color: inherit; }

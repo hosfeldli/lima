@@ -61,6 +61,16 @@ public struct OrchestratedTask: Codable, Sendable, Equatable {
         public var nextSteps: [String]
     }
 
+    /// Why a task needs the user, in plain words, and what to do about it.
+    /// Set whenever a task is blocked, failed, paused by the agent or
+    /// finished with warnings; cleared when it runs again.
+    public struct Attention: Codable, Sendable, Equatable {
+        public var reason: String
+        public var remedy: String
+        /// The button that resolves it: retry, resume, settings or review.
+        public var action: String
+    }
+
     public var id: String
     /// Client idempotency key: submitting the same request twice returns the first task.
     public var requestID: String?
@@ -98,6 +108,7 @@ public struct OrchestratedTask: Codable, Sendable, Equatable {
     public var issues: [String]
     /// One coherent result for the Companion to present.
     public var outcome: String?
+    public var attention: Attention? = nil
     public var events: [Event]
     /// Routed messages from other agents (findings, dependency updates).
     var inbox: [Event]
@@ -161,6 +172,28 @@ public actor Orchestrator {
     static let maxChildren = 8
 
     private var tasks: [String: OrchestratedTask] = [:]
+
+    func visualTasks() -> [JSONValue] {
+        var active: [OrchestratedTask] = []
+        var latest: [String: OrchestratedTask] = [:]
+        for task in tasks.values {
+            guard let workspaceID = task.workspaceID else { continue }
+            if !task.state.isTerminal {
+                active.append(task)
+            } else if (latest[workspaceID]?.updatedAt ?? 0) <= task.updatedAt {
+                latest[workspaceID] = task
+            }
+        }
+        return (active + Array(latest.values)).map { task -> JSONValue in
+            .object([
+                "id": .string(task.id), "workspaceID": task.workspaceID.map(JSONValue.string) ?? .null,
+                "state": .string(task.state.rawValue), "role": .string(task.role.rawValue),
+                "updatedAt": .number(task.updatedAt), "startedAt": task.startedAt.map(JSONValue.number) ?? .null,
+                "recovering": .bool(task.state == .running && task.events.last?.kind == "retry"),
+                "attention": task.attention.flatMap { try? JSONValue.from($0) } ?? .null,
+            ])
+        }
+    }
     private let executor: TaskExecutor
     private let persist: @Sendable (OrchestratedTask) async throws -> Void
     private let emit: @Sendable (OrchestratedTask) -> Void
@@ -279,6 +312,8 @@ public actor Orchestrator {
             let prerequisites = task.dependsOn.compactMap { tasks[$0] }
             if let failed = prerequisites.first(where: { $0.state.isTerminal && !$0.state.succeeded }) {
                 task.state = .blocked
+                task.attention = .init(reason: "\(failed.title) \(failed.state == .canceled ? "was stopped" : "failed"), and this step needs its result.",
+                                       remedy: "Retry \(failed.title) from Task Progress, or stop the task.", action: "review")
                 append(&task, "blocked", "Blocked: \(failed.title) \(failed.state == .canceled ? "was stopped" : "failed")")
                 await commit(task)
                 continue
@@ -330,6 +365,7 @@ public actor Orchestrator {
             guard !task.state.isTerminal else { return }
             task.sentMessageID = messageID
             task.toolCount = 0
+            task.attention = nil
             task.state = .running
             task.startedAt = task.startedAt ?? Self.now()
             append(&task, "started", task.parentID == nil ? "Task started" : "Starting \(task.role.agentName)…")
@@ -339,6 +375,7 @@ public actor Orchestrator {
             task.state = .failed
             task.finishedAt = Self.now()
             task.issues.append(String(describing: error))
+            task.attention = .init(reason: "The agent couldn't start: \(error)", remedy: "Check the AI provider in Settings, then Retry.", action: "settings")
             append(&task, "failed", "Couldn't start: \(error)")
             task.outcome = "Couldn't start \(task.title): \(error)"
             await commit(task)
@@ -402,12 +439,12 @@ public actor Orchestrator {
             default: state = .completed
             }
             if !report.verification.isEmpty, tools.isEmpty {
-                issues.append("The report claims verification, but no tool run was recorded in this turn.")
+                issues.append("The agent says it verified the work, but it didn't run any tools in that turn, so the claim is unconfirmed.")
             }
             issues += report.remainingIssues
         } else {
             state = .completed
-            issues.append("The agent didn't return a structured report, so the result is unverified.")
+            issues.append("The agent finished without saying what it checked, so the result is unverified.")
         }
         for helper in helpers where !helper.state.succeeded {
             issues.append("\(helper.title) \(helper.state == .canceled ? "was stopped" : "did not complete")\(helper.issues.first.map { ": \($0)" } ?? "")")
@@ -418,6 +455,7 @@ public actor Orchestrator {
         if state == .completed, !issues.isEmpty { state = .completedWithWarnings }
         task.issues = Array(NSOrderedSet(array: issues).compactMap { $0 as? String }.prefix(20))
         task.state = state
+        task.attention = Self.attention(state: state, report: report, issues: task.issues)
         task.finishedAt = Self.now()
         task.outcome = Self.outcome(for: task, helpers: helpers)
         switch state {
@@ -435,6 +473,7 @@ public actor Orchestrator {
         guard var task = tasks[id] else { return }
         if error.kind == .cancelled {
             task.state = .paused
+            task.attention = .init(reason: "The agent was stopped before it finished.", remedy: "Resume to continue from where it stopped.", action: "resume")
             append(&task, "paused", "Agent stopped. Ready to resume.")
             await commit(task)
             return
@@ -463,6 +502,7 @@ public actor Orchestrator {
         let needsUser: Set<AgentFailureKind> = [.authentication, .missingExecutable, .permissionDenied, .modelRejected, .incompatibleVersion]
         task.state = needsUser.contains(error.kind) ? .blocked : .failed
         task.issues.append(error.message)
+        task.attention = Self.attention(for: error, provider: task.provider)
         if task.state == .failed { task.finishedAt = Self.now() }
         append(&task, task.state.rawValue, "\(Self.failureLabel(error)): \(error.message)")
         task.outcome = task.state == .failed ? "\(task.title) failed: \(error.message)" : nil
@@ -616,6 +656,7 @@ public actor Orchestrator {
         task = tasks[id] ?? task
         task.sentMessageID = message
         task.toolCount = 0
+        task.attention = nil
         task.state = .running
         append(&task, "resumed", "Resuming")
         await commit(task)
@@ -636,6 +677,7 @@ public actor Orchestrator {
             if reply?.status == .complete, let reply { await finish(id, reply: reply); continue }
             if reply?.status == .streaming || reply?.status == .queued { continue }
             task.state = .blocked
+            task.attention = .init(reason: "Lima restarted while the agent was working.", remedy: "Resume to continue from the current state. Nothing is replayed.", action: "resume")
             append(&task, "interrupted", "Agent session interrupted when Lima restarted. Resume to continue from the current state.")
             await commit(task)
         }
@@ -737,6 +779,61 @@ public actor Orchestrator {
         return lines.joined(separator: "\n")
     }
 
+    /// What the user should know and do after an agent's turn settles.
+    static func attention(state: OrchestratedTask.State, report: OrchestratedTask.Report?, issues: [String]) -> OrchestratedTask.Attention? {
+        let suggestion = report?.nextSteps.first.map { "Suggested next step: \(sentence($0))" }
+        switch state {
+        case .completed: return nil
+        case .blocked:
+            let why = report?.remainingIssues.first ?? report?.summary ?? "The agent couldn't continue."
+            let more = (report?.remainingIssues.count ?? 0) > 1 ? " (and \(report!.remainingIssues.count - 1) more)" : ""
+            return .init(reason: "The agent couldn't finish: \(sentence(why))\(more)",
+                         remedy: suggestion ?? "Read its report in the chat, then Retry or stop the task.", action: "review")
+        case .failed:
+            return .init(reason: sentence(report?.summary ?? issues.first ?? "The agent reported a failure."),
+                         remedy: suggestion ?? "Retry, or stop the task.", action: "retry")
+        default:
+            guard let first = issues.first else { return nil }
+            let more = issues.count > 1 ? " (and \(issues.count - 1) more)" : ""
+            return .init(reason: sentence(first) + more,
+                         remedy: suggestion ?? "Review the agent's reply to confirm the result.", action: "review")
+        }
+    }
+
+    static func attention(for error: AgentFailure, provider: String?) -> OrchestratedTask.Attention {
+        let name = provider.flatMap(CLIProvider.init(rawValue:)).map(RuntimeTaskExecutor.name) ?? "the AI provider"
+        switch error.kind {
+        case .authentication:
+            return .init(reason: "\(name) isn't signed in.", remedy: "Sign in under Settings → AI providers, then Retry.", action: "settings")
+        case .missingExecutable:
+            return .init(reason: "\(name) isn't installed on this Mac.", remedy: "Install it under Settings → AI providers, then Retry.", action: "settings")
+        case .modelRejected:
+            return .init(reason: "\(name) rejected the selected model.", remedy: "Choose another model in the chat, then Retry.", action: "retry")
+        case .incompatibleVersion:
+            return .init(reason: "This version of \(name) isn't supported.", remedy: "Update it under Settings → AI providers, then Retry.", action: "settings")
+        case .permissionDenied:
+            return .init(reason: "macOS or the provider denied a permission: \(sentence(error.message))", remedy: "Grant the permission, then Retry.", action: "retry")
+        default:
+            return .init(reason: "\(failureLabel(error)) twice in a row: \(sentence(error.message))", remedy: "Retry when the connection is back, or stop the task.", action: "retry")
+        }
+    }
+
+    /// The first sentence, bounded, for one-line notices.
+    static func sentence(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var first = trimmed
+        var search = trimmed.startIndex
+        while let match = trimmed.range(of: #"[.!?]\s+(?=[A-Z])"#, options: .regularExpression, range: search..<trimmed.endIndex) {
+            let before = trimmed[..<match.lowerBound].suffix(4).lowercased()
+            if ["e.g", "i.e", "etc", " vs", "e.g.", "i.e."].contains(where: { before.hasSuffix($0) }) { search = match.upperBound; continue }
+            first = String(trimmed[...match.lowerBound])
+            break
+        }
+        if first.count > 180 { first = String(first.prefix(177)).trimmingCharacters(in: .whitespaces) + "…" }
+        if let last = first.last, !".!?…".contains(last) { first += "." }
+        return first
+    }
+
     static func stateLabel(_ state: OrchestratedTask.State) -> String {
         switch state {
         case .accepted: "accepted"
@@ -795,7 +892,7 @@ public actor Orchestrator {
                                 workspaceID: nil, conversationID: nil, agentName: nil, provider: nil, browserURL: nil, dependsOn: [],
                                 state: .accepted, createdAt: now, updatedAt: now, startedAt: nil, finishedAt: nil,
                                 sentMessageID: nil, toolCount: 0, attempts: 0, integrated: false, report: nil,
-                                issues: [], outcome: nil, events: [], inbox: [])
+                                issues: [], outcome: nil, attention: nil, events: [], inbox: [])
     }
 
     private func append(_ task: inout OrchestratedTask, _ kind: String, _ message: String) {

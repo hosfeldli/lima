@@ -8,11 +8,12 @@ ChromeUtils.defineESModuleGetters(lazy, {
   tabURL: "resource://lima/LimaWorkspaces.sys.mjs",
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
   LimaNotesBookmarks: "resource://lima/LimaNotesBookmarks.sys.mjs",
+  LimaVisualActivity: "resource://lima/LimaVisualActivity.sys.mjs",
 });
 
 const ALLOWED_PREFIXES = [
   "notes.", "chat.", "terminal.", "search.", "context.", "capture.", "audio.", "media.", "tools.",
-  "assistant.", "agents.", "integrations.", "mcp.grants.", "storage.", "background.", "capabilities.", "workspace.", "agent.", "agents.", "fs.", "dictation.", "task.",
+  "assistant.", "agents.", "integrations.", "mcp.grants.", "storage.", "background.", "capabilities.", "workspace.", "agent.", "agents.", "fs.", "dictation.", "task.", "image.",
 ];
 const ALLOWED_METHODS = new Set(["quickAsk", "auth.approve", "auth.evaluate", "system.openApp", "host.hello"]);
 
@@ -27,6 +28,15 @@ function ensureEventPump() {
         actor.sendAsyncMessage("event", message);
       } catch {
         actors.delete(actor);
+      }
+    }
+  });
+  lazy.LimaVisualActivity.subscribe(data => {
+    for (const actor of actors) {
+      const win = actor.browsingContext?.topChromeWindow;
+      if (win && !lazy.PrivateBrowsingUtils.isWindowPrivate(win)) {
+        try { actor.sendAsyncMessage("event", { event: "ui.visualActivity", data }); }
+        catch { actors.delete(actor); }
       }
     }
   });
@@ -98,10 +108,12 @@ export class LimaParent extends JSWindowActorParent {
     const win = this.browsingContext.topChromeWindow;
     const browser = this.browsingContext.top.embedderElement;
     switch (kind) {
+      case "visualActivity":
+        return lazy.PrivateBrowsingUtils.isWindowPrivate(win) ? null : lazy.LimaVisualActivity.snapshot;
       case "finishWelcome": {
         if (lazy.PrivateBrowsingUtils.isWindowPrivate(win) || browser?.currentURI?.spec !== "about:lima?view=welcome") return null;
         const { LimaWelcome } = ChromeUtils.importESModule("resource://lima/LimaWelcome.sys.mjs");
-        await LimaWelcome.finish(win, browser, payload);
+        await LimaWelcome.finish(win, browser);
         return null;
       }
       case "updateStatus":
@@ -137,12 +149,19 @@ export class LimaParent extends JSWindowActorParent {
         }
         return null;
       }
+      case "browserActionOverlayChanged": {
+        if (!lazy.PrivateBrowsingUtils.isWindowPrivate(win)) {
+          Services.prefs.setBoolPref("lima.browser.actionOverlay", payload?.value === true);
+        }
+        return null;
+      }
       case "agentPreferences": {
         const providers = ["claude", "codex", "opencode"];
         return {
           provider: Services.prefs.getStringPref("lima.agent.provider", "claude"),
           models: Object.fromEntries(providers.map(provider => [provider, Services.prefs.getStringPref("lima.agent.model." + provider, "default")])),
           personality: Services.prefs.getStringPref("lima.personality", "full"),
+          browserActionOverlay: Services.prefs.getBoolPref("lima.browser.actionOverlay", false),
         };
       }
       case "rememberAgent": {
@@ -250,6 +269,22 @@ export class LimaParent extends JSWindowActorParent {
         const tab = folder?.allItemsRecursive.find(item => item.localName === "tab" && lazy.tabURL(item) === payload.url);
         if (tab) win.gBrowser.selectedTab = tab;
         return !!tab;
+      }
+      // Embeds: the live page opens in a Zen split beside the note, where no
+      // site can refuse to be framed.
+      case "openBeside": {
+        const win = this.browsingContext.topChromeWindow;
+        const browser = this.browsingContext.top.embedderElement;
+        let url;
+        try { url = new URL(String(payload?.url ?? "")); } catch { throw new Error("Not a web address."); }
+        const local = url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+        if ((url.protocol !== "https:" && !local) || url.username || url.password) throw new Error("Only HTTPS pages and local previews open beside a note.");
+        const note = browser && win.gBrowser.getTabForBrowser(browser);
+        const page = win.gBrowser.addTab(url.href, { triggeringPrincipal: Services.scriptSecurityManager.createNullPrincipal({}), inBackground: true });
+        if (note?.group?.isZenFolder) { try { note.group.addTabs([page]); } catch {} }
+        const split = note && win.gZenViewSplitter?.splitTabs([note, page], "vsep", 1);
+        if (!split) win.gBrowser.selectedTab = page;
+        return !!split;
       }
       case "openChat": {
         const { LimaWorkspaces } = ChromeUtils.importESModule("resource://lima/LimaWorkspaces.sys.mjs");

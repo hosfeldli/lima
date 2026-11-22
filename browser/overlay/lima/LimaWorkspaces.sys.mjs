@@ -20,13 +20,15 @@ ChromeUtils.defineESModuleGetters(lazy, {
   SessionStore: "moz-src:///browser/components/sessionstore/SessionStore.sys.mjs",
 });
 
-import { lastVisibleTool, replyActivity } from "resource://lima/ui/tool-activity.sys.mjs";
+import { LimaVisualActivity } from "resource://lima/LimaVisualActivity.sys.mjs";
+import { preserveFolderDisclosure } from "resource://lima/LimaFolderDisclosure.sys.mjs";
 
 const MAP_PREF = "lima.workspaces.sidebar";
 const BOOKMARK_ROOT_PREF = "lima.workspaces.bookmarkRoot";
 const MASCOT = "resource://lima-ui/marks/companion.svg";
 const TERMINAL_ICON = "resource://lima-ui/icons/terminal.svg";
 const NOTE_ICON = "resource://lima-ui/icons/note.svg";
+const IMAGE_ICON = "resource://lima-ui/icons/image.svg";
 
 function log(message) {
   dump(`[lima] workspaces: ${message}\n`);
@@ -56,11 +58,11 @@ class Workspaces {
   #started = false;
   #queue = Promise.resolve();
   #workspaces = new Map();
-  #focus = new Map();
+  #visuals = {};
+  #observed = new WeakSet();
+  #observers = new WeakMap();
   #deleting = new Set();
   #archived = new Set();
-  #prompts = new Map();
-  #chatMotion = new Map();
   #mascots = new Map();
 
   start() {
@@ -79,20 +81,17 @@ class Workspaces {
           const workspace = this.#workspaces.get(data.id);
           this.#archived.add(data.id);
           this.#workspaces.delete(data.id);
-          this.#focus.delete(data.id);
-          this.#chatMotion.delete(data.id);
           this.#mascots.delete(workspace?.conversationID);
           this.#enqueue(() => this.remove(data.id, data.parentId, workspace));
           break;
         }
         case "chat.updated": {
-          this.#mascots.set(data.id, data.mascot ?? "classic");
-          const workspace = this.workspaces.find(item => item.conversationID === data.id);
-          if (!workspace) break;
-          const message = data.messages?.findLast(item => item.role === "assistant");
-          const motion = replyActivity(message, { tool: lastVisibleTool(message?.tools), provider: data.provider })?.motion;
-          this.#chatMotion.set(workspace.id, motion);
-          this.#paintFocus(workspace.id);
+          if (!data.workspaceID) break;
+          const mascot = data.mascot ?? "classic";
+          if (this.#mascots.get(data.id) !== mascot) {
+            this.#mascots.set(data.id, mascot);
+            this.#paintFocus(data.workspaceID);
+          }
           break;
         }
         case "workspace.tabClosed":
@@ -103,30 +102,19 @@ class Workspaces {
             if (tab) win.gBrowser.removeTab(tab, { animate: true });
           });
           break;
-        case "workspace.activity":
-          this.#focus.set(data.id, data);
-          this.#paintFocus(data.id);
-          break;
-        case "prompt.opened":
-          this.#prompts.set(data.id, data.workspaceId);
-          this.#paintFocus(data.workspaceId);
-          this.#paintFocus(this.#workspaces.get(data.workspaceId)?.parentID);
-          break;
-        case "prompt.closed":
-          this.#prompts.delete(data.id);
-          this.#paintFocus(data.workspaceId);
-          this.#paintFocus(this.#workspaces.get(data.workspaceId)?.parentID);
-          break;
         case "workspace.browserRequest":
           this.#answer(data);
           break;
-        case "task.updated":
-          if (data?.workspaceID) this.#paintTask(data);
-          break;
+      }
+    });
+    LimaVisualActivity.subscribe(({ workspaces }) => {
+      const previous = this.#visuals;
+      this.#visuals = workspaces;
+      for (const id of new Set([...Object.keys(previous), ...Object.keys(workspaces)])) {
+        if (JSON.stringify(previous[id]) !== JSON.stringify(workspaces[id])) this.#paintFocus(id);
       }
     });
     this.#enqueue(async () => {
-      for (const prompt of await lazy.LimaBridge.request("workspace.prompts").catch(() => [])) this.#prompts.set(prompt.id, prompt.workspaceId);
       const all = (await lazy.LimaBridge.request("workspace.list")).filter(workspace => !this.#archived.has(workspace.id));
       const chats = await lazy.LimaBridge.request("chat.list").catch(() => []);
       for (const chat of chats) {
@@ -137,8 +125,7 @@ class Workspaces {
       for (const workspace of all.filter(w => !w.parentID)) await this.reconcile(this.#workspaces.get(workspace.id));
       for (const workspace of all.filter(w => w.parentID)) await this.reconcile(this.#workspaces.get(workspace.id));
       await this.#prune();
-      const activity = await lazy.LimaBridge.request("workspace.activity").catch(() => ({}));
-      for (const [id, state] of Object.entries(activity)) { this.#focus.set(id, { id, ...state }); this.#paintFocus(id); }
+
     });
   }
 
@@ -188,11 +175,15 @@ class Workspaces {
   }
 
   #makeTab(win, workspace, entry) {
-    const live = entry.url.startsWith("about:lima?");
     const tab = win.gBrowser.addTab(entry.url, {
       triggeringPrincipal: system(), inBackground: true, lazyTabTitle: entry.title, skipAnimation: true,
     });
-    if (live) tab.setAttribute("undiscardable", "true");
+    this.#configureTab(win, tab, workspace, entry);
+    return tab;
+  }
+
+  #configureTab(win, tab, workspace, entry) {
+    if (entry.url.startsWith("about:lima?")) tab.setAttribute("undiscardable", "true");
     tab.setAttribute("lima-url", entry.url);
     tab.setAttribute("lima-title", entry.title);
     try {
@@ -203,7 +194,6 @@ class Workspaces {
       tab.setAttribute("lima-icon", entry.icon);
       try { win.gBrowser.setIcon(tab, entry.icon); } catch {}
     }
-    return tab;
   }
 
   /** Zen relabels lazy tabs as they join a folder; apply ours after. */
@@ -225,14 +215,16 @@ class Workspaces {
   #createFolder(win, tabs, label, parent = null, collapsed = false) {
     const options = { label, collapsed };
     if (parent) options.insertAfter = parent.groupContainer.lastElementChild;
-    return win.gZenFolders.createFolder(tabs, options);
+    return preserveFolderDisclosure(parent, () => win.gZenFolders.createFolder(tabs, options));
   }
 
   #coreEntries(workspace) {
     const entries = [];
     if (workspace.conversationID) entries.push({ url: `about:lima?chat=${workspace.conversationID}`, title: "Chat", icon: MASCOT });
     if (workspace.terminalID) entries.push({ url: `about:lima?terminal=${workspace.terminalID}`, title: "Terminal", icon: TERMINAL_ICON });
-    for (const tab of workspace.tabs.filter(t => t.url.startsWith("about:lima"))) entries.push({ url: tab.url, title: tab.title, icon: NOTE_ICON });
+    for (const tab of workspace.tabs.filter(t => t.url.startsWith("about:lima"))) {
+      entries.push({ url: tab.url, title: tab.title, icon: tab.url.startsWith("about:lima?view=image") ? IMAGE_ICON : NOTE_ICON });
+    }
     return entries;
   }
 
@@ -246,14 +238,13 @@ class Workspaces {
       if (!parentFolder) return; // parent not shown yet; reconciled again with it
     }
 
-    const agentsWereCollapsed = parentFolder?.collapsed;
     let folder = this.folderFor(workspace.id, "folder", win);
     const core = this.#coreEntries(workspace);
     const web = workspace.tabs.filter(t => !t.url.startsWith("about:lima")).map(t => ({ url: t.url, title: t.title }));
 
     if (!folder) {
       const tabs = core.filter(e => !helper || !parentFolder.tabs.some(tab => tabURL(tab) === e.url)).map(e => this.#makeTab(win, workspace, e));
-      folder = this.#createFolder(win, tabs, workspace.name, parentFolder, helper);
+      folder = this.#createFolder(win, tabs, workspace.name, parentFolder, true);
       this.#label(win, tabs);
       entry.folder = folder.id;
       map[workspace.id] = entry;
@@ -273,16 +264,22 @@ class Workspaces {
     const chatURL = workspace.conversationID && `about:lima?chat=${workspace.conversationID}`;
     const detached = helper && [...parentFolder.tabs].find(tab => tab.group === parentFolder && tabURL(tab) === chatURL);
     if (detached) {
-      folder.addTabs([detached]);
+      preserveFolderDisclosure(folder, () => folder.addTabs([detached]));
       detached.removeAttribute("lima-helper-chat");
-      if (agentsWereCollapsed) parentFolder.collapsed = true;
     }
     const label = folder.querySelector(":scope > .tab-group-label-container");
     if (label && !label.querySelector(".lima-workspace-disclosure")) {
       const disclosure = win.document.createElementNS("http://www.w3.org/1999/xhtml", "button");
       disclosure.className = "lima-workspace-disclosure";
-      disclosure.title = "Toggle workspace items";
-      disclosure.setAttribute("aria-label", disclosure.title);
+      const sync = () => {
+        disclosure.title = folder.collapsed ? "Expand workspace items" : "Collapse workspace items";
+        disclosure.setAttribute("aria-label", disclosure.title);
+        disclosure.setAttribute("aria-expanded", String(!folder.collapsed));
+      };
+      sync();
+      for (const type of ["TabGroupExpand", "TabGroupCollapse"]) {
+        folder.addEventListener(type, event => { if (event.target === folder) sync(); });
+      }
       for (const type of ["mousedown", "mouseup", "click"]) disclosure.addEventListener(type, event => {
         event.stopPropagation();
         if (event.type === "click") folder.collapsed = !folder.collapsed;
@@ -292,12 +289,18 @@ class Workspaces {
 
     // Core tabs: add missing ones, drop terminals/chats the workspace replaced.
     const wanted = new Set([...core, ...web].map(e => e.url));
-    let replaceSelectedTerminal = false;
+    const nextTerminal = core.find(item => item.url.startsWith("about:lima?terminal="));
     for (const tab of folder.tabs) {
       if (tab.group !== folder) continue;
       const url = tabURL(tab);
       if (/^about:lima\?(terminal|chat|workspace)=/.test(url) && !wanted.has(url)) {
-        replaceSelectedTerminal ||= tab.selected && url.startsWith("about:lima?terminal=");
+        if (tab.selected && url.startsWith("about:lima?terminal=") && nextTerminal &&
+            !folder.tabs.some(other => tabURL(other) === nextTerminal.url)) {
+          this.#configureTab(win, tab, workspace, nextTerminal);
+          tab.linkedBrowser.loadURI(Services.io.newURI(nextTerminal.url), { triggeringPrincipal: system(),
+            loadFlags: Ci.nsIWebNavigation.LOAD_FLAGS_REPLACE_HISTORY });
+          continue;
+        }
         win.gBrowser.removeTab(tab, { animate: false });
       }
     }
@@ -306,9 +309,7 @@ class Workspaces {
     const missingCore = core.filter(e => !present().has(e.url));
     if (missingCore.length) {
       const added = missingCore.map(e => this.#makeTab(win, workspace, e));
-      folder.addTabs(added);
-      const terminal = replaceSelectedTerminal && added.find(tab => tabURL(tab).startsWith("about:lima?terminal="));
-      if (terminal) win.gBrowser.selectedTab = terminal;
+      preserveFolderDisclosure(folder, () => folder.addTabs(added));
       // Chat first, then Terminal, then notes, then sub-folders.
       this.#orderCore(win, folder);
       win.setTimeout(() => this.#orderCore(win, folder), 700);
@@ -320,16 +321,16 @@ class Workspaces {
     const missingWeb = web.filter(e => ![...present()].some(url => sameURL(url, e.url)));
     if (missingWeb.length) {
       const added = missingWeb.map(e => this.#makeTab(win, workspace, e));
-      if (helper) folder.addTabs(added);
+      if (helper) preserveFolderDisclosure(folder, () => folder.addTabs(added));
       else {
         let tabsFolder = this.folderFor(workspace.id, "tabs", win);
         if (!tabsFolder || tabsFolder.group !== folder) {
-          tabsFolder = this.#createFolder(win, added, "Tabs", folder);
+          tabsFolder = this.#createFolder(win, added, "Tabs", folder, true);
           tabsFolder.setAttribute("lima-tabs", workspace.id);
           entry.tabs = tabsFolder.id;
           map[workspace.id] = entry;
           this.#saveMap(map);
-        } else tabsFolder.addTabs(added);
+        } else preserveFolderDisclosure(tabsFolder, () => tabsFolder.addTabs(added));
       }
       this.#label(win, added);
       added.forEach(tab => this.#animateTab(tab));
@@ -368,9 +369,11 @@ class Workspaces {
     const sorted = [...core].sort((a, b) => rank(a) - rank(b));
     const inOrder = sorted.every((tab, i) => tab === core[i]) && core.every(tab => children.indexOf(tab) < children.indexOf(firstFolder));
     if (inOrder) return;
-    for (const tab of sorted) {
-      try { win.gBrowser.moveTabBefore(tab, firstFolder); } catch (error) { log(`reorder: ${error}`); }
-    }
+    preserveFolderDisclosure(folder, () => {
+      for (const tab of sorted) {
+        try { win.gBrowser.moveTabBefore(tab, firstFolder); } catch (error) { log(`reorder: ${error}`); }
+      }
+    });
   }
 
   #allTabs(folder) {
@@ -550,7 +553,8 @@ class Workspaces {
   }
 
   #animateTab(tab) {
-    if (tab.ownerDocument.defaultView.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    if (Services.prefs.getStringPref("lima.personality", "full") !== "full" ||
+        tab.ownerDocument.defaultView.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     tab.querySelector(".tab-content")?.animate(
       [{ opacity: 0.55, transform: "translateX(-5px)" }, { opacity: 1, transform: "translateX(0)" }],
       { duration: 220, easing: "cubic-bezier(.2,.8,.2,1)" },
@@ -562,7 +566,7 @@ class Workspaces {
     const id = this.workspaceForTab(tab);
     const url = tabURL(tab);
     const folder = tab.closest("zen-folder[lima-workspace]");
-    if (!id || !url || url.startsWith("about:lima")) return;
+    if (!id || !url || (url.startsWith("about:lima") && !url.startsWith("about:lima?view=image"))) return;
     tab.ownerDocument.defaultView.setTimeout(() => {
       const workspace = this.#workspaces.get(id);
       if (!workspace || this.#deleting.has(id) || this.#deleting.has(workspace.parentID) || !folder?.isConnected) return;
@@ -578,6 +582,17 @@ class Workspaces {
     }
   }
 
+  /** Zen expands a collapsed folder when selecting its only tab. A workspace
+   * chat has its own visible row already, so its hidden tab needs no reveal. */
+  keepChatFoldersCollapsed(win) {
+    const folders = win.gZenFolders;
+    const select = folders.on_TabSelect;
+    folders.on_TabSelect = function (event) {
+      if (event.target?.hasAttribute("lima-workspace-chat")) return;
+      return select.call(this, event);
+    };
+  }
+
   /** The folder's ✦ opens its chat. */
   openChat(win, id) {
     const workspace = this.#workspaces.get(id);
@@ -586,6 +601,18 @@ class Workspaces {
     const tab = folder && url && folder.tabs.find(t => tabURL(t) === url);
     if (tab) { win.gBrowser.selectedTab = tab; return; }
     if (url) win.gBrowser.selectedTab = win.gBrowser.addTab(url, { triggeringPrincipal: system() });
+  }
+
+  async openImageStudio(win, id) {
+    const url = `about:lima?view=image&imageWorkspace=${encodeURIComponent(id)}`;
+    await lazy.LimaBridge.request("workspace.openTab", { id, url, title: "Image Studio" });
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const folder = this.folderFor(id, "folder", win);
+      const tab = folder?.tabs.find(tab => tabURL(tab) === url);
+      if (tab) { win.gBrowser.selectedTab = tab; return; }
+      await new Promise(resolve => win.setTimeout(resolve, 100));
+    }
+    throw new Error("Image Studio did not appear in this workspace.");
   }
 
   /** Tab menu → Add Tab to Workspace: the page joins the workspace's Tabs
@@ -624,25 +651,6 @@ class Workspaces {
     lazy.LimaBridge.request("workspace.rename", { id, name: folder.label }).catch(error => log(`rename: ${error.message}`));
   }
 
-  // MARK: Task state on the folder (the Orchestrator's record)
-
-  static #TASK_LABELS = {
-    accepted: "Preparing your task", planned: "Starting", queued: "Waiting for available capacity", waiting: "Waiting for agents",
-    running: "Working", paused: "Work paused", blocked: "Needs attention", verifying: "Verifying results",
-    completed: "Task completed", completed_with_warnings: "Completed with warnings", failed: "Task failed", canceled: "Stopped",
-  };
-
-  #paintTask(task) {
-    const win = this.#win();
-    const folder = win && this.folderFor(task.workspaceID, "folder", win);
-    if (!folder) return;
-    const label = folder.querySelector(":scope > .tab-group-label-container");
-    const state = Workspaces.#TASK_LABELS[task.state] ?? task.state;
-    folder.setAttribute("lima-task", task.state);
-    const latest = task.events?.at(-1)?.message;
-    if (label) label.title = `${folder.label} · ${state}${latest && latest !== state ? ` · ${latest}` : ""}`;
-  }
-
   // MARK: Prism: where the agent is
 
   #paintFocus(id) {
@@ -650,35 +658,54 @@ class Workspaces {
     const win = this.#win();
     const folder = win && this.folderFor(id, "folder", win);
     if (!folder) return;
-    const state = this.#focus.get(id) ?? { surface: "idle" };
+    const activity = this.#visuals[id];
+    const target = activity?.target ?? {};
     const workspace = this.#workspaces.get(id);
     const own = this.#allTabs(workspace?.parentID && folder.group?.isZenFolder ? folder.group : folder).filter(tab => this.workspaceForTab(tab) === id);
     folder.setAttribute("lima-mascot", this.#mascots.get(workspace?.conversationID) ?? "classic");
     const chatURL = workspace?.conversationID && `about:lima?chat=${workspace.conversationID}`;
-    const activeURL = { chat: chatURL, tab: state.url, terminal: `about:lima?terminal=${workspace?.terminalID}` }[state.surface];
+    const activeURL = { chat: chatURL, tab: target.url, terminal: `about:lima?terminal=${workspace?.terminalID}` }[target.surface];
     folder.toggleAttribute("lima-chat-selected", own.some(tab => tab.selected && tabURL(tab) === chatURL));
     for (const tab of own) {
-      const next = sameURL(tabURL(tab), activeURL) ? (state.surface === "chat" ? "thinking" : "here") : "";
+      const next = sameURL(tabURL(tab), activeURL) ? (target.surface === "chat" ? "thinking" : "here") : "";
       if (!next) tab.removeAttribute("lima-ai");
       else if (tab.getAttribute("lima-ai") !== next) {
         tab.setAttribute("lima-ai", next);
         if (next === "here") this.#animateTab(tab);
       }
     }
-    const motion = { terminal: "terminal", tab: "tabs", chat: this.#chatMotion.get(id) || "think" }[state.surface];
-    if (motion) folder.setAttribute("lima-motion", motion); else folder.removeAttribute("lima-motion");
-    const nextFolder = { chat: "thinking", tab: "working", terminal: "working" }[state.surface];
-    if (nextFolder) folder.setAttribute("lima-ai", nextFolder);
-    else folder.removeAttribute("lima-ai");
-    folder.toggleAttribute("lima-attention", [...this.#prompts.values()].some(owner => owner === id || this.#workspaces.get(owner)?.parentID === id));
-    const tabs = this.folderFor(id, "tabs", win);
-    if (tabs && state.surface === "tab") {
-      tabs.collapsed = false;
-      tabs.setAttribute("lima-ai-opened", "true");
-    } else if (tabs?.hasAttribute("lima-ai-opened")) {
-      tabs.removeAttribute("lima-ai-opened");
-      tabs.collapsed = true;
+    const motion = activity?.motion;
+    if (motion && folder.getAttribute("lima-motion") !== motion) folder.setAttribute("lima-motion", motion);
+    else if (!motion) folder.removeAttribute("lima-motion");
+    this.#observeMascot(win, folder);
+    const moving = ["working", "starting"].includes(activity?.state);
+    if (moving) folder.setAttribute("lima-ai", "working"); else folder.removeAttribute("lima-ai");
+    const attention = activity?.attention || ["blocked", "failed"].includes(activity?.state);
+    folder.toggleAttribute("lima-attention", attention);
+    const label = folder.querySelector(":scope > .tab-group-label-container");
+    if (label && activity) {
+      const minutes = activity.startedAt ? Math.floor((Date.now() - activity.startedAt) / 60000) : 0;
+      label.title = `${folder.label} · ${activity.label}${minutes > 0 && moving ? ` · ${minutes} min` : ""}`;
     }
+  }
+
+  #observeMascot(win, folder) {
+    if (this.#observed.has(folder)) return;
+    const label = folder.querySelector(":scope > .tab-group-label-container");
+    if (!label) return;
+    let observer = this.#observers.get(win);
+    if (!observer) {
+      observer = new win.IntersectionObserver(entries => {
+        for (const { target, isIntersecting } of entries) {
+          if (!target.isConnected) observer.unobserve(target);
+          else target.toggleAttribute("lima-offscreen", !isIntersecting);
+        }
+      });
+      this.#observers.set(win, observer);
+      win.addEventListener("unload", () => observer.disconnect(), { once: true });
+    }
+    this.#observed.add(folder);
+    observer.observe(label);
   }
 
   // MARK: Requests from the runtime
@@ -783,7 +810,8 @@ class Workspaces {
   }
 
   #showAction(win, browser, pointer, action) {
-    if (!["click", "type"].includes(action) || win.gBrowser.selectedBrowser !== browser) return;
+    if (!Services.prefs.getBoolPref("lima.browser.actionOverlay", false) ||
+        !["click", "type"].includes(action) || win.gBrowser.selectedBrowser !== browser) return;
     const { x, y } = pointer;
     const bounds = browser.getBoundingClientRect();
     const zoom = browser.fullZoom || 1;

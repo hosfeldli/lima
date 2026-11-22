@@ -130,10 +130,7 @@ export const LimaCreate = {
     // The reconciler builds the folder from the workspace.created event.
     for (let i = 0; i < 40; i++) {
       const folder = lazy.LimaWorkspaces.folderFor(workspace.id, "folder", win);
-      if (folder) {
-        lazy.LimaWorkspaces.openChat(win, workspace.id);
-        return;
-      }
+      if (folder) return;
       await new Promise(resolve => win.setTimeout(resolve, 100));
     }
     throw new Error(`“${workspace.name}” was created, but its sidebar folder didn't appear. Reopen Lima to restore it.`);
@@ -205,6 +202,7 @@ function installMenus(win) {
       inFolder("lima-folder-tab", "New Tab Here", "tab", f => { const tab = win.gBrowser.addTab("about:blank", { triggeringPrincipal: system() }); LimaCreate.place(win, tab, f); lazy.LimaSearchPanel.open(win); }),
       inFolder("lima-folder-note", "New Note Here", "note", f => LimaCreate.note(win, f)),
       inFolder("lima-folder-terminal", "New Terminal Here", "terminal", f => LimaCreate.terminal(win, f)),
+      inFolder("lima-folder-image", "Open Image Studio", "image", f => lazy.LimaWorkspaces.openImageStudio(win, f.getAttribute("lima-workspace"))),
       inFolder("lima-folder-rename", "Rename Workspace", "file", f => f.rename()),
       inFolder("lima-folder-reveal", "Reveal Project Folder", "folder", f => lazy.LimaBridge.request("workspace.reveal", { id: f.getAttribute("lima-workspace") })),
       inFolder("lima-folder-dismiss", "Dismiss Finished Agent", "close", f => lazy.LimaWorkspaces.archive(win, f.getAttribute("lima-workspace"))),
@@ -221,6 +219,7 @@ function installMenus(win) {
       doc.getElementById("lima-folder-tab").hidden = !target;
       doc.getElementById("lima-folder-terminal").hidden = !target;
       doc.getElementById("lima-folder-note").hidden = !target;
+      doc.getElementById("lima-folder-image").hidden = !workspace;
       doc.getElementById("lima-folder-dismiss").hidden = !agent;
       doc.getElementById("lima-folder-remove").hidden = !workspace || agent;
       doc.getElementById("lima-folder-rename").hidden = !workspace || agent;

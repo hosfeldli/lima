@@ -2,10 +2,10 @@
  * workspace or helper agent it is the agent's chat; a live line says where
  * the agent is working (the sidebar shows the same with the prism). */
 import { activityStatus, bridge, call, el, errorText, filesPrivacyButton, icon, markdown, onEvent, prefs, setPage } from "./lib.js";
-import { failureActivity, isFolderPermissionError, lastVisibleTool, replyActivity, toolActivity } from "./tool-activity.sys.mjs";
+import { failureActivity, isFolderPermissionError, toolActivity } from "./tool-activity.sys.mjs";
 
 import { agentControls, composerMenu, preferredAgent } from "./composer.js";
-import { companion, MASCOTS, setCompanionState } from "./companion.js";
+import { companion, MASCOTS, setCompanionState, watchVisualActivity } from "./companion.js";
 import { workspacePrompts } from "./workspace-prompts.js";
 const MASCOT = "resource://lima-ui/marks/companion.svg";
 
@@ -46,12 +46,14 @@ async function initializeChat(app, chatId, compact, signal) {
   let workspace = null;
   let modulesRequest = 0;
   let helperChats = new Set();
+  let helperVisuals = {};
+  let shownTaskID;
   const messages = el("div", { class: "messages", role: "log" });
   const activity = activityStatus();
-  const recovery = el("div", { class: "row", hidden: true });
+  const recovery = el("div", { class: "row chat-recovery", hidden: true });
   let lastStepList;
-  let activeTool;
-  let workspaceActivity;
+  let visualActivity;
+  const messageElements = new Map();
   let pendingRequest = false;
   let loaded = false;
   let requestError;
@@ -182,16 +184,18 @@ async function initializeChat(app, chatId, compact, signal) {
     stopButton.hidden = !running;
     sendButton.hidden = running;
     sendButton.disabled = !loaded || pendingRequest || !controls.settings().provider;
-    chatTab.replaceChildren(...(running ? [el("i", { class: "live" }), "Chat · working"] : ["Chat"]));
     drawSteps();
     paintNow();
     const atBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 60;
     const ids = new Set(conversation.messages.map(message => message.id));
     for (const id of settledMessages.keys()) if (!ids.has(id)) settledMessages.delete(id);
+    messageElements.clear();
     messages.replaceChildren(...conversation.messages.map(message => {
       if (message.role !== "assistant" || message.status !== "complete") {
         settledMessages.delete(message.id);
-        return messageNode(message);
+        const node = messageNode(message);
+        messageElements.set(message.id, node);
+        return node;
       }
       const entry = settledMessages.get(message.id);
       if (entry?.text === message.text) return entry.node;
@@ -275,11 +279,16 @@ async function initializeChat(app, chatId, compact, signal) {
     const records = await call("task.list", { workspaceId: owner, limit: 1 }).catch(error => { progress.replaceChildren(el("p", { class: "error", text: errorText(error) })); return null; });
     if (!records || signal.aborted || request !== progressRequest) return;
     const record = records[0];
+    shownTaskID = record?.task.id;
     if (!record) {
       progress.replaceChildren(el("p", { class: "muted", text: "Tasks you hand to this workspace from the Companion appear here, with their agents and results." }));
       return;
     }
     const { task, children } = record;
+    const events = task.events.slice(-12).reverse();
+    const eventRows = items => el("ol", { class: "task-events" }, items.map(event => el("li", {},
+      el("time", { text: new Date(event.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }),
+      el("span", { text: event.message }))));
     const names = new Map(children.map(child => [child.id, child.title]));
     const control = (label, method) => el("button", { class: "ghost", onclick: async () => {
       try { await call(method, { id: task.id }); drawProgress(); } catch (error) { reportError(error); }
@@ -288,6 +297,7 @@ async function initializeChat(app, chatId, compact, signal) {
       el("section", { class: "task-card", "data-state": task.state },
         el("div", { class: "row" }, el("strong", { class: "grow", text: task.title }), el("span", { class: "badge", text: TASK_STATES[task.state] ?? task.state })),
         task.context?.length ? el("p", { class: "muted", text: task.context.join(" · ") }) : null,
+        task.attention ? el("p", { class: "task-attention" }, el("strong", { text: task.attention.reason }), " ", task.attention.remedy) : null,
         task.outcome ? el("p", { class: "task-outcome", text: task.outcome }) : null,
         el("div", { class: "row" },
           !TASK_DONE.has(task.state) ? control("Stop Task", "task.cancel") : null,
@@ -302,13 +312,13 @@ async function initializeChat(app, chatId, compact, signal) {
           child.dependsOn.length ? el("span", { class: "muted", text: ` · after ${child.dependsOn.map(id => names.get(id) ?? "another task").join(", ")}` }) : null),
         el("span", { class: "badge", text: TASK_STATES[child.state] ?? child.state })))) : null,
       el("h3", { text: "Activity" }),
-      el("ol", { class: "task-events" }, task.events.slice(-12).reverse().map(event => el("li", {},
-        el("time", { text: new Date(event.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }), el("span", { text: event.message })))));
+      eventRows(events.slice(0, 3)),
+      events.length > 3 ? el("details", {}, el("summary", { text: "Earlier activity" }), eventRows(events.slice(3))) : null);
   }
 
   // Steps: every tool call, timestamped by its reply; nothing disappears.
   function drawSteps() {
-    const stepList = JSON.stringify(conversation.messages.map(message => [message.id, message.status, message.tools]));
+    const stepList = JSON.stringify([visualActivity?.state, visualActivity?.label, conversation.messages.map(message => [message.id, message.status, message.tools])]);
     if (stepList === lastStepList) return;
     lastStepList = stepList;
     const rows = [];
@@ -316,13 +326,13 @@ async function initializeChat(app, chatId, compact, signal) {
       if (message.role !== "assistant") continue;
       const time = new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
       visibleTools(message.tools ?? []).forEach((tool, i, tools) => {
-        const current = message.status === "streaming" && tool === activeTool && i === tools.length - 1;
+        const current = message.status === "streaming" && visualActivity?.state === "working" && toolLabel(tool) === visualActivity.label && i === tools.length - 1;
         rows.push(el("li", { class: current ? "now" : message.status === "failed" ? "failed" : "" }, el("time", { text: time }), toolRow(tool, current)));
       });
     }
     stepsTab.replaceChildren(...counted("Activity", rows.length));
     steps.replaceChildren(...(rows.length ? rows.slice(-40) : [el("li", { class: "muted" }, el("time", { text: "" }), el("span", { text: "Tool calls appear here as the agent works." }))]));
-    if (!compact) steps.lastElementChild?.scrollIntoView?.({ block: "nearest" });
+    if (!compact && currentView === "steps") steps.lastElementChild?.scrollIntoView?.({ block: "nearest" });
   }
 
   async function drawWorkspaceModules() {
@@ -338,18 +348,48 @@ async function initializeChat(app, chatId, compact, signal) {
     agentsTab.replaceChildren(...counted("Agents", helpers.length));
     agents.replaceChildren(...helpers.map(h => {
       const summary = summaries.get(h.conversationID);
-      const state = summary?.running ? "working" : summary?.lastStatus === "complete" ? "complete" : summary?.lastStatus === "failed" ? "failed" : "ready";
-      return el("li", { class: "clickable", onclick: () => bridge.openTab(`about:lima?chat=${encodeURIComponent(h.conversationID)}`) },
-        el("span", { class: "grow", text: h.name, title: h.task ?? "" }),
+      const avatar = companion("agent-avatar");
+      avatar.dataset.variant = summary?.mascot ?? "classic";
+      return el("li", { class: "clickable", "data-agent-chat": h.conversationID,
+        onclick: () => bridge.openTab(`about:lima?chat=${encodeURIComponent(h.conversationID)}`) },
+        avatar, el("span", { class: "grow", text: h.name, title: h.task ?? "" }),
         h.browserTestURL ? el("span", { class: "muted", text: "Browser only" }) : null,
-        el("span", { class: "badge " + ({ working: "warn", complete: "ok", failed: "bad" }[state] ?? ""), text: state }));
+        el("span", { class: "badge" }));
     }));
+    paintAgents();
     const entries = await call("fs.list", { path: workspace.directory }).catch(() => []);
     if (signal.aborted || request !== modulesRequest) return;
     filesTab.hidden = false;
     filesTab.replaceChildren(...counted("Files", entries.length));
     files.replaceChildren(...(entries.length ? entries.slice(0, 30).map(f => el("li", {}, icon(f.directory ? "folder" : "file"), el("span", { class: "grow", text: f.name })))
       : [el("li", { class: "muted", text: "Empty folder" })]));
+  }
+
+  function paintAgents() {
+    for (const row of agents.children) {
+      const activity = helperVisuals[row.dataset.agentChat];
+      setCompanionState(row.firstElementChild, activity?.motion ?? "idle");
+      const badge = row.lastElementChild;
+      badge.textContent = activity?.label ?? "Ready";
+      badge.className = "badge " + ({ working: "warn", complete: "ok", failed: "bad", blocked: "bad" }[activity?.state] ?? "");
+    }
+  }
+
+  /** A task that needs the user says what to do next, with the button that does it. */
+  function attentionActions(next) {
+    const attention = next.attention;
+    if (!attention || !next.taskId) return [];
+    const task = method => async () => {
+      try { await call(method, { id: next.taskId }); } catch (error) { reportError(error); }
+    };
+    const primary = {
+      retry: el("button", { class: "ghost", onclick: task("task.resume") }, "Retry"),
+      resume: el("button", { class: "ghost", onclick: task("task.resume") }, "Resume"),
+      settings: el("button", { class: "ghost", onclick: () => bridge.openTab("about:lima?view=integrations&section=agents") }, "Open Settings"),
+      review: el("button", { class: "ghost", onclick: () => showView("progress") }, "Review Task"),
+    }[attention.action];
+    return [el("span", { class: "attention-remedy", text: attention.remedy }), primary,
+      ["blocked", "waiting"].includes(next.state) || attention.action === "resume" ? el("button", { class: "ghost", onclick: task("task.cancel") }, "Stop Task") : null];
   }
 
   function paintNow() {
@@ -359,20 +399,27 @@ async function initializeChat(app, chatId, compact, signal) {
         ...(sendFailed ? { label: "Message not sent" } : {}) }
       : !loaded ? { state: "starting", label: "Opening conversation", icon: "notebook", motion: "think" }
       : pendingRequest && !runningReply() ? { state: "starting", label: "Sending request", icon: "send", motion: "think" }
-      : replyActivity(reply, { tool: activeTool, provider: conversation?.provider, surface: workspaceActivity?.surface });
+      : (visualActivity ?? { state: "idle", label: "Ready", motion: "idle" });
     activity.update(next);
     setCompanionState(character, next.motion ?? "idle");
+    const working = ["starting", "working"].includes(next.state);
+    if (chatTab.hasAttribute("data-working") !== working) {
+      chatTab.toggleAttribute("data-working", working);
+      chatTab.replaceChildren(...(working ? [el("i", { class: "live" }), "Chat · working"] : ["Chat"]));
+    }
     const folderError = requestError ?? reply?.error;
     recovery.replaceChildren(
       !loaded && requestError ? el("button", { class: "ghost", onclick: loadConversation }, "Retry") : null,
       loaded && sendFailed && requestError ? el("button", { class: "ghost", onclick: send }, "Retry Message") : null,
-      isFolderPermissionError(folderError) ? filesPrivacyButton(reportError) : null);
+      isFolderPermissionError(folderError) ? filesPrivacyButton(reportError) : null,
+      ...(!requestError ? attentionActions(next) : []));
     recovery.hidden = !recovery.childElementCount;
   }
 
   const unsubscribe = onEvent(message => {
     const data = message.data;
-    if (message.event === "task.updated" && workspace && [data?.workspaceID, data?.parentID].some(Boolean)) {
+    if (message.event === "task.updated" && workspace && (data?.workspaceID === (workspace.parentID ?? workspace.id) ||
+        (!!shownTaskID && (data?.id === shownTaskID || data?.parentID === shownTaskID)))) {
       if (currentView === "progress") drawProgress();
       return;
     }
@@ -384,29 +431,25 @@ async function initializeChat(app, chatId, compact, signal) {
       if (target) {
         eventRevision++;
         target.text += data.text;
-        activeTool = undefined;
-        workspaceActivity = undefined;
-        if (!deltaPaint) deltaPaint = requestAnimationFrame(draw);
+        if (!deltaPaint) deltaPaint = requestAnimationFrame(() => {
+          deltaPaint = 0;
+          const body = messageElements.get(target.id)?.querySelector(".typing");
+          if (!body) return;
+          const atBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 60;
+          body.replaceChildren(...markdown(target.text, { onTaskToggle: () => {} }).childNodes);
+          if (atBottom) messages.scrollTop = messages.scrollHeight;
+        });
       }
     } else if (message.event === "chat.updated" && data.id === chatId) {
       eventRevision++;
       const previous = runningReply();
       conversation = data;
       const running = runningReply();
-      if (previous?.id !== running?.id) {
-        requestError = undefined;
-        workspaceActivity = undefined;
-        activeTool = lastVisibleTool(running?.tools);
-      } else if (running && running.tools?.length !== previous?.tools?.length) {
-        activeTool = lastVisibleTool(running.tools);
-      }
+      if (previous?.id !== running?.id) requestError = undefined;
       draw();
     } else if (message.event === "chat.updated" && helperChats.has(data.id)) {
-      drawWorkspaceModules();
-    } else if (message.event === "workspace.activity" && data.id === workspace?.id) {
-      if (data.surface === "chat" && ["terminal", "tab"].includes(workspaceActivity?.surface)) activeTool = undefined;
-      workspaceActivity = data;
-      paintNow();
+      const avatar = [...agents.children].find(row => row.dataset.agentChat === data.id)?.firstElementChild;
+      if (avatar) avatar.dataset.variant = data.mascot ?? "classic";
     } else if (message.event === "workspace.updated" && data.id === workspace?.id) {
       workspace = data; draw(); drawWorkspaceModules();
     } else if (workspace && ["workspace.created", "workspace.deleted"].includes(message.event)) {
@@ -416,7 +459,15 @@ async function initializeChat(app, chatId, compact, signal) {
     }
   });
 
+  const unwatch = watchVisualActivity(snapshot => snapshot.chats[chatId], activity => {
+    visualActivity = activity;
+    paintNow();
+    if (conversation) drawSteps();
+  });
+  const unwatchAgents = watchVisualActivity(snapshot => snapshot.chats, chats => { helperVisuals = chats; paintAgents(); });
   signal.addEventListener("abort", () => {
+    unwatch();
+    unwatchAgents();
     unsubscribe();
     cancelAnimationFrame(deltaPaint);
   }, { once: true });
@@ -436,7 +487,6 @@ async function initializeChat(app, chatId, compact, signal) {
     }
     if (signal.aborted) return;
     loaded = true;
-    activeTool ??= lastVisibleTool(runningReply()?.tools);
     draw();
     drawWorkspaceModules();
     controls.show(conversation, false).then(draw);

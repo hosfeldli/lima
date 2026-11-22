@@ -173,15 +173,20 @@ export function renderAudioOutputs(node, items) {
 export async function renderIntegrations(app, section) {
   setPage("Integrations & Settings", "integrations");
   const services = el("div"), mcp = el("div"), storage = el("div");
-  const personality = el("select", { "aria-label": "Companion illustrations", onchange: event => {
+  const personality = el("select", { "aria-label": "Companion Animations", onchange: event => {
     prefs.set("personality", event.target.value);
     bridge.browser("personalityChanged", { value: event.target.value }).catch(() => {});
   } }, ["Full", "Subtle", "Off"].map(label => el("option", { value: label.toLowerCase(), text: label })));
   personality.value = prefs.get("personality", "full");
   bridge.browser("agentPreferences", {}).then(data => { if (data?.personality) personality.value = data.personality; }).catch(() => {});
+  const overlay = el("input", { type: "checkbox", onchange: event =>
+    bridge.browser("browserActionOverlayChanged", { value: event.target.checked }).catch(() => {}) });
+  bridge.browser("agentPreferences", {}).then(data => { overlay.checked = data?.browserActionOverlay === true; }).catch(() => {});
   const groups = [
     ["general", "General", "appearance animation search index preferences", [
-      card("Appearance", el("label", { class: "row" }, "Companion illustrations", personality)),
+      card("Appearance", el("label", { class: "row" }, "Companion Animations", personality),
+        el("p", { class: "muted", text: "Off keeps the mascot still. Lima also respects macOS Reduce Motion." }),
+        el("label", { class: "row appearance-checkbox" }, overlay, "Show agent click and typing markers on webpages")),
       card("Search", el("button", { onclick: async () => { await call("search.resetLearning"); alert("Learned ranking reset."); } }, "Reset learned ranking"),
         " ", el("button", { onclick: async () => { const n = await call("search.rebuild", { source: "app" }); alert(`Index rebuilt (${n} items).`); } }, "Rebuild app index")),
     ]],
@@ -289,7 +294,7 @@ function updateSettings() {
     available: ["Downloading update…", "Preparing the download."],
     downloading: ["Downloading update…", "Lima verifies the update’s signature before offering to install it."],
     verifying: ["Verifying update…", "Checking the signature and code signing before offering to install it."],
-    ready: ["Ready to Restart", "Lima will reopen using this browser profile, with your tabs, folders, and settings."],
+    ready: ["Ready to Restart", "Restart now, or it installs when you quit Lima. Lima reopens with this browser profile, tabs, folders and settings."],
     installing: ["Restarting Lima…", "Saving the browser session before replacing the app."],
     failed: ["Update Failed", "Your current version keeps working. Try again."],
   };
@@ -305,6 +310,10 @@ function updateSettings() {
     outcome.hidden = !(error || lastInstall?.ok === false);
     outcome.textContent = error || lastInstall?.error || "";
     progress.hidden = !busy;
+    // Real download progress when lima-host reports it; indeterminate otherwise.
+    if (phase === "downloading" && state.progress != null) { progress.max = 1; progress.value = state.progress; }
+    else progress.removeAttribute("value");
+    if (phase === "downloading" && state.progress != null) detail.textContent = `${Math.round(state.progress * 100)}% · ${explanation}`;
     check.disabled = Boolean(busy);
     check.hidden = ["disabled", "ready", "installing"].includes(phase);
     check.textContent = phase === "failed" ? "Retry" : "Check for Updates";

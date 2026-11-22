@@ -1,13 +1,12 @@
 import { activityStatus, bridge, call, el, errorText, filesPrivacyButton, icon, markdown, onEvent, prefs, setPage } from "./lib.js";
 import { agentControls } from "./composer.js";
-import { companion, setCompanionState } from "./companion.js";
+import { companion, cueCompanion, setCompanionState, watchVisualActivity } from "./companion.js";
 import { workspacePrompts } from "./workspace-prompts.js";
-import { failureActivity, isFolderPermissionError, lastVisibleTool, replyActivity } from "./tool-activity.sys.mjs";
+import { failureActivity, isFolderPermissionError } from "./tool-activity.sys.mjs";
 
 export async function renderAssistant(app, _initialWorkspace, { home = false } = {}) {
   setPage(home ? "Lima" : "Lima Companion", "lima");
   const workspaces = new Map();
-  const conversations = new Map();
   const input = el("textarea", { rows: home ? 3 : 2, placeholder: "What would you like Lima to do?", "aria-label": "Question or task" });
   const character = companion(home ? "home" : "status");
   const send = el("button", { class: "primary", onclick: delegate, disabled: true }, icon("send"), "Send");
@@ -31,7 +30,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
   let ready = false;
   let shownWorkspace;
   let requestError;
-  let conversationRevision = 0;
+  let visualSnapshot;
 
   const close = () => bridge.browser("closeAssistant", {});
   const head = home
@@ -45,6 +44,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
           el("span", { class: "spacer" }), send)),
       taskChat, status, prompts.node, recent, home ? null : providerHelp)));
 
+  input.addEventListener("focus", () => { if (character.dataset.state === "idle") cueCompanion(character, "listen"); });
   input.addEventListener("input", () => prefs.set(draftKey, input.value));
   input.addEventListener("keydown", event => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); delegate(); }
@@ -84,8 +84,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
   }
 
   function describe(workspace) {
-    const current = conversations.get(workspace.conversationID);
-    return replyActivity(current?.message, { provider: current?.provider, tool: current?.tool });
+    return visualSnapshot?.workspaces[workspace.id] ?? { state: "idle", label: "Ready" };
   }
 
   function reportError(error) { requestError = error; paintActivity(); }
@@ -96,13 +95,15 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
 
   function paintActivity() {
     shownWorkspace = workspaces.get(handedOff) ?? [...workspaces.values()].find(workspace =>
-      !workspace.parentID && conversations.get(workspace.conversationID)?.message?.status === "streaming");
-    const current = shownWorkspace && conversations.get(shownWorkspace.conversationID)?.message;
+      !workspace.parentID && ["starting", "working", "blocked"].includes(describe(workspace).state));
     const pending = tasks.some(task => task.phase === "working");
+    const shared = visualSnapshot?.companion;
     const next = requestError ? failureActivity(requestError, ready ? "Workspace request failed" : "Workspaces unavailable")
       : !ready ? { state: "starting", label: "Loading workspaces", icon: "workspace", motion: "think" }
-      : pending ? { state: "starting", label: "Reviewing the request", icon: "workspace", motion: "think" }
-      : shownWorkspace ? describe(shownWorkspace) : { state: "idle", label: "Ready to delegate" };
+      : tasks.some(task => task.phase === "approval") ? { state: "blocked", label: "Needs your approval", icon: "note", motion: "waiting" }
+      : ["blocked", "failed", "disconnected"].includes(shared?.state) ? shared
+      : pending ? { state: "starting", label: "Planning task…", icon: "notebook", motion: "planning" }
+      : (shared ?? { state: "idle", label: "Ready to delegate" });
     status.hidden = home && ready && !pending && !requestError && !shownWorkspace;
     target.hidden = openAgent.hidden = !shownWorkspace || pending || !!requestError;
     target.textContent = shownWorkspace?.name ?? "";
@@ -110,7 +111,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     setCompanionState(character, next.motion ?? "idle");
     recovery.replaceChildren(
       requestError && !ready ? el("button", { class: "ghost", onclick: load }, "Retry") : null,
-      isFolderPermissionError(requestError ?? current?.error) ? filesPrivacyButton(reportError) : null);
+      isFolderPermissionError(requestError ?? next.detail) ? filesPrivacyButton(reportError) : null);
     recovery.hidden = !recovery.childElementCount;
     send.disabled = !ready || !agent.settings().provider;
   }
@@ -119,7 +120,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     const roots = [...workspaces.values()].filter(workspace => !workspace.parentID);
     const rows = roots.slice(0, home ? 6 : 10).map(workspace => {
       const { label, state, detail } = describe(workspace);
-      return el("button", { class: "ghost handoff-workspace", onclick: () => openWorkspace(workspace) },
+      return el("button", { class: "ghost handoff-workspace", "data-workspace-id": workspace.id, onclick: () => openWorkspace(workspace) },
         icon("workspace"), el("span", { class: "grow", text: workspace.name }),
         el("span", { class: "handoff-state", "data-state": state, text: label, title: detail }));
     });
@@ -166,7 +167,8 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     input.value = "";
     prefs.set(draftKey, "");
     requestError = undefined;
-    paintTask(task, "working", "Reviewing request…");
+    cueCompanion(character, "receive");
+    paintTask(task, "working", "Understanding the request…");
     try {
       const [tabs, folders] = await Promise.all([
         bridge.browser("assistantTabs", {}),
@@ -254,11 +256,13 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     const actions = [];
     if (workspace) actions.push(el("button", { class: "ghost", onclick: () => openWorkspace(workspace) }, TERMINAL.has(item.state) ? "Review Result" : "Open Workspace"));
     if (!TERMINAL.has(item.state)) actions.push(el("button", { class: "ghost", onclick: () => control("task.cancel", item.id) }, "Stop Task"));
+    if (item.attention?.action === "settings") actions.push(el("button", { class: "ghost", onclick: () => bridge.openTab("about:lima?view=integrations&section=agents") }, "Open Settings"));
     if (["paused", "blocked", "failed"].includes(item.state)) actions.push(el("button", { class: "ghost", onclick: () => control("task.resume", item.id) }, item.state === "paused" ? "Resume" : "Retry"));
     return el("div", { class: "companion-task-status", "data-state": item.state },
       el("p", { class: "companion-task-line" }, el("strong", { text: STATES[item.state] ?? item.state }),
         where ? el("span", { class: "muted", text: ` · ${where}` }) : null),
-      last && last !== STATES[item.state] ? el("p", { class: "muted", text: last }) : null,
+      item.attention ? el("p", { text: item.attention.reason }) : last && last !== STATES[item.state] ? el("p", { class: "muted", text: last }) : null,
+      item.attention ? el("p", { class: "muted", text: item.attention.remedy }) : null,
       agents ? el("p", { class: "muted", text: agents }) : null,
       TERMINAL.has(item.state) && item.outcome ? el("p", { class: "companion-task-outcome", text: item.outcome }) : null,
       el("div", { class: "row" }, ...actions));
@@ -309,22 +313,12 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     }
   }
 
-  function rememberConversation(data) {
-    const message = data.messages?.findLast(item => item.role === "assistant");
-    const prior = conversations.get(data.id);
-    const tool = prior?.message?.id === message?.id && prior?.message?.tools?.length === message?.tools?.length
-      ? prior?.tool : lastVisibleTool(message?.tools);
-    conversations.set(data.id, { message, tool, provider: data.provider });
-  }
-
   const queued = [];
   function update(event, data) {
     if (event === "workspace.deleted") {
-      conversations.delete(workspaces.get(data.id)?.conversationID);
       workspaces.delete(data.id);
       if (data.id === handedOff) handedOff = undefined;
     }
-    else if (event === "chat.updated") rememberConversation(data);
     else workspaces.set(data.id, data);
   }
   const unsubscribe = onEvent(({ event, data }) => {
@@ -346,32 +340,29 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
       agent.refresh().then(draw);
       if (!home) loadProviderHelp();
     }
-    if (event === "chat.delta") {
-      const current = conversations.get(data.conversationId);
-      if (current?.message?.id === data.messageId && (current.tool || !current.message.text?.trim()) && data.text?.trim()) {
-        conversationRevision++;
-        current.message = { ...current.message, text: data.text };
-        current.tool = undefined;
-        draw();
-      }
-      return;
-    }
-    if (!["workspace.created", "workspace.updated", "workspace.deleted", "chat.updated"].includes(event)) return;
-    if (event === "chat.updated") conversationRevision++;
+    if (!["workspace.created", "workspace.updated", "workspace.deleted"].includes(event)) return;
     if (!ready) queued.push([event, data]);
     else { update(event, data); draw(); }
   });
-  window.addEventListener("pagehide", unsubscribe, { once: true });
+  const unwatch = watchVisualActivity(snapshot => snapshot, snapshot => {
+    visualSnapshot = snapshot;
+    paintActivity();
+    for (const row of recent.querySelectorAll("[data-workspace-id]")) {
+      const next = describe(workspaces.get(row.dataset.workspaceId) ?? { id: row.dataset.workspaceId });
+      const label = row.querySelector(".handoff-state");
+      if (label.textContent !== next.label) label.textContent = next.label;
+      label.dataset.state = next.state;
+      label.title = next.detail ?? "";
+    }
+  });
+  window.addEventListener("pagehide", () => { unsubscribe(); unwatch(); }, { once: true });
 
   async function load() {
     requestError = undefined;
     paintActivity();
     try {
-      const [all, chats] = await Promise.all([call("workspace.list"), call("chat.list")]);
+      const all = await call("workspace.list");
       for (const workspace of all) workspaces.set(workspace.id, workspace);
-      for (const chat of chats) conversations.set(chat.id, { provider: chat.provider, message: {
-        status: chat.running ? "streaming" : chat.lastStatus, error: { kind: chat.lastErrorKind }, progress: chat.lastProgress,
-      } });
       for (const [event, data] of queued.splice(0)) update(event, data);
       ready = true;
       draw();

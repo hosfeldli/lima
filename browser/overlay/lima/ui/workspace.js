@@ -1,6 +1,6 @@
 import { bridge, call, el, errorText, filesPrivacyButton, icon, onEvent, setPage } from "./lib.js";
-import { companion, setCompanionState } from "./companion.js";
-import { isFolderPermissionError, lastVisibleTool, replyActivity } from "./tool-activity.sys.mjs";
+import { companion, setCompanionState, watchVisualActivity } from "./companion.js";
+import { isFolderPermissionError } from "./tool-activity.sys.mjs";
 
 export async function renderWorkspace(app, id) {
   setPage("Overview", "workspace");
@@ -19,6 +19,7 @@ export async function renderWorkspace(app, id) {
   let branch;
   let sequence = 0;
   const chats = new Map();
+  let visuals = {};
 
   function draw() {
     if (!workspace) return;
@@ -34,17 +35,29 @@ export async function renderWorkspace(app, id) {
         if (tab.url.startsWith("about:lima?")) bridge.openTab(tab.url);
         else bridge.browser("openWorkspacePage", { id, url: tab.url });
       })));
-    const working = [...chats.values()].filter(chat => chat.status === "streaming").length;
-    active.textContent = working ? working + " working" : "Ready";
-    const latest = [...chats.values()].findLast(chat => chat.status === "streaming") ?? chats.get(workspace.conversationID);
-    character.dataset.variant = latest?.mascot ?? "classic";
-    const describe = chat => replyActivity(chat, { provider: chat?.provider, tool: chat?.tool });
-    setCompanionState(character, describe(latest).motion ?? "idle");
-    agents.replaceChildren(...[...chats.values()].map(chat => {
-      const { label, detail, state } = describe(chat);
-      return el("div", { class: "workspace-agent-row" }, icon("agents"), el("span", { class: "grow", text: chat.title }),
-        el("span", { class: "handoff-state", "data-state": state, text: label, title: detail }));
+    agents.replaceChildren(...[...chats.entries()].map(([chatID, chat]) => {
+      const avatar = companion("agent-avatar");
+      avatar.dataset.variant = chat.mascot ?? "classic";
+      return el("div", { class: "workspace-agent-row", "data-chat": chatID }, avatar,
+        el("span", { class: "grow", text: chat.title }), el("span", { class: "handoff-state" }));
     }));
+    updateActivity();
+  }
+
+  function updateActivity() {
+    if (!workspace) return;
+    const own = visuals[workspace.conversationID];
+    active.textContent = own?.label ?? "Ready";
+    character.dataset.variant = chats.get(workspace.conversationID)?.mascot ?? "classic";
+    setCompanionState(character, own?.motion ?? "idle");
+    for (const row of agents.children) {
+      const { label, detail, state, motion } = visuals[row.dataset.chat] ?? {};
+      const badge = row.lastElementChild;
+      badge.dataset.state = state ?? "idle";
+      badge.textContent = label ?? "Ready";
+      badge.title = detail ?? "";
+      setCompanionState(row.firstElementChild, motion ?? "idle");
+    }
   }
 
   async function refresh() {
@@ -58,10 +71,8 @@ export async function renderWorkspace(app, id) {
       const valid = new Set(own.map(item => item.conversationID));
       for (const [chatID] of chats) if (!valid.has(chatID)) chats.delete(chatID);
       for (const member of own) {
-        if (chats.has(member.conversationID)) continue;
         const summary = summaries.find(chat => chat.id === member.conversationID);
-        chats.set(member.conversationID, { title: member.name, provider: summary?.provider, mascot: summary?.mascot,
-          status: summary?.running ? "streaming" : summary?.lastStatus ?? "idle", error: { kind: summary?.lastErrorKind }, progress: summary?.lastProgress });
+        chats.set(member.conversationID, { title: member.name, mascot: summary?.mascot });
       }
       error.hidden = true;
       draw();
@@ -78,22 +89,13 @@ export async function renderWorkspace(app, id) {
   }
   const unsubscribe = onEvent(({ event, data }) => {
     if (event === "chat.updated" && chats.has(data.id)) {
-      const reply = data.messages?.findLast(message => message.role === "assistant");
       const prior = chats.get(data.id);
-      const tool = prior.id === reply?.id && prior.tools?.length === reply?.tools?.length ? prior.tool : lastVisibleTool(reply?.tools);
-      chats.set(data.id, { title: prior.title, provider: data.provider, mascot: data.mascot, ...reply, tool });
-      draw();
-    } else if (event === "chat.delta") {
-      const chat = chats.get(data.conversationId);
-      if (chat?.id === data.messageId && (chat.tool || !chat.text?.trim()) && data.text?.trim()) {
-        chat.tool = undefined;
-        chat.text = data.text;
-        draw();
-      }
+      if (prior.mascot !== data.mascot) { prior.mascot = data.mascot; draw(); }
     } else if (["workspace.created", "workspace.updated", "workspace.deleted"].includes(event) &&
       (data.id === id || data.parentID === id || data.parentId === id)) { refresh(); }
     else if (event === "terminal.state" && data.id === workspace?.terminalID && data.state === "idle") refresh();
   });
-  window.addEventListener("pagehide", unsubscribe, { once: true });
+  const unwatch = watchVisualActivity(snapshot => snapshot.chats, next => { visuals = next; updateActivity(); });
+  window.addEventListener("pagehide", () => { unsubscribe(); unwatch(); }, { once: true });
   return refresh();
 }

@@ -129,6 +129,10 @@ extension Runtime {
             for root in roots { rows.append(try await self.orchestrator.tree(root.id)) }
             return .array(rows)
         }
+        register("task.visualState") { [unowned self] _, context in
+            guard context.origin == .browser else { throw BridgeError(.notAuthorized, "Only Lima can read visual task state.") }
+            return .array(await self.orchestrator.visualTasks())
+        }
         register("task.get") { [unowned self] params, context in
             guard context.origin == .browser else { throw BridgeError(.notAuthorized, "Only the Lima interface can read a task.") }
             return try await Self.bridged { try await self.orchestrator.tree(try params.string("id")) }

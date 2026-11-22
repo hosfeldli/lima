@@ -53,6 +53,8 @@ public struct ConversationSummary: Codable, Equatable, Sendable {
     public var running: Bool
     public var workspaceID: String?
     public var lastStatus: ChatMessage.Status?
+    public var lastMessageID: String? = nil
+    public var lastCreatedAt: Double? = nil
     public var lastErrorKind: AgentFailureKind?
     public var lastProgress: AgentProgress?
     public var mascot: ChatMascot? = nil
@@ -118,7 +120,8 @@ public actor ConversationService {
             let reply = conversation.messages.last { $0.role == .assistant }
             return ConversationSummary(id: conversation.id, title: conversation.title, provider: conversation.provider,
                 updatedAt: conversation.updatedAt, running: running[conversation.id] != nil, workspaceID: conversation.workspaceID,
-                lastStatus: reply?.status, lastErrorKind: reply?.error?.kind, lastProgress: reply?.progress, mascot: conversation.mascot)
+                lastStatus: reply?.status, lastMessageID: reply?.id, lastCreatedAt: reply?.createdAt,
+                lastErrorKind: reply?.error?.kind, lastProgress: reply?.progress, mascot: conversation.mascot)
         }
     }
 

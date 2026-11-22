@@ -1,6 +1,6 @@
 import { NetUtil } from "resource://gre/modules/NetUtil.sys.mjs";
 import { setInterval, clearInterval } from "resource://gre/modules/Timer.sys.mjs";
-import { LimaBridge } from "resource://lima/LimaBridge.sys.mjs";
+import { LimaVisualActivity } from "resource://lima/LimaVisualActivity.sys.mjs";
 
 function loadBadge(number) {
   return new Promise((resolve, reject) => {
@@ -21,8 +21,7 @@ export const LimaDockBadge = {
     let dock;
     try { dock = Cc["@mozilla.org/widget/macdocksupport;1"].getService(Ci.nsIMacDockSupport); } catch { return; }
     if (!dock.setBadgeImage) return;
-    const active = new Set();
-    const changed = new Set();
+    let active = false;
     const reduce = win.matchMedia("(prefers-reduced-motion: reduce)");
     let timer;
     let frames = [];
@@ -31,7 +30,7 @@ export const LimaDockBadge = {
     function paint() {
       if (timer) clearInterval(timer);
       timer = undefined;
-      if (!active.size || !frames.length || Services.prefs.getStringPref("lima.personality", "full") === "off") {
+      if (!active || !frames.length || Services.prefs.getStringPref("lima.personality", "full") === "off") {
         if (shown) dock.badgeText = "";
         shown = false;
         return;
@@ -44,20 +43,20 @@ export const LimaDockBadge = {
     }
     reduce.addEventListener("change", paint);
     Services.prefs.addObserver("lima.personality", paint);
-    LimaBridge.onEvent(({ event, data }) => {
-      if (event === "chat.updated") {
-        changed.add(data.id);
-        const wasActive = active.has(data.id);
-        if (data.messages?.some(message => message.status === "streaming")) active.add(data.id);
-        else active.delete(data.id);
-        if (wasActive !== active.has(data.id)) paint();
+    const unsubscribe = LimaVisualActivity.subscribe(({ chats, workspaces }) => {
+      const next = [...Object.values(chats), ...Object.values(workspaces)].some(item => ["starting", "working"].includes(item.state));
+      if (active !== next) {
+        active = next;
+        paint();
       }
-      if (event === "host.unavailable") { active.clear(); paint(); }
     });
-    Promise.all([1, 2, 3, 4, 5, 6].map(loadBadge)).then(loaded => { frames = loaded; paint(); }).catch(error => Cu.reportError(error));
-    LimaBridge.request("chat.list").then(list => {
-      for (const chat of list) if (chat.running && !changed.has(chat.id)) active.add(chat.id);
+    win.addEventListener("unload", () => {
+      reduce.removeEventListener("change", paint);
+      Services.prefs.removeObserver("lima.personality", paint);
+      unsubscribe();
+      active = false;
       paint();
-    }).catch(() => {});
+    }, { once: true });
+    Promise.all([1, 2, 3, 4, 5, 6].map(loadBadge)).then(loaded => { frames = loaded; paint(); }).catch(error => Cu.reportError(error));
   },
 };

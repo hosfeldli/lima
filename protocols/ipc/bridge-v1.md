@@ -34,6 +34,10 @@ Terminal state may include shellReady, userEditing, and activeCommand. Terminal 
 
 `task.submit` (browser origin) accepts `text`, an optional workspace `id`, `name`, `provider`, `model`, `mascot`, `references`, `referenceCount`, and a `requestId` that makes the submission idempotent. It returns `{ task, workspace }`. `task.list` (optional `workspaceId`, `limit`) and `task.get` return `{ task, children }` trees. `task.cancel`, `task.pause` and `task.resume` take an `id`, and `task.concurrency` sets `maxAgents`. These methods accept only the browser origin. Workspace agents call `task.delegate` (`name`, `objective`, `role`, `dependsOn`, `successCriteria`, `provider`, `browserUrl`), `task.status`, `task.message` (`kind`, `text`) and `task.inbox`, all bound to their own workspace by token. Every change is broadcast as `task.updated` with the public record, which omits reference text and routed messages. See docs/architecture/orchestration.md.
 
+`task.visualState` is a read-only browser method used on connection. It returns `{ id, workspaceID, state, role, updatedAt, startedAt, recovering }` records for active assigned tasks and each workspace's latest settled task. The browser bridge emits local `host.connected` and `host.disconnected` signals for resynchronization. These signals are generated in chrome. See [visual activity](../../docs/architecture/visual-activity.md).
+
+Workspace-scoped `image.*` calls use revision IDs and idempotency keys for mutations. Browser callers supply `workspace_id`. Authenticated agents inherit their workspace from the connection. `image.changed` reports committed revision changes, and `image.preview` returns a reduced-size PNG to the browser. See [Image Studio](../../docs/architecture/image-studio.md) for supported operations.
+
 `workspace.reveal` (browser origin only) shows a workspace's project folder in Finder for the sidebar's Reveal Project Folder.
 
 Workspace deletion returns archivePath for a top-level workspace, directoryKept when its source stays in place, and recoveryPath when a verified archive exists alongside a staged recovery copy.

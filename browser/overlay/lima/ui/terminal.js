@@ -4,7 +4,7 @@
  * running in the Lima runtime. */
 import { activityStatus, b64, bridge, call, el, errorText, filesPrivacyButton, icon, onEvent, prefs, setPage } from "./lib.js";
 import { failureActivity, isFolderPermissionError } from "./tool-activity.sys.mjs";
-import { companion, setCompanionState } from "./companion.js";
+import { companion, setCompanionState, watchVisualActivity } from "./companion.js";
 
 const home = path => path.replace(/^\/Users\/[^/]+/, "~");
 
@@ -103,7 +103,18 @@ function mountTerminal(app, attached, pending) {
   const path = el("span", { class: "term-path" });
   // Inside a workspace folder the tab keeps the name "Terminal".
   let inWorkspace = false;
-  bridge.browser("workspaceOf", {}).then(id => { inWorkspace = !!id; update(info); }).catch(() => {});
+  let visual;
+  bridge.browser("workspaceOf", {}).then(id => {
+    inWorkspace = !!id;
+    if (id && !document.hidden) update(info);
+    if (id) {
+      const stop = watchVisualActivity(snapshot => snapshot.workspaces[id], activity => {
+        visual = activity;
+        paintStatus();
+      });
+      window.addEventListener("pagehide", stop, { once: true });
+    }
+  }).catch(() => {});
 
   app.replaceChildren(el("div", { class: "orca" },
     explorer,
@@ -367,6 +378,7 @@ function mountTerminal(app, attached, pending) {
     if (connectionError) {
       const result = failureActivity(connectionError, "Terminal disconnected");
       status.update({ ...result, state: result.state === "failed" ? "disconnected" : result.state });
+      setCompanionState(mascot, "paused");
       return;
     }
     const terminalMotion = { icon: "terminal", motion: "terminal", startedAt: workingSince };
@@ -378,12 +390,14 @@ function mountTerminal(app, attached, pending) {
     else if (info.pendingRequests.length && !agent) next = { state: "blocked", label: "Agent is requesting keyboard access", icon: "warning" };
     else if (info.state === "waitingForInput") next = { state: "blocked", label: "Command waiting for input", icon: "terminal" };
     else if (info.state === "running") next = { ...terminalMotion, state: "working", label: agent ? "Agent running a command" : "Command running" };
-    else if (agent) next = { ...terminalMotion, state: "working", label: "Agent has terminal control" };
+    else if (agent) next = { state: "idle", label: "Agent has terminal control", icon: "terminal" };
     else if (info.userEditing) next = { state: "idle", label: "Editing at the prompt", icon: "terminal" };
     else if (info.state === "uncertain") next = { state: "idle", label: "Terminal connected", detail: "Waiting for a shell status update", icon: "terminal" };
     else next = { state: "idle", label: "Prompt ready", icon: "terminal" };
     status.update(next);
-    setCompanionState(mascot, next.motion ?? (info.lastExitStatus ? "failed" : "idle"));
+    const attention = ["blocked", "waiting"].includes(next.state);
+    const active = agent && info.state === "running" && visual?.motion === "terminal";
+    setCompanionState(mascot, active ? "terminal" : attention ? "waiting" : next.state === "disconnected" ? "paused" : "idle");
   }
 
   function showNotice(error, label, recover) {

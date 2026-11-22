@@ -128,6 +128,7 @@ public final class Runtime: @unchecked Sendable {
             try? await grammar.configure(true)
         }
         registerWorkspaces()
+        registerImages()
         registerAssistant()
         registerOrchestrator()
         registerWorkspaceActivity()
@@ -136,7 +137,7 @@ public final class Runtime: @unchecked Sendable {
         await conversations.setRunConfigurator { [weak self] conversation in
             var configuration = await self?.workspaceAgentConfiguration(conversation) ?? (arguments: [], environment: [:], preamble: nil)
             let richContent = """
-            Lima renders standard Markdown tables and supports optional interactive fenced JSON blocks in chat and Notes. Use chart with {"title":"…","type":"bar","values":[{"label":"…","value":3}]} (type bar or line), checklist with {"title":"…","items":["…"]}, quiz with {"title":"…","options":["…"],"correct":0}, or details with {"title":"…","text":"…"} when useful. Use the block name as the fence language and valid JSON as the entire body. Use a map block for an offline world map: {"title":"Trip","markers":[{"label":"New York","latitude":40.71,"longitude":-74.01}],"routes":[{"label":"Route","points":[[40.71,-74.01],[42.36,-71.06]],"durationMinutes":255,"mode":"train"}]}. Coordinates are latitude then longitude. Provide intermediate waypoints for the route shape. The map displays the supplied route and does not compute directions. Leave Markdown tables outside code fences. Notes support ::embed URL for external widgets.
+            Lima renders standard Markdown tables and supports optional interactive fenced JSON blocks in chat and Notes. Use chart with {"title":"…","type":"bar","values":[{"label":"…","value":3}]} (type bar or line), checklist with {"title":"…","items":["…"]}, quiz with {"title":"…","options":["…"],"correct":0}, or details with {"title":"…","text":"…"} when useful. Use the block name as the fence language and valid JSON as the entire body. Use a map block for an offline world map: {"title":"Trip","markers":[{"label":"New York","latitude":40.71,"longitude":-74.01}],"routes":[{"label":"Route","points":[[40.71,-74.01],[42.36,-71.06]],"durationMinutes":255,"mode":"train"}]}. Coordinates are latitude then longitude. Provide intermediate waypoints for the route shape. The map displays the supplied route and does not compute directions. Leave Markdown tables outside code fences. In Notes, a line ::embed URL shows a link preview card that opens the live page side by side (YouTube and Spotify links can also play in place); most sites can't be framed, so don't promise an inline page.
             """
             if conversation.provider == .claude {
                 if let index = configuration.arguments.firstIndex(of: "--append-system-prompt") {

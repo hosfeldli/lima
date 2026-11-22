@@ -1,5 +1,5 @@
 import { bridge, call, el, errorText, setPage } from "./lib.js";
-import { companion } from "./companion.js";
+import { companion, cueCompanion, setCompanionState } from "./companion.js";
 import { PROVIDERS } from "./composer.js";
 import { setupAction } from "./views.js";
 
@@ -29,13 +29,11 @@ export function renderWelcome(app) {
     title.textContent = "See you around";
     content.replaceChildren(paragraph("If you ever need anything, I’ll be right here."));
     title.focus();
-    await new Promise(resolve => setTimeout(resolve, 1900));
-    const { x, y, width, height } = mascot.getBoundingClientRect();
-    mascot.style.visibility = "hidden";
-    try { await bridge.browser("finishWelcome", { x, y, width, height }); }
+    cueCompanion(mascot, "farewell");
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    try { await bridge.browser("finishWelcome", {}); }
     catch (error) {
       leaving = false;
-      mascot.style.visibility = "";
       back.disabled = index === 0;
       skip.disabled = next.disabled = false;
       throw error;
@@ -45,6 +43,23 @@ export function renderWelcome(app) {
   const back = button("Back", () => show(index - 1));
   const next = button("Continue", () => index + 1 === steps.length ? finish() : show(index + 1), "primary");
   const paragraph = text => el("p", { class: "welcome-description", text });
+  function handoffPreview() {
+    const preview = el("div", { class: "welcome-preview" });
+    const lines = el("div");
+    function play() {
+      const coordinator = companion("agent-avatar");
+      const researcher = companion("agent-avatar");
+      researcher.dataset.variant = "explorer";
+      setCompanionState(coordinator, "delegate");
+      setCompanionState(researcher, "read");
+      lines.replaceChildren(coordinator, el("span", { text: "Companion assigns page research" }),
+        researcher, el("span", { text: "Research agent reads pages" }));
+    }
+    preview.append(el("small", { class: "muted", text: "Example handoff" }), lines,
+      el("div", {}, button("Replay Preview", play)));
+    play();
+    return preview;
+  }
   function show(step, focus = true) {
     const ticket = ++generation;
     index = step;
@@ -59,7 +74,8 @@ export function renderWelcome(app) {
     if (step === 1) detect(ticket);
     if (step === 2) content.replaceChildren(paragraph("Press ⌘T to find pages, tools, notes, and workspaces. Ask a question there and I’ll answer in place."),
       el("div", { class: "row" }, button("Try It", () => bridge.browser("search", { text: "" }), "primary")));
-    if (step === 3) content.replaceChildren(paragraph("Connect an AI agent to a project folder. Its chat, terminal, and pages live together in one sidebar folder."),
+    if (step === 3) content.replaceChildren(paragraph("Connect an AI agent to a project folder. Open its sidebar entry to follow its chat, status, and results."),
+      handoffPreview(),
       el("div", { class: "row" }, button("Try It", () => bridge.browser("create", { what: "workspace", pickFolder: true }), "primary")));
     if (step === 4) content.replaceChildren(paragraph("Start browsing. Lima is available whenever you need it."),
       paragraph("Open the Companion in the top left of the sidebar to delegate a task. Requests that need your approval appear there."),

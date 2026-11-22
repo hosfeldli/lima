@@ -21,8 +21,9 @@ public final class WorkspaceFocus: @unchecked Sendable {
     private var owners: [String: String] = [:]
 
     /// Returns the new state if it changed (so callers broadcast only changes).
-    func set(_ workspaceID: String, _ surface: Surface, url: String? = nil) -> State? {
+    func set(_ workspaceID: String, _ surface: Surface, url: String? = nil, replacing expected: State? = nil) -> State? {
         lock.lock(); defer { lock.unlock() }
+        if let expected, states[workspaceID] != expected { return nil }
         let next = State(surface: surface, url: surface == .tab ? url : nil)
         guard states[workspaceID] != next else { return nil }
         states[workspaceID] = next
@@ -82,8 +83,8 @@ final class BrowserCalls: @unchecked Sendable {
 }
 
 extension Runtime {
-    func setFocus(_ workspaceID: String, _ surface: WorkspaceFocus.Surface, url: String? = nil) {
-        guard let state = focus.set(workspaceID, surface, url: url) else { return }
+    func setFocus(_ workspaceID: String, _ surface: WorkspaceFocus.Surface, url: String? = nil, replacing expected: WorkspaceFocus.State? = nil) {
+        guard let state = focus.set(workspaceID, surface, url: url, replacing: expected) else { return }
         broadcast("workspace.activity", .object(["id": .string(workspaceID), "surface": .string(state.surface.rawValue),
                                                  "url": state.url.map(JSONValue.string) ?? .null]))
     }

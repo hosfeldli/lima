@@ -108,7 +108,7 @@ func orchestrator(_ agents: MockAgents, tasks: [OrchestratedTask] = [], maxActiv
     await lima.observe(conversationID: "conv-root-b")
     let unbacked = try await lima.get(claimed.id)
     #expect(unbacked.state == .completedWithWarnings)
-    #expect(unbacked.issues.contains { $0.contains("no tool run") })
+    #expect(unbacked.issues.contains { $0.contains("didn't run any tools") })
 
     // A report backed by the turn's tool runs completes.
     let verified = try await lima.submit(requestID: nil, title: "C", request: "Do C", workspaceID: "c")
@@ -276,3 +276,32 @@ func orchestrator(_ agents: MockAgents, tasks: [OrchestratedTask] = [], maxActiv
     #expect(parsed?.status == "completed")
 }
 
+
+@Test func blockedAndWarningTasksSayWhyAndWhatToDo() async throws {
+    let agents = MockAgents()
+    let (lima, _) = orchestrator(agents)
+    let qa = try await lima.submit(requestID: nil, title: "QA", request: "QA the site", workspaceID: "qa")
+    let body: [String: Any] = ["status": "blocked", "summary": "Partial visual QA: hero observed working.", "actionsTaken": [], "artifacts": [],
+        "verification": ["Page rendered"], "remainingIssues": ["Console errors not checked (no console access)", "375px layout not checked"],
+        "nextSteps": ["Check console errors and the 375px layout with a tool that can read the console (e.g. Playwright). Then fix."]]
+    let json = String(decoding: try JSONSerialization.data(withJSONObject: body), as: UTF8.self)
+    agents.reply("conv-root-qa", "```lima-report\n\(json)\n```", tools: ["mcp__lima__workspace_browser screenshot"])
+    await lima.observe(conversationID: "conv-root-qa")
+    let blocked = try await lima.get(qa.id)
+    #expect(blocked.state == .blocked)
+    #expect(blocked.attention?.reason == "The agent couldn't finish: Console errors not checked (no console access). (and 1 more)")
+    #expect(blocked.attention?.remedy == "Suggested next step: Check console errors and the 375px layout with a tool that can read the console (e.g. Playwright).")
+    #expect(blocked.attention?.action == "review")
+    _ = try await lima.resume(qa.id)
+    #expect(try await lima.get(qa.id).attention == nil)
+
+    let signIn = try await lima.submit(requestID: nil, title: "S", request: "Do S", workspaceID: "s")
+    agents.reply("conv-root-s", "", status: .failed, error: AgentFailure(.authentication, "401"))
+    await lima.observe(conversationID: "conv-root-s")
+    #expect(try await lima.get(signIn.id).attention?.action == "settings")
+
+    let quiet = try await lima.submit(requestID: nil, title: "Q", request: "Do Q", workspaceID: "q")
+    agents.reply("conv-root-q", "All done")
+    await lima.observe(conversationID: "conv-root-q")
+    #expect(try await lima.get(quiet.id).attention?.reason == "The agent finished without saying what it checked, so the result is unverified.")
+}

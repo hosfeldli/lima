@@ -61,6 +61,8 @@ jobs:
             node --check --input-type=module < "$f" || { echo "syntax error in $f"; exit 1; }
           done
           for f in browser/overlay/lima/ui/*.js site/public/*.js; do node --check "$f"; done
+      - name: Check Lima visual activity
+        run: node --test browser/tests/visual-state.test.mjs
 
   native:
     needs: changes

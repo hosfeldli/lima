@@ -346,6 +346,8 @@ pre.code .ln { width: 44px; flex: none; text-align: right; padding-right: 10px; 
 .assistant-page { display: flex; flex: 1; flex-direction: column; min-height: 0; }
 .assistant-head, .assistant-picker { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 4px 10px; border-bottom: 1px solid var(--line); }
 .assistant-head .icon { width: 15px; height: 15px; }
+.appearance-checkbox { gap: 7px; align-items: center; margin-block: 8px; }
+.appearance-checkbox input { flex: none; inline-size: 15px; block-size: 15px; margin: 0; accent-color: var(--action); }
 .assistant-picker select { flex: 1; min-width: 0; }
 .assistant-picker:has(select[hidden]) { display: none; }
 .assistant-error, .assistant-content > .chat-empty { margin: 8px 12px; }
@@ -450,7 +452,9 @@ button.change-row:hover { background: var(--panel-2); }
 
 .companion { position: relative; display: inline-block; flex: none; width: 30px; height: 28px; }
 .companion.home { width: 104px; height: 94px; }
-.companion.chat-avatar { width: 53px; height: 48px; }
+.companion.chat-avatar { width: 64px; height: 58px; }
+.assistant-head .companion.status { width: 52px; height: 48px; }
+.companion.agent-avatar { width: 32px; height: 30px; }
 .companion.workspace-avatar, .companion.workspace-chat-avatar { width: 76px; height: 68px; }
 .term-bar .companion.workspace-avatar { width: 42px; height: 36px; }
 .workspace-prompts { max-height: min(48vh, 420px); overflow: auto; padding-inline: 2px; }
@@ -470,9 +474,16 @@ button.change-row:hover { background: var(--panel-2); }
 .prompt-status { color: var(--ink-2); margin-block: 8px; }
 .prompt-status:empty { display: none; }
 .prompt-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: 6px; margin-block-start: 10px; }
-.note-embed { margin: 12px 0; padding: 8px; border: 1px solid var(--line); border-radius: var(--r); }
-.note-embed figcaption { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.note-embed iframe { width: 100%; min-height: 320px; border: 0; margin-block-start: 8px; }
+/* Embeds: a native preview card; the live page opens side by side. */
+.note-embed { margin: 12px 0; padding: 8px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface, #fff); user-select: none; }
+.note-embed-preview { display: flex; gap: 10px; align-items: flex-start; min-width: 0; }
+.note-embed-image { width: 112px; height: 72px; object-fit: cover; border-radius: 6px; flex: none; background: var(--panel); }
+.note-embed-text { display: grid; gap: 2px; min-width: 0; }
+.note-embed-title { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.note-embed-description { font-size: var(--t-sm); color: var(--ink-2); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.note-embed figcaption { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
+.note-embed figcaption .spacer { flex: 1; }
+.note-embed iframe { width: 100%; min-height: 320px; border: 0; margin-block-start: 8px; border-radius: 6px; }
 .rich-artifact { margin: 12px 0; border: 1px solid var(--line); background: var(--lima-surface); border-radius: var(--r); padding: 12px; }
 .rich-artifact figcaption { font-weight: 650; margin-bottom: 8px; }
 .rich-artifact svg { display: block; width: 100%; max-height: 190px; }
@@ -502,12 +513,10 @@ button.change-row:hover { background: var(--panel-2); }
 }
 .companion-body { transform-origin: center 92%; }
 .companion-sparks { opacity: 0; }
-.companion[data-state="complete"] .companion-sparks { opacity: 1; }
+.companion[data-state="complete"][data-personality="full"] .companion-sparks { opacity: 1; }
 .companion-prop { position: absolute; right: -1px; bottom: 0; color: var(--ink); }
 .companion-prop .icon { width: 13px; height: 13px; padding: 2px; background: var(--lima-bg); border-radius: 4px; }
 .companion.home .companion-prop .icon { width: 23px; height: 23px; }
-.companion[data-personality="off"] { display: none; }
-
 .companion[data-personality="full"] .companion-body { animation: companion-rest 4.8s steps(58) infinite; }
 .companion[data-personality="full"] .companion-eyes { animation: companion-blink 5.4s linear infinite; }
 .companion[data-personality="full"][data-state="think"] .companion-body { animation: companion-ponder 2.9s steps(35) infinite; }
@@ -517,19 +526,30 @@ button.change-row:hover { background: var(--panel-2); }
 .companion[data-personality="full"][data-state="write"] .companion-prop { animation: companion-scribble 1.7s steps(22) infinite; }
 .companion[data-personality="full"][data-state="test"] .companion-body { animation: companion-check 2.2s steps(26) infinite; }
 .companion[data-personality="full"][data-state="test"] .companion-prop { animation: companion-confirm 2.2s steps(26) infinite; }
-.companion[data-personality="full"][data-state="delegate"] .companion-body { animation: companion-pass 680ms steps(10) 2; }
-.companion[data-personality="full"][data-state="delegate"] .companion-prop { animation: companion-send 680ms steps(10) 2; }
-.companion[data-personality="full"]:is([data-state="blocked"], [data-state="failed"]) .companion-body { animation: companion-flinch 550ms steps(8) 1; }
+.companion[data-personality="full"][data-state="planning"] .companion-body { animation: companion-check 3.2s steps(36) infinite; }
+.companion[data-personality="full"][data-state="delegate"] .companion-body { animation: companion-pass 680ms steps(10) 1; }
+.companion[data-personality="full"][data-state="delegate"] .companion-prop { animation: companion-send 680ms steps(10) 1; }
+.companion[data-personality="full"][data-state="failed"] .companion-body { animation: companion-flinch 550ms steps(8) 1; }
+.companion[data-personality="full"][data-state="recover"] .companion-body { animation: companion-nod 330ms steps(5) 1; }
 .companion[data-personality="full"][data-state="complete"] .companion-body { animation: companion-land 900ms steps(14) 1; }
 .companion[data-personality="full"][data-state="complete"] .companion-shadow { animation: companion-ground 900ms steps(14) 1; }
 .companion[data-personality="full"][data-state="complete"] .companion-sparks { animation: companion-cheer 900ms steps(14) 1; }
-.companion[data-personality="full"][data-state="paused"] :is(.companion-body, .companion-eyes) { animation: none; }
+.companion[data-personality="full"]:is([data-state="paused"], [data-state="waiting"], [data-state="blocked"]) :is(.companion-body, .companion-eyes),
+.companion[data-personality="full"].agent-avatar:is([data-state="idle"], :not([data-state])) :is(.companion-body, .companion-eyes) { animation: none; }
+.companion[data-personality="full"]:is([data-gesture="listen"], [data-gesture="receive"]) .companion-body { animation: companion-nod 260ms ease-in-out; }
+.companion[data-personality="full"][data-gesture="farewell"] .companion-body { animation: companion-land 640ms steps(9) 1; }
+.companion[data-personality="subtle"]:is([data-gesture="listen"], [data-gesture="receive"], [data-state="planning"], [data-state="tabs"], [data-state="read"], [data-state="write"]) .companion-eyes {
+  animation: companion-eye-glance 320ms ease-out 1;
+}
 .companion.chat-avatar[data-personality="full"][data-state="write"] .companion-scene { animation: companion-bubble 1.45s steps(17) infinite; }
 .companion.chat-avatar[data-personality="full"][data-state="write"] .companion-smile { opacity: 0; }
 .companion.chat-avatar[data-personality="full"][data-state="write"] .companion-speaking { opacity: 1; animation: companion-murmur 1.45s steps(17) infinite; }
 .companion.workspace-avatar[data-personality="full"]:is([data-state="write"], [data-state="terminal"], [data-state="test"]) .companion-scene { animation: companion-desk 1.7s steps(20) infinite; }
-:root[lima-hidden] :is(.companion *, .tool-glyph, .live),
-:root[lima-hidden] .activity-indicator::after { animation-play-state: paused; }
+:root:is([lima-hidden], [lima-panel-hidden]) :is(.companion *, .tool-glyph, .live),
+:root:is([lima-hidden], [lima-panel-hidden]) .activity-indicator::after,
+.companion[data-offscreen] * { animation-play-state: paused !important; }
+:root[data-lima-personality="off"] :is(.activity-indicator, .tool-glyph, .live),
+:root[data-lima-personality="off"] :is(.activity-indicator, .tool-glyph, .live)::after { animation: none; }
 
 @keyframes companion-rest { 39%, 62% { transform: translateY(2px) scale(1.035, .96); } }
 @keyframes companion-bubble { 26%, 42% { transform: translateY(-3px) rotate(-3deg); } 65% { transform: translateY(-1px) rotate(2deg); } }
@@ -549,6 +569,8 @@ button.change-row:hover { background: var(--panel-2); }
 @keyframes companion-land { 12%, 62% { transform: scale(1.07, .89); } 37% { transform: translateY(-10px) scale(.95, 1.07); } }
 @keyframes companion-ground { 37% { transform: scaleX(.65); opacity: .4; } }
 @keyframes companion-cheer { 0%, 26% { opacity: 0; transform: scale(.68); } 60% { opacity: 1; transform: scale(1.08); } }
+@keyframes companion-nod { 45% { transform: translateY(2px) rotate(3deg) scaleY(.96); } }
+@keyframes companion-eye-glance { 48%, 68% { transform: translate(2px, 1px); } }
 
 /* Live details stay visible when the character is disabled. */
 .activity-status {
@@ -687,7 +709,9 @@ button.change-row:hover { background: var(--panel-2); }
 .welcome-tour { width: min(100% - 32px, 510px); margin: clamp(24px, 8vh, 76px) auto; }
 .welcome-tour header { display: flex; flex-direction: column; align-items: center; margin-bottom: 24px; }
 .welcome-tour h1 { font-size: clamp(25px, 6vw, 36px); margin: 0; letter-spacing: -.035em; }
-.welcome-tour .companion.home { width: 100px; }
+.welcome-tour .companion.home { width: 132px; height: 122px; }
+.welcome-preview { display: grid; gap: 6px; margin: 10px 0; padding-block: 7px; border-block-start: 1px solid var(--line); }
+.welcome-preview > div { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .welcome-step { border: 1px solid var(--line); border-radius: var(--r-2); padding: clamp(16px, 4vw, 26px); }
 .welcome-step h2 { margin: 0 0 8px; font-size: 21px; letter-spacing: -.02em; }
 .welcome-position { margin: 0 0 8px; font-size: var(--t-xs); color: var(--ink-3); }
@@ -738,3 +762,31 @@ button.change-row:hover { background: var(--panel-2); }
 .task-events { list-style: none; margin: 0; padding: 0; font-size: var(--t-sm); }
 .task-events li { display: grid; grid-template-columns: 48px 1fr; gap: 6px; padding: 3px 0; border-bottom: 1px solid var(--line); }
 .task-events time { color: var(--ink-3); font-variant-numeric: tabular-nums; }
+
+/* Image Studio */
+.image-studio { display: flex; flex: 1; flex-direction: column; min-height: 0; padding: 12px; gap: 8px; }
+.image-studio-header { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; }
+.image-studio-header h1 { margin: 0; font-size: var(--t-md); }
+.image-studio-open, .image-studio-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.image-studio-open input { width: min(220px, 50vw); }
+.image-studio-settings { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; width: 100%; padding: 9px; border: 1px solid var(--line); border-radius: var(--r); }
+.image-studio-settings[hidden] { display: none; }
+.image-studio-settings label { display: grid; gap: 3px; color: var(--ink-2); }
+.image-studio-settings input[type="number"] { width: 76px; }
+.image-studio-settings input[type="checkbox"] { appearance: auto; min-height: 16px; justify-self: start; }
+.image-studio-canvas { flex: 1; min-height: 0; display: grid; overflow: auto; place-items: safe center; background: var(--panel); border: 1px solid var(--line); }
+.image-studio-canvas img { box-sizing: content-box; display: block; height: auto; max-width: none; background: conic-gradient(#e2e3e5 25%, #fafafa 0 50%, #e2e3e5 0 75%, #fafafa 0) 0 0 / 16px 16px; }
+.image-studio-canvas img[hidden] { display: none; }
+.image-studio-canvas img.image-fit { max-width: 100%; max-height: 100%; object-fit: contain; }
+.image-studio-canvas[data-background="black"] img { background: #141416; }
+.image-studio-canvas[data-background="white"] img { background: white; }
+.image-studio footer { display: flex; gap: 6px 12px; flex-wrap: wrap; align-items: baseline; }
+.image-studio footer p { margin: 0; }
+.page-body :is(td, th) { min-inline-size: 2rem; }
+.page-tools .fmt:disabled { opacity: .42; }
+
+/* What to do about a task that needs the user, beside its buttons. */
+.attention-remedy { flex: 1 1 220px; min-width: 0; color: var(--ink-2); font-size: var(--t-sm); overflow-wrap: anywhere; }
+.chat-recovery { flex-wrap: wrap; gap: 6px; margin: 0 0 6px; }
+.task-attention { font-size: var(--t-sm); color: var(--ink-2); }
+.task-attention strong { color: var(--ink); font-weight: 650; }

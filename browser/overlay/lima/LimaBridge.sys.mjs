@@ -109,6 +109,7 @@ class Bridge {
       await output;
       this.#onExit(exitCode);
     });
+    this.#dispatch({ event: "host.connected" });
   }
 
   async #readLoop(proc) {
@@ -168,6 +169,7 @@ class Bridge {
     this.#pending.clear();
     this.status = this.#restarts < MAX_RESTARTS ? "stopped" : "failed";
     this.#restarts++;
+    this.#dispatch({ event: "host.disconnected" });
   }
 }
 

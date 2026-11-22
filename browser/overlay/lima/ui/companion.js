@@ -5,16 +5,67 @@ document.addEventListener("visibilitychange", pauseCompanions);
 pauseCompanions();
 
 let personality = prefs.get("personality", "full");
+document.documentElement.dataset.limaPersonality = personality;
+let visualSnapshot;
+let visualRequested = false;
+let visualGeneration = 0;
+const visualListeners = new Set();
+function receiveVisualState(data) {
+  if (!data) return;
+  visualSnapshot = data;
+  for (const listener of visualListeners) listener(data);
+}
+export function watchVisualActivity(select, update) {
+  let previous;
+  const listener = snapshot => {
+    const value = select(snapshot);
+    const key = JSON.stringify(value);
+    if (key === previous) return;
+    previous = key;
+    update(value);
+  };
+  visualListeners.add(listener);
+  if (visualSnapshot) listener(visualSnapshot);
+  if (!visualRequested && bridge) {
+    visualRequested = true;
+    const generation = visualGeneration;
+    bridge.browser("visualActivity", {}).then(data => {
+      if (generation === visualGeneration) receiveVisualState(data);
+    }).catch(() => {});
+  }
+  return () => visualListeners.delete(listener);
+}
 function applyPersonality(value) {
   personality = value;
+  document.documentElement.dataset.limaPersonality = value;
   for (const character of document.querySelectorAll(".companion")) character.dataset.personality = value;
 }
 bridge?.browser("agentPreferences", {}).then(data => { if (data?.personality) applyPersonality(data.personality); }).catch(() => {});
-onEvent(({ event, data }) => { if (event === "ui.personality") applyPersonality(data); });
+onEvent(({ event, data }) => {
+  if (event === "ui.personality") applyPersonality(data);
+  if (event === "ui.visualActivity") { visualGeneration++; receiveVisualState(data); }
+  if (event === "ui.companionVisible") document.documentElement.toggleAttribute("lima-panel-hidden", !data);
+});
+
+const visibleCompanions = new IntersectionObserver(entries => {
+  for (const { target, isIntersecting } of entries) {
+    if (!target.isConnected) visibleCompanions.unobserve(target);
+    else target.toggleAttribute("data-offscreen", !isIntersecting);
+  }
+});
+window.addEventListener("pagehide", () => visibleCompanions.disconnect(), { once: true });
+const cues = new WeakMap();
+
+export function cueCompanion(element, gesture) {
+  if (element.hasAttribute("data-gesture")) return;
+  element.dataset.gesture = gesture;
+  clearTimeout(cues.get(element));
+  cues.set(element, setTimeout(() => delete element.dataset.gesture, gesture === "farewell" ? 660 : 280));
+}
 
 const ACCESSORIES = {
   think: "notebook", read: "search", tabs: "tab", write: "file", terminal: "terminal",
-  delegate: "note", test: "checkbox", failed: "warning", blocked: "warning", complete: "check", paused: "pause",
+  delegate: "note", planning: "checkbox", waiting: "note", test: "checkbox", recover: "redo", failed: "warning", blocked: "warning", complete: "check", paused: "pause",
 };
 
 export const MASCOTS = {
@@ -74,8 +125,10 @@ function characterArt(size) {
 }
 
 export function companion(size = "status") {
-  return el("span", { class: "companion " + size, "aria-hidden": "true", "data-personality": personality },
+  const character = el("span", { class: "companion " + size, "aria-hidden": "true", "data-personality": personality },
     characterArt(size), el("span", { class: "companion-prop" }));
+  visibleCompanions.observe(character);
+  return character;
 }
 
 export function setCompanionState(element, state) {

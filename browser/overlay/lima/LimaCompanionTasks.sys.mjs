@@ -1,4 +1,5 @@
 import { tabURL } from "resource://lima/LimaWorkspaces.sys.mjs";
+import { preserveFolderDisclosure } from "resource://lima/LimaFolderDisclosure.sys.mjs";
 
 const MAX_TABS = 30;
 const MAX_GROUPS = 12;
@@ -60,10 +61,10 @@ function createTabGroup(win, action, title) {
       tabs.push(tab);
       children.push(tab);
     }
-    const folder = win.gZenFolders.createFolder(children, {
+    const folder = preserveFolderDisclosure(parent, () => win.gZenFolders.createFolder(children, {
       label: String(group.title || "Tabs").slice(0, 100), collapsed: true,
       insertAfter: parent?.groupContainer.lastElementChild,
-    });
+    }));
     if (!folder?.isConnected) throw new Error("Lima could not create the tab folder.");
     created.push(folder);
     for (const child of Array.isArray(group.groups) ? group.groups.slice(0, MAX_GROUPS) : []) {

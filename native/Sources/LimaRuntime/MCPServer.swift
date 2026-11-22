@@ -95,6 +95,7 @@ public enum MCPServer {
             var catalog = contentTools
             if bound {
                 catalog.append(contentsOf: workspaceTools)
+                catalog.append(contentsOf: imageTools)
                 catalog.append(contentsOf: browserTools)
                 catalog.append(contentsOf: taskTools)
             }

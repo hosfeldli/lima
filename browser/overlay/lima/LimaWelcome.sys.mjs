@@ -41,41 +41,18 @@ async function retireBasics(win, keep = null) {
   }
 }
 
-async function hop(win, browser, position) {
-  const doc = win.document;
-  const destination = doc.getElementById("lima-assistant-toggle");
+function acknowledge(win, browser) {
+  const destination = win.document.getElementById("lima-assistant-toggle");
   if (!destination || win.gBrowser.selectedBrowser !== browser ||
       win.matchMedia("(prefers-reduced-motion: reduce)").matches ||
       Services.prefs.getStringPref("lima.personality", "full") !== "full") return;
-  const { x, y, width, height } = position ?? {};
-  if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0 || width > 180 || height > 180) return;
-  const viewport = browser.getBoundingClientRect();
-  const zoom = browser.fullZoom || 1;
-  if (x < 0 || y < 0 || x * zoom > viewport.width || y * zoom > viewport.height) return;
-  const start = { x: viewport.left + x * zoom, y: viewport.top + y * zoom };
-  const end = destination.getBoundingClientRect();
-  const dx = end.left + (end.width - width * zoom) / 2 - start.x;
-  const dy = end.top + (end.height - height * zoom) / 2 - start.y;
-  const jumper = doc.createElementNS("http://www.w3.org/1999/xhtml", "img");
-  jumper.alt = "";
-  jumper.src = "resource://lima-ui/marks/companion.svg";
-  Object.assign(jumper.style, { position: "fixed", zIndex: "2147483647", pointerEvents: "none",
-    left: `${start.x}px`, top: `${start.y}px`, width: `${width * zoom}px`, height: `${height * zoom}px` });
-  doc.documentElement.append(jumper);
-  try {
-    await jumper.animate([
-      { transform: "translateY(0) scale(1)" },
-      { transform: "translateY(5px) scale(1.08, .88)", offset: .17 },
-      { transform: `translate(${dx * .48}px, ${dy * .58 - 26}px) scale(.76) rotate(-13deg)`, offset: .53 },
-      { transform: `translate(${dx}px, ${dy}px) scale(${end.width / (width * zoom)})` },
-    ], { duration: 680, easing: "ease-in-out" }).finished;
-    destination.animate([{ transform: "scale(.93)" }, { transform: "scale(1.08)" }, { transform: "scale(1)" }], 250);
-  } finally { jumper.remove(); }
+  destination.animate([{ transform: "scale(.94)" }, { transform: "scale(1.06)" }, { transform: "scale(1)" }],
+    { duration: 250, easing: "ease-out" });
 }
 
 export const LimaWelcome = {
-  async finish(win, browser, position) {
-    await hop(win, browser, position).catch(() => {});
+  async finish(win, browser) {
+    acknowledge(win, browser);
     Services.prefs.setBoolPref(FINISHED, true);
     const { LimaTabs } = ChromeUtils.importESModule("resource://lima/LimaTabs.sys.mjs");
     LimaTabs.openOrFocus(win, "about:lima");

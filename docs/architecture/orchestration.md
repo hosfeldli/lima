@@ -2,6 +2,8 @@
 
 Companion communicates, the Orchestrator coordinates, and agents execute.
 
+Companion, Workspace Chat, and the sidebar use the same [visual activity projection](visual-activity.md). The Task Progress panel derives its timeline from the stored task events. A live, verified completion can trigger a single cue after checks finish.
+
 | | Companion (`ui/assistant.js`) | Orchestrator (`LimaRuntime/Orchestrator.swift`) | Agents (workspace and helper chats) |
 | --- | --- | --- | --- |
 | Talks to the user | Primary | Through the Companion and Task Progress | Their own chat tab |

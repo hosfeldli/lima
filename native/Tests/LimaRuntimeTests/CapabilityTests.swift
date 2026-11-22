@@ -112,3 +112,21 @@ func openRuntime() async throws -> (Runtime, URL) {
     let p95 = timings.sorted()[Int(Double(timings.count) * 0.95) - 1]
     #expect(p95 < 75, "p95 \(p95) ms")
 }
+
+@Test func linkPreviewsReadPageMetadata() {
+    let html = """
+    <html><head><title>Fallback &amp; title</title>
+    <meta property="og:title" content="Lima &#8211; Notes">
+    <meta name='description' content='A browser &quot;first&quot;'>
+    <META property=og:site_name content=Example></head><body>ignored</body></html>
+    """
+    let meta = LinkPreviews.metadata(html)
+    #expect(meta["og:title"] == "Lima – Notes")
+    #expect(meta["title"] == "Fallback & title")
+    #expect(meta["description"] == "A browser \"first\"")
+    #expect(meta["og:site_name"] == "Example")
+    #expect(LinkPreviews.allowed(URL(string: "https://example.com")!))
+    #expect(LinkPreviews.allowed(URL(string: "http://localhost:3000")!))
+    #expect(!LinkPreviews.allowed(URL(string: "http://example.com")!))
+    #expect(!LinkPreviews.allowed(URL(string: "file:///etc/passwd")!))
+}

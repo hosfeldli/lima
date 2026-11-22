@@ -34,6 +34,14 @@ const TOOLS = {
   notes_list: ["Listing notes", "notebook", "read"],
   notes_get: ["Reading note", "note", "read"],
   notes_append: ["Updating note", "note", "write"],
+  image_open: ["Opening image", "image", "read"],
+  image_inspect: ["Inspecting image", "image", "read"],
+  image_sample_color: ["Sampling image color", "image", "read"],
+  image_color_key: ["Removing background color", "image", "write"],
+  image_mask: ["Applying image mask", "image", "write"],
+  image_crop: ["Cropping image", "image", "write"],
+  image_resize: ["Resizing image", "image", "write"],
+  image_export: ["Exporting image", "image", "test"],
   lima_search: ["Searching Lima", "search", "read"],
   mcp_tool_call: ["Using an MCP tool", "integrations", "tool"],
 };
@@ -43,7 +51,7 @@ export function toolActivity(raw) {
   const qualified = separator < 0 ? raw : raw.slice(0, separator);
   let detail = separator < 0 ? "" : raw.slice(separator + 2);
   const match = /^mcp__(.+?)__(.+)$/.exec(qualified);
-  const name = (match?.[2] ?? qualified.replace(/^lima_(?=workspace_|agent_|agents_|notes_)/, "")).toLowerCase();
+  const name = (match?.[2] ?? qualified.replace(/^lima_(?=workspace_|agent_|agents_|notes_|image_)/, "")).toLowerCase();
   const key = { websearch: "web_search", webfetch: "web_fetch" }[name] ?? name;
   const browserActions = { inspect: "Inspecting page", click: "Clicking page", type: "Typing on page", scroll: "Scrolling page", screenshot: "Taking screenshot" };
   const browserAction = key === "workspace_browser" ? /"action"\s*:\s*"([a-z]+)"/.exec(detail)?.[1] : null;
@@ -96,7 +104,8 @@ export function failureActivity(error, fallback = "Request failed") {
 
 export function replyActivity(message, { tool, provider, surface } = {}) {
   const providerName = { claude: "Claude", codex: "Codex", opencode: "OpenCode" }[provider] ?? provider;
-  if (message?.status === "streaming" || message?.status === "queued") {
+  if (message?.status === "queued") return { state: "waiting", label: "Waiting to start", icon: "note", motion: "waiting" };
+  if (message?.status === "streaming") {
     const startedAt = message.createdAt;
     if (message.progress === "reconnecting") {
       return { state: "working", label: "Reconnecting", detail: providerName, icon: "activity", motion: "think", startedAt };
@@ -104,9 +113,9 @@ export function replyActivity(message, { tool, provider, surface } = {}) {
     const doing = tool ?? ({ terminal: "workspace_run", tab: "workspace_read_tab" }[surface]);
     if (doing) {
       const { label, detail, icon, kind } = toolActivity(doing);
-      return { state: "working", label, detail, icon, motion: kind, startedAt };
+      return { state: kind === "blocked" ? "waiting" : "working", label, detail, icon, motion: kind === "blocked" ? "waiting" : kind, startedAt };
     }
-    if (message.text?.trim()) {
+    if (message.hasText ?? !!message.text?.trim()) {
       return { state: "working", label: "Writing a reply", icon: "note", motion: "write", startedAt };
     }
     if (message.progress) {
@@ -117,6 +126,6 @@ export function replyActivity(message, { tool, provider, surface } = {}) {
       detail: "Waiting for the first reply or tool call", icon: "notebook", motion: "think", startedAt };
   }
   if (message?.status === "failed") return failureActivity(message.error, "Reply failed");
-  if (message?.status === "complete") return { state: "complete", label: "Completed", icon: "check", motion: "complete" };
+  if (message?.status === "complete") return { state: "complete", label: "Reply ready", icon: "check", motion: "idle" };
   return { state: "idle", label: "Ready" };
 }

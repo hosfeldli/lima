@@ -1,5 +1,7 @@
 /* Notes: index (organized by the bookmark tree), classic editor and canvas. */
-import { bar, bridge, call, debounce, el, errorText, icon, markdown, noteEmbed, onEvent, relativeTime, setPage } from "./lib.js";
+import { bar, bridge, call, debounce, el, errorText, hydrateEmbeds, icon, installEmbedActions, markdown, noteEmbed, onEvent, relativeTime, setPage } from "./lib.js";
+
+installEmbedActions();
 
 const attachmentCache = new Map();
 function attachmentURL(id) {
@@ -167,7 +169,7 @@ export function toMarkdown(root) {
     else if (tag === "blockquote") out.push(...inline(node).trim().split("\n").map(l => `> ${l}`), "");
     else if (tag === "hr") out.push("---", "");
     else if (tag === "table") {
-      const rows = [...node.querySelectorAll("tr")].map(tr => [...tr.children].map(c => inline(c).trim().replace(/\|/g, "\\|")));
+      const rows = [...node.querySelectorAll("tr")].map(tr => [...tr.children].map(c => inline(c).trim().replace(/\n+/g, " ").replace(/\|/g, "\\|")));
       if (rows.length) {
         const rules = [...node.rows[0].cells].map(cell => ({ right: "---:", center: ":---:" }[cell.style.textAlign] ?? "---"));
         out.push(`| ${rows[0].join(" | ")} |`, `| ${rules.join(" | ")} |`, ...rows.slice(1).map(r => `| ${r.join(" | ")} |`), "");
@@ -208,6 +210,9 @@ async function renderClassic(app, note) {
     onclick: () => { selectBody(); fn(); markDirty(); } },
     typeof iconOrText === "string" && iconOrText.length < 3 ? el("span", { text: iconOrText }) : iconOrText);
   const exec = (command, value) => () => document.execCommand(command, false, value);
+  const addRow = tool("+ Row", "Add row below", () => extendTable("row"));
+  const addColumn = tool("+ Column", "Add column after", () => extendTable("column"));
+  addRow.disabled = addColumn.disabled = true;
   const toolbar = el("div", { class: "page-tools", role: "toolbar" },
     tool("H1", "Heading", exec("formatBlock", "h1")), tool("H2", "Subheading", exec("formatBlock", "h2")), tool(icon("paragraph"), "Text", exec("formatBlock", "p")),
     el("i", { class: "sep" }),
@@ -215,19 +220,16 @@ async function renderClassic(app, note) {
     tool("{}", "Code", wrapCode), tool(icon("link"), "Link (⌘K)", insertLink),
     el("i", { class: "sep" }),
     tool(icon("list"), "Bulleted list", exec("insertUnorderedList")), tool("1.", "Numbered list", exec("insertOrderedList")), tool(icon("checkbox"), "To-do", () => insertTodo()),
+    tool(icon("table"), "Insert table", insertTable), addRow, addColumn,
     tool(icon("globe"), "Insert an interactive embed", () => {
       const value = window.prompt("Paste an HTTPS or local preview URL");
       if (!value) return;
       const card = noteEmbed(value.trim());
       if (!card) { status.textContent = "Enter an HTTPS or local preview URL."; return; }
       selectBody();
-      const anchor = getSelection().anchorNode;
-      let block = anchor;
-      while (block?.parentNode && block.parentNode !== body) block = block.parentNode;
-      const next = el("p", {}, el("br"));
-      if (block && block !== body && block.parentNode === body) block.after(card, next);
-      else body.append(card, next);
-      getSelection().collapse(next, 0);
+      // One editing transaction, so Undo removes the embed again.
+      document.execCommand("insertHTML", false, card.outerHTML + "<p><br></p>");
+      hydrateEmbeds(body);
     }),
     el("i", { class: "sep" }),
     tool(icon("mic"), "Dictate (⌃⌥D)", () => bridge.browser("dictate", { noteId: note.id })),
@@ -245,8 +247,57 @@ async function renderClassic(app, note) {
     const rendered = markdown(note.markdown, { attachments: attachmentURL, embeds: true });
     for (const box of rendered.querySelectorAll("input[type=checkbox]")) box.disabled = false;
     selectionRange = undefined;
+    addRow.disabled = addColumn.disabled = true;
     body.replaceChildren(...rendered.childNodes);
     body.classList.toggle("empty", !note.markdown.trim());
+  }
+
+  function tableCell() {
+    const anchor = getSelection().anchorNode;
+    const cell = (anchor?.nodeType === Node.ELEMENT_NODE ? anchor : anchor?.parentElement)?.closest("th, td");
+    return cell && body.contains(cell) && !cell.closest('[contenteditable="false"]') ? cell : null;
+  }
+
+  function insertTable() {
+    if (tableCell()) return;
+    const table = el("table", {}, el("thead", {}, el("tr", {}, el("th", { text: "Column 1" }), el("th", { text: "Column 2" }))),
+      el("tbody", {}, el("tr", {}, blankCell("td"), blankCell("td"))));
+    document.execCommand("insertHTML", false, table.outerHTML + "<p><br></p>");
+  }
+
+  function blankCell(tag) { return el(tag, {}, el("br")); }
+
+  function extendTable(kind) {
+    const cell = tableCell();
+    if (!cell) return;
+    const table = cell.closest("table");
+    const row = cell.parentElement.rowIndex;
+    const column = cell.cellIndex;
+    const next = table.cloneNode(true);
+    if (kind === "row") {
+      const section = next.tBodies[0] ?? next.createTBody();
+      const added = el("tr", {}, Array.from(next.rows[0].cells, () => blankCell("td")));
+      if (row === 0) section.prepend(added);
+      else next.rows[row].after(added);
+    } else {
+      for (const [index, line] of Array.from(next.rows).entries()) {
+        const added = blankCell(index === 0 ? "th" : "td");
+        if (line.cells[column]) line.cells[column].after(added);
+        else line.append(added);
+      }
+    }
+    const range = document.createRange();
+    range.selectNode(table);
+    const selection = getSelection();
+    const parent = table.parentElement;
+    const index = [...parent.children].indexOf(table);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    // Use Gecko's editing transaction so Undo also restores table structure.
+    if (!document.execCommand("insertHTML", false, next.outerHTML)) return;
+    const replacement = parent.children[index];
+    const target = replacement?.rows?.[row + (kind === "row" ? 1 : 0)]?.cells[column + (kind === "column" ? 1 : 0)];
+    if (target) selection.collapse(target, 0);
   }
 
   function wrapCode() {
@@ -389,10 +440,22 @@ async function renderClassic(app, note) {
   }
 
   const rememberSelection = () => {
+    addRow.disabled = addColumn.disabled = !tableCell();
     const selection = getSelection();
     if (selection.rangeCount && body.contains(selection.anchorNode)) selectionRange = selection.getRangeAt(0).cloneRange();
   };
   document.addEventListener("selectionchange", rememberSelection);
+  // Remove on an embed: an undoable delete of just that card.
+  body.addEventListener("lima-embed-remove", event => {
+    const card = event.target.closest(".note-embed");
+    if (!card || !body.contains(card)) return;
+    const range = document.createRange();
+    range.selectNode(card);
+    const selection = getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    if (!document.execCommand("delete", false) || body.contains(card)) { card.remove(); markDirty(); }
+  });
   body.addEventListener("input", () => {
     for (const li of body.querySelectorAll("li.task")) {
       if (!li.querySelector(":scope > input[type=checkbox]")) li.prepend(el("input", { type: "checkbox" }));
@@ -571,9 +634,14 @@ async function renderCanvas(app, note) {
     }
     const handle = el("div", { class: "resize" });
     node.append(handle);
+    node.addEventListener("lima-embed-remove", () => {
+      apply([{ removeBlock: { id: block.id } }], "Deleted");
+      if (selected === block.id) selected = null;
+    });
 
     node.addEventListener("pointerdown", event => {
-      if (event.button !== 0 || node.isContentEditable || event.target.closest(".note-embed")) return;
+      // The embed's own controls and player stay usable; the rest of the card drags and selects the block.
+      if (event.button !== 0 || node.isContentEditable || event.target.closest(".note-embed button, .note-embed iframe")) return;
       if (connectFrom && connectFrom !== block.id) {
         apply([{ connect: { _0: { id: crypto.randomUUID(), from: connectFrom, to: block.id } } }], "Connected");
         connectFrom = null;
