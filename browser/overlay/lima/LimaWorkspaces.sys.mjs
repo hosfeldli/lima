@@ -585,6 +585,35 @@ class Workspaces {
     if (url) win.gBrowser.selectedTab = win.gBrowser.addTab(url, { triggeringPrincipal: system() });
   }
 
+  /** Tab menu → Add Tab to Workspace: the page joins the workspace's Tabs
+   * folder, where its agent can read and act on it. */
+  addTab(win, id, tab) {
+    const workspace = this.#workspaces.get(id);
+    const folder = this.folderFor(id, "folder", win);
+    if (!workspace || !folder) throw new Error("This workspace isn't in the sidebar of this window.");
+    const url = tabURL(tab);
+    if (!/^https?:/.test(url)) throw new Error("Only web pages can be added to a workspace.");
+    if (tab.pinned) win.gBrowser.unpinTab(tab);
+    let tabs = this.folderFor(id, "tabs", win);
+    if (tabs && tabs.group === folder) tabs.addTabs([tab]);
+    else {
+      tabs = this.#createFolder(win, [tab], "Tabs", folder);
+      tabs.setAttribute("lima-tabs", id);
+      const map = this.#map();
+      map[id] = { ...(map[id] ?? {}), tabs: tabs.id };
+      this.#saveMap(map);
+    }
+    try { lazy.SessionStore.setCustomTabValue(tab, "lima-workspace", id); } catch {}
+    tabs.collapsed = false;
+    this.#animateTab(tab);
+    return workspace;
+  }
+
+  /** Top-level workspaces shown in this window's sidebar, for menus. */
+  roots(win) {
+    return this.workspaces.filter(workspace => !workspace.parentID && this.folderFor(workspace.id, "folder", win));
+  }
+
   /** Called when the user renames a workspace folder inline. */
   onFolderRenamed(folder) {
     const id = folder.getAttribute("lima-workspace");

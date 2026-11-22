@@ -264,9 +264,10 @@ export class LimaParent extends JSWindowActorParent {
       case "create": {
         const { LimaCreate } = ChromeUtils.importESModule("resource://lima/LimaSidebar.sys.mjs");
         const win = this.browsingContext.topChromeWindow;
-        if (payload?.what === "workspace") LimaCreate.workspace(win);
-        else if (payload?.what === "note") LimaCreate.note(win);
-        else if (payload?.what === "terminal") LimaCreate.terminal(win);
+        // Awaited so the page that asked shows any failure in place.
+        if (payload?.what === "workspace") await LimaCreate.workspace(win, { pickFolder: payload?.pickFolder === true });
+        else if (payload?.what === "note") await LimaCreate.note(win);
+        else if (payload?.what === "terminal") await LimaCreate.terminal(win);
         return null;
       }
       case "dictate": {

@@ -3,6 +3,7 @@ import { lastVisibleTool, replyActivity, toolActivity } from "resource://lima/ui
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
+  broadcastToLimaPages: "resource://lima/actors/LimaParent.sys.mjs",
   LimaWorkspaces: "resource://lima/LimaWorkspaces.sys.mjs",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
 });
@@ -53,6 +54,7 @@ export const LimaAssistant = {
 
     let browser;
     let open = false;
+    let pendingDraft = "";
     let needsHandoff = false;
     const prompts = new Set();
     const activity = new Map();
@@ -91,8 +93,13 @@ export const LimaAssistant = {
         browser.setAttribute("maychangeremoteness", "true");
         browser.setAttribute("disableglobalhistory", "true");
         const workspace = lazy.LimaWorkspaces.workspaceForTab(win.gBrowser.selectedTab);
-        browser.setAttribute("src", `about:lima?view=assistant${workspace ? `&workspaceId=${encodeURIComponent(workspace)}` : ""}`);
+        const draft = pendingDraft ? `&draft=${encodeURIComponent(pendingDraft.slice(0, 4000))}` : "";
+        pendingDraft = "";
+        browser.setAttribute("src", `about:lima?view=assistant${workspace ? `&workspaceId=${encodeURIComponent(workspace)}` : ""}${draft}`);
         panel.append(browser);
+      } else if (pendingDraft) {
+        lazy.broadcastToLimaPages("assistant.draft", { text: pendingDraft.slice(0, 4000) });
+        pendingDraft = "";
       }
       browser.focus();
     }
@@ -105,7 +112,12 @@ export const LimaAssistant = {
         toggle(false);
       }
     }, true);
-    win.addEventListener("LimaAssistantOpen", () => { if (!open) toggle(true); });
+    // Search's Delegate Task opens the Companion with the query as its draft.
+    win.addEventListener("LimaAssistantOpen", event => {
+      if (typeof event.detail?.draft === "string") pendingDraft = event.detail.draft;
+      if (!open) toggle(true);
+      else if (pendingDraft) { lazy.broadcastToLimaPages("assistant.draft", { text: pendingDraft.slice(0, 4000) }); pendingDraft = ""; }
+    });
     win.addEventListener("LimaAssistantClose", () => { if (open) toggle(false); });
     win.addEventListener("LimaAssistantAttention", event => { needsHandoff = event.detail === true; paint(); });
 

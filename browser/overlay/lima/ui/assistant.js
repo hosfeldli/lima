@@ -8,7 +8,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
   setPage(home ? "Lima" : "Lima Companion", "lima");
   const workspaces = new Map();
   const conversations = new Map();
-  const input = el("textarea", { rows: home ? 3 : 2, placeholder: "Ask a question or describe a task", "aria-label": "Question or task" });
+  const input = el("textarea", { rows: home ? 3 : 2, placeholder: "What would you like Lima to do?", "aria-label": "Question or task" });
   const character = companion(home ? "home" : "status");
   const send = el("button", { class: "primary", onclick: delegate, disabled: true }, icon("send"), "Send");
   const activity = activityStatus();
@@ -24,6 +24,9 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
   const providerHelp = el("details", { class: "assistant-providers", hidden: true });
   const draftKey = "assistant.draft";
   input.value = prefs.get(draftKey, "");
+  // Delegate Task from Search: the query becomes the draft, never sent unasked.
+  const handedDraft = home ? null : new URLSearchParams(location.search).get("draft");
+  if (handedDraft) { input.value = handedDraft; prefs.set(draftKey, handedDraft); }
   let handedOff;
   let ready = false;
   let shownWorkspace;
@@ -218,7 +221,9 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
         handedOff = workspace.id;
         if (revision === conversationRevision || !conversations.get(conversation.id)?.message?.id) rememberConversation(conversation);
       }
-      paintTask(task, "complete", el("p", { text: "Handed off to the workspace." }),
+      paintTask(task, "complete", el("p", { text: destinations.length === 1
+        ? `Sent to ${destinations[0].name}. The agent is starting your task.`
+        : `Sent to ${destinations.length} workspaces. The agents are starting your task.` }),
         ...destinations.map(workspace => el("button", { class: "ghost", onclick: () => openWorkspace(workspace) }, workspace.name)));
       if (!home && !input.value && !tasks.some(item => ["working", "approval"].includes(item.phase))) close().catch(() => {});
     } catch (error) { paintTask(task, "failed", errorText(error)); }
@@ -244,6 +249,12 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     else workspaces.set(data.id, data);
   }
   const unsubscribe = onEvent(({ event, data }) => {
+    if (event === "assistant.draft" && !home && typeof data?.text === "string") {
+      input.value = data.text;
+      prefs.set(draftKey, data.text);
+      input.focus();
+      return;
+    }
     if (event === "integrations.setup.updated" && data?.phase === "done") {
       agent.refresh().then(draw);
       if (!home) loadProviderHelp();

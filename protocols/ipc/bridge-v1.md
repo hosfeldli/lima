@@ -30,6 +30,8 @@ Live browser events are delivered to identified browser connections. Tool client
 
 Terminal state may include shellReady, userEditing, and activeCommand. Terminal startup returns the error from starting the requested shell or entering its directory.
 
+`workspace.reveal` (browser origin only) shows a workspace's project folder in Finder for the sidebar's Reveal Project Folder.
+
 Workspace deletion returns archivePath for a top-level workspace, directoryKept when its source stays in place, and recoveryPath when a verified archive exists alongside a staged recovery copy.
 
 ### Workspace requests

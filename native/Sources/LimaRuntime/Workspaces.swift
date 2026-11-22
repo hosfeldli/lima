@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import LimaAgentSupervisor
 import LimaAuthorization
@@ -344,6 +345,17 @@ extension Runtime {
         register("workspace.delete") { [unowned self] params, context in
             guard context.origin == .browser else { throw BridgeError(.notAuthorized, "only the user can remove a workspace") }
             return try await self.archiveWorkspace(try params.string("id"))
+        }
+        // Sidebar → Reveal Project Folder. Only the user's own UI may ask.
+        register("workspace.reveal") { [unowned self] params, context in
+            guard context.origin == .browser else { throw BridgeError(.notAuthorized, "only the user can reveal a workspace folder") }
+            let workspace = try await self.workspaces.get(try params.string("id"))
+            let folder = URL(fileURLWithPath: workspace.directory, isDirectory: true)
+            guard FileManager.default.fileExists(atPath: folder.path) else {
+                throw BridgeError(.badRequest, "The project folder \(workspace.directory) no longer exists.")
+            }
+            await MainActor.run { _ = NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: folder.path) }
+            return .null
         }
         register("agent.dismiss") { [unowned self] params, context in
             guard let parent = context.workspaceID else { throw BridgeError(.notAuthorized, "Only the parent agent can dismiss a helper.") }

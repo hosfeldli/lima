@@ -7,7 +7,12 @@
  * Sources: navigation (URL-like input), Lima's index (notes, chats, apps,
  * commands), open tabs, history & bookmarks, web suggestions from the
  * default engine (only if the browser's suggestion pref is on), and "Search
- * the web". The Lima mark (or ⌘↩) starts an AI chat tab with the query. */
+ * the web". The Lima mark (or ⌘↩) starts an AI chat tab with the query.
+ *
+ * Ask Lima answers in place (Quick Ask: no tools, no page or file access).
+ * Delegate Task hands the query to the Companion. Commands run once per
+ * invocation: the result tab reads the stored result by execution ID.
+ * Failures stay in the panel with the query, so nothing fails silently. */
 
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
@@ -62,39 +67,73 @@ class Panel {
 
   build() {
     const doc = this.doc;
-    this.input = el(doc, "input", { id: "lima-search-input", type: "text", placeholder: "Search the web, tabs, notes, apps — or ask Lima", "aria-label": "Lima Search",
+    this.input = el(doc, "input", { id: "lima-search-input", type: "text", placeholder: "Search the web, find anything, or ask Lima…", "aria-label": "Lima Search",
       autocomplete: "off", spellcheck: "false" });
     this.mark = el(doc, "button", { id: "lima-search-mark", title: "Ask AI in a new chat (⌘↩)", "aria-label": "Ask AI", onclick: () => this.ask() });
     this.spinner = el(doc, "span", { id: "lima-search-spinner", hidden: true });
+    // What a Quick Ask shares beyond the question (a page or a selection).
+    this.contextChip = el(doc, "div", { id: "lima-search-context", hidden: true });
     this.results = el(doc, "div", { id: "lima-search-results", role: "listbox" });
+    this.status = el(doc, "div", { id: "lima-search-status", role: "status", hidden: true });
+    const hint = (key, label) => el(doc, "span", {}, el(doc, "kbd", { text: key }), ` ${label}`);
     this.panel = el(doc, "div", { id: "lima-search", role: "dialog", "aria-label": "Lima Search" },
       el(doc, "div", { id: "lima-search-field" }, this.mark, this.input, this.spinner,
         el(doc, "button", { id: "lima-search-esc", title: "Close search (Esc)", "aria-label": "Close search", onclick: () => this.close() }, "×")),
-      this.results);
+      this.contextChip, this.status, this.results,
+      el(doc, "div", { id: "lima-search-foot", "aria-hidden": "true" }, hint("↩", "Select"), hint("⌘↩", "AI Chat"), hint("esc", "Close")));
     this.scrim = el(doc, "div", { id: "lima-search-scrim", hidden: true, onpointerdown: event => { if (event.target === this.scrim) this.close(); } }, this.panel);
     doc.documentElement.append(this.scrim);
 
-    this.input.addEventListener("input", () => this.query());
+    this.input.addEventListener("input", () => { this.answering = null; this.clearStatus(); this.query(); });
     this.input.addEventListener("keydown", event => this.onKey(event));
   }
 
   get isOpen() { return !this.scrim.hidden; }
 
-  open(initial = "") {
+  /** `context` (optional): { kind: "page" | "selection", title, url, text }.
+   * The chip says exactly what Quick Ask will share. */
+  open(initial = "", { context = null, ask = null } = {}) {
     lazy.SearchService.getDefault().then(engine => { this.engineName = engine?.name; }).catch(() => {});
     this.previousFocus = this.doc.activeElement;
     this.scrim.hidden = false;
     this.input.value = initial;
     this.selectedKey = null;
+    this.answering = null;
+    this.running = false;
+    this.clearStatus();
+    this.setContext(context);
     this.input.focus();
     this.input.select();
-    this.query();
+    if (ask) this.quickAsk(ask);
+    else this.query();
+  }
+
+  setContext(context) {
+    this.context = context;
+    const doc = this.doc;
+    this.contextChip.hidden = !context;
+    if (!context) { this.contextChip.replaceChildren(); return; }
+    const what = context.kind === "selection" ? "the selected text, the page title and its URL" : "this page's title and URL";
+    this.contextChip.replaceChildren(el(doc, "span", { text: `Sharing ${what}: ` }), el(doc, "strong", { text: context.title || context.url }),
+      el(doc, "button", { class: "lima-s-chip-remove", title: "Don't share", "aria-label": "Don't share", onmousedown: event => event.preventDefault(),
+        onclick: () => { this.setContext(null); this.input.focus(); this.query(); } }, "×"));
+  }
+
+  /** The question as sent, with only the context the chip names. */
+  prompt(text) {
+    const context = this.context;
+    if (!context) return text;
+    const page = `Page: ${context.title || "(untitled)"}\nURL: ${context.url}`;
+    if (context.kind === "selection") return `${page}\n\nSelected text:\n"""\n${context.text.slice(0, 12000)}\n"""\n\n${text}`;
+    return `${page}\n\n${text}`;
   }
 
   close() {
     if (!this.isOpen) return;
     this.scrim.hidden = true;
     this.generation++;
+    this.answering = null;
+    this.setContext(null);
     this.suggester?.stop();
     try { this.win.gBrowser.selectedBrowser.focus(); } catch {}
   }
@@ -137,12 +176,19 @@ class Panel {
     const rows = [];
     if (looksLikeURL(text)) {
       const url = /^https?:\/\//i.test(text) ? text : /^(localhost|127\.0\.0\.1)(?=[:/]|$)/i.test(text) ? `http://${text}` : `https://${text}`;
-      rows.push({ key: `nav:${url}`, icon: "external", title: text, subtitle: "Open website", action: "Open", run: () => this.openURL(url) });
+      rows.push({ key: `nav:${url}`, icon: "external", title: text, subtitle: url, action: "Open Website", run: () => this.openURL(url) });
     }
-    rows.push({ key: "web", icon: "search", title: text, subtitle: `Search with ${this.engineName ?? "your search engine"}`, action: "Search", run: () => this.webSearch(text) });
-    if (/\?$|^(what|who|why|how|when|where|is|are|can|does|do|should|explain|summarize|write)\b/i.test(text)) {
-      rows.splice(rows.length - 1, 0, { key: "ask", icon: "star", title: text, subtitle: "Ask Lima AI", action: "Ask", run: () => this.ask(text) });
-    }
+    rows.push({ key: "web", icon: "search", title: text, subtitle: `Search with ${this.engineName ?? "your search engine"}`, action: "Search Web", run: () => this.webSearch(text) });
+    if (this.context) return [{ key: "ask", icon: "star", title: text, subtitle: "Ask Lima about what you're sharing", action: "Ask Lima", inline: true, run: () => this.quickAsk(text) }, ...rows];
+    if (looksLikeURL(text) || lazy.PrivateBrowsingUtils.isWindowPrivate(this.win)) return rows;
+    const words = text.split(/\s+/).length;
+    const question = /\?$|^(what|who|why|how|when|where|which|is|are|can|could|does|do|did|should|would|explain|define|summarize|compare)\b/i.test(text);
+    const task = /^(fix|build|create|make|add|implement|refactor|research|plan|draft|write|update|organize|review|set up|debug|find and|clean up|migrate|prepare)\b/i.test(text);
+    const ask = { key: "ask", icon: "star", title: text, subtitle: "Quick answer, no page or file access", action: "Ask Lima", inline: true, run: () => this.quickAsk(text) };
+    const delegate = { key: "delegate", icon: "workspace", title: text, subtitle: "Hand off to an agent in a workspace", action: "Delegate Task", run: () => this.delegate(text) };
+    if (task) rows.splice(0, 0, delegate, ask);
+    else if (question) rows.splice(rows.length - 1, 0, ask, ...(words > 6 ? [delegate] : []));
+    else if (words > 3) rows.push(ask, delegate);
     return rows;
   }
 
@@ -155,13 +201,13 @@ class Panel {
     const query = text.toLowerCase();
     const projects = workspaces.filter(workspace => !workspace.parentID && workspace.conversationID && workspace.name.toLowerCase().includes(query))
       .map(workspace => ({ key: `workspace:${workspace.id}`, icon: "workspace", title: workspace.name, subtitle: "Workspace",
-        action: "Open chat", run: () => lazy.LimaTabs.openOrFocus(this.win, `about:lima?chat=${encodeURIComponent(workspace.conversationID)}`) }));
+        action: "Open Workspace", run: () => lazy.LimaTabs.openOrFocus(this.win, `about:lima?chat=${encodeURIComponent(workspace.conversationID)}`) }));
     return [...projects, ...response.results
       .filter(r => !["web", "tab"].includes(r.source) && !["agentAsk", "quickAsk", "webSearch", "navigate", "switchTab"].includes(r.action.type))
       .map(r => ({
         key: `lima:${r.key}`, icon: r.action.type === "runCapability" ? "bolt" : SOURCE_ICONS[r.source] ?? "search",
-        title: r.title, subtitle: r.subtitle, action: r.action.type === "openApp" ? "Launch" : r.action.type === "runCapability" ? "Run" : "Open",
-        run: () => this.runLima(r),
+        title: r.title, subtitle: r.subtitle, action: r.action.type === "openApp" ? "Launch" : r.action.type === "runCapability" ? "Run Command" : "Open",
+        command: r.action.type === "runCapability", run: () => this.runLima(r),
       }))];
   }
 
@@ -251,18 +297,140 @@ class Panel {
       case "openApp": return lazy.LimaBridge.request("system.openApp", { path: p.path });
       case "copyText": return Cc["@mozilla.org/widget/clipboardhelper;1"].getService(Ci.nsIClipboardHelper).copyString(p.text ?? result.title);
       case "runCapability": {
-        const run = await lazy.LimaBridge.request("capabilities.run", { id: p.id, input: this.input.value.trim().split(/\s+/).slice(1).join(" ") });
+        const input = this.input.value.trim().split(/\s+/).slice(1).join(" ");
+        const capability = (await this.manifest()).find(item => item.id === p.id);
+        // A command that needs input it wasn't given opens its form instead.
+        if (capability?.input?.required && !input) return lazy.LimaTabs.openOrFocus(this.win, `about:lima?run=${q(p.id)}`);
+        const executionId = Services.uuid.generateUUID().toString().slice(1, -1);
+        const run = await lazy.LimaBridge.request("capabilities.run", { id: p.id, input, executionId });
         if (run?.type === "open") return lazy.LimaTabs.openOrFocus(this.win, run.url);
-        return lazy.LimaTabs.openOrFocus(this.win, `about:lima?run=${q(p.id)}`);
+        // The result tab shows this execution; opening or refreshing it never runs the command again.
+        return lazy.LimaTabs.openOrFocus(this.win, `about:lima?run=${q(p.id)}&execution=${q(executionId)}${input ? `&input=${q(input)}` : ""}`);
       }
     }
     return null;
   }
 
-  activate(item, { ask = false } = {}) {
+  manifest() {
+    this.capabilities ??= lazy.LimaBridge.request("capabilities.list").catch(() => { this.capabilities = null; return []; });
+    return this.capabilities;
+  }
+
+  /** One activation per gesture. Inline actions keep the panel; commands
+   * keep it until they finish so a failure can be shown where it started. */
+  async activate(item, { ask = false } = {}) {
     if (ask) return this.ask();
-    this.close();
-    Promise.resolve().then(() => item.run()).catch(error => dump(`[lima] search action failed: ${error}\n`));
+    if (this.running) return;
+    if (item.inline) return item.run();
+    this.running = true;
+    const generation = this.generation;
+    if (item.command) this.setStatus("busy", "Running command…");
+    else this.close();
+    try {
+      await item.run();
+      if (item.command && generation === this.generation) this.close();
+    } catch (error) {
+      dump(`[lima] search action failed: ${error.message ?? error}\n`);
+      this.fail(item, error);
+    } finally {
+      this.running = false;
+    }
+  }
+
+  // MARK: Inline status, Quick Ask and delegation
+
+  clearStatus() {
+    this.status.hidden = true;
+    this.status.replaceChildren();
+    delete this.status.dataset.tone;
+  }
+
+  setStatus(tone, title, detail = "", ...actions) {
+    const doc = this.doc;
+    this.status.dataset.tone = tone;
+    this.status.replaceChildren(el(doc, "div", { class: "lima-s-status-copy" }, el(doc, "strong", { text: title }), detail ? el(doc, "span", { text: detail }) : null),
+      actions.length ? el(doc, "div", { class: "lima-s-status-actions" }, ...actions) : null);
+    this.status.hidden = false;
+  }
+
+  button(label, onclick, primary = false) {
+    return el(this.doc, "button", { class: primary ? "lima-s-button primary" : "lima-s-button", onclick, onmousedown: event => event.preventDefault() }, label);
+  }
+
+  /** Reopens the panel if needed and explains the failure next to the query. */
+  fail(item, error) {
+    if (!this.isOpen) {
+      const query = this.input.value;
+      this.scrim.hidden = false;
+      this.input.value = query;
+      this.query();
+    }
+    this.setStatus("bad", item.command ? "Command failed" : "Couldn't complete this action.", String(error?.message ?? error),
+      this.button("Retry", () => { this.clearStatus(); this.activate(item); }, true),
+      item.command ? this.button("View Details", () => { this.close(); lazy.LimaTabs.openOrFocus(this.win, "about:lima?view=activity&tab=commands"); }) : null);
+    this.input.focus();
+  }
+
+  /** Streams a Quick Ask answer into the panel. Closing ignores the rest. */
+  async quickAsk(text) {
+    const doc = this.doc;
+    const generation = ++this.generation;
+    const requestId = Services.uuid.generateUUID().toString().slice(1, -1);
+    const provider = Services.prefs.getStringPref("lima.agent.provider", "claude");
+    const model = Services.prefs.getStringPref(`lima.agent.model.${provider}`, "default");
+    this.answering = { text, requestId };
+    this.items = [];
+    this.spinner.hidden = false;
+    const answer = el(doc, "div", { class: "lima-s-answer-text", "aria-live": "polite" });
+    const actions = el(doc, "div", { class: "lima-s-answer-actions", hidden: true });
+    const meta = el(doc, "span", { class: "lima-s-answer-meta", text: "Asking Lima…" });
+    this.clearStatus();
+    this.results.replaceChildren(el(doc, "div", { class: "lima-s-answer", role: "region", "aria-label": "Lima's answer" },
+      el(doc, "div", { class: "lima-s-answer-question", text: text }), answer, el(doc, "div", { class: "lima-s-answer-foot" }, meta, actions)));
+    let streamed = "";
+    const current = () => generation === this.generation && this.answering?.requestId === requestId;
+    const off = lazy.LimaBridge.onEvent(message => {
+      if (message.event !== "quickAsk.delta" || message.data?.requestId !== requestId || !current()) return;
+      streamed += message.data.text;
+      answer.textContent = streamed;
+    });
+    const done = (final, ...buttons) => {
+      off();
+      if (!current()) return;
+      this.spinner.hidden = true;
+      if (final !== undefined) answer.textContent = final;
+      actions.replaceChildren(...buttons);
+      actions.hidden = false;
+    };
+    const asked = this.prompt(text);
+    const chat = () => this.button("Continue in Chat", () => this.ask(asked));
+    try {
+      const result = await lazy.LimaBridge.request("quickAsk", { requestId, prompt: this.prompt(text), provider, ...(model !== "default" ? { model } : {}) });
+      if (result?.error) {
+        meta.textContent = "Couldn't complete this action.";
+        done(undefined, this.button("Retry", () => this.quickAsk(text), true), chat(),
+          this.button("Open Settings", () => { this.close(); lazy.LimaTabs.openOrFocus(this.win, "about:lima?view=integrations&section=agents"); }));
+        answer.textContent = result.error.message || "Lima couldn't get an answer from the AI provider.";
+        answer.dataset.tone = "bad";
+        return;
+      }
+      meta.textContent = "Quick Ask · no page or file access";
+      const final = result?.text ?? streamed;
+      done(final, this.button("Copy", () => {
+        Cc["@mozilla.org/widget/clipboardhelper;1"].getService(Ci.nsIClipboardHelper).copyString(final);
+        meta.textContent = "Copied";
+      }, true), chat(), this.button("Close", () => this.close()));
+    } catch (error) {
+      meta.textContent = "Couldn't complete this action.";
+      answer.textContent = String(error?.message ?? error);
+      answer.dataset.tone = "bad";
+      done(undefined, this.button("Retry", () => this.quickAsk(text), true), chat());
+    }
+  }
+
+  /** Delegate Task: the Companion receives the query as its draft. */
+  delegate(text) {
+    this.win.dispatchEvent(new this.win.CustomEvent("LimaAssistantOpen", { detail: { draft: text } }));
   }
 
   // MARK: View
@@ -293,7 +461,12 @@ class Panel {
 
   onKey(event) {
     const index = this.items.findIndex(item => item.key === this.selectedKey);
-    if (event.key === "Escape") { event.preventDefault(); this.close(); }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      if (this.answering) { this.answering = null; this.generation++; this.spinner.hidden = true; this.query(); }
+      else this.close();
+    }
+    else if (this.answering && event.key === "Enter" && !event.metaKey) { event.preventDefault(); }
     else if (event.key === "ArrowDown" || (event.key === "n" && event.ctrlKey)) {
       event.preventDefault();
       this.selectedKey = this.items[Math.min(this.items.length - 1, index + 1)]?.key ?? this.selectedKey;
@@ -313,9 +486,9 @@ class Panel {
 const panels = new WeakMap();
 
 export const LimaSearchPanel = {
-  open(win, initial = "") {
+  open(win, initial = "", options = {}) {
     if (!panels.has(win)) panels.set(win, new Panel(win));
-    panels.get(win).open(initial);
+    panels.get(win).open(initial, options);
   },
 
   toggle(win) {

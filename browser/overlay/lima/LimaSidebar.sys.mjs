@@ -50,6 +50,40 @@ function glyph(doc, name) {
   return node;
 }
 
+// MARK: Notices
+//
+// Results and failures of sidebar actions appear in a small notice above
+// the dock, never only in a log. Failures stay until dismissed or retried.
+
+export function showSidebarNotice(win, { title, detail = "", tone = "ok", actions = [] }) {
+  const doc = win.document;
+  let notice = doc.getElementById("lima-action-notice");
+  if (!notice) {
+    notice = el(doc, "div", { id: "lima-action-notice", role: "status", hidden: true });
+    const host = doc.getElementById("lima-dock-main") ?? doc.getElementById("lima-dock");
+    if (!host) { log(`${title}: ${detail}`); return; }
+    host.prepend(notice);
+  }
+  win.clearTimeout(notice.limaTimer);
+  const hide = () => { notice.hidden = true; notice.replaceChildren(); };
+  notice.dataset.tone = tone;
+  notice.setAttribute("role", tone === "bad" ? "alert" : "status");
+  notice.replaceChildren(
+    el(doc, "div", { class: "lima-action-copy" }, el(doc, "strong", { text: title }), detail ? el(doc, "span", { text: detail }) : null,
+      actions.length ? el(doc, "div", { class: "lima-action-buttons" }, ...actions.map(([label, run]) =>
+        el(doc, "button", { onclick: () => { hide(); Promise.resolve().then(run).catch(error => failed(win, label, error, run)); } }, label))) : null),
+    el(doc, "button", { class: "lima-action-close", title: "Dismiss", "aria-label": "Dismiss", onclick: hide }, glyph(doc, "close")));
+  notice.hidden = false;
+  if (tone !== "bad") notice.limaTimer = win.setTimeout(hide, 6000);
+}
+
+/** A sidebar action failed: say which one and why, and offer a retry. */
+export function failed(win, label, error, retry) {
+  log(`${label}: ${error}`);
+  showSidebarNotice(win, { title: "Couldn't complete this action.", detail: `${label}: ${error?.message ?? error}`, tone: "bad",
+    actions: retry ? [["Retry", retry]] : [] });
+}
+
 // MARK: Creating things
 
 export const LimaCreate = {
@@ -89,15 +123,10 @@ export const LimaCreate = {
       if (!directory) return;
       name = directory.split("/").filter(Boolean).pop() ?? name;
     }
-    let workspace;
-    try {
-      const provider = Services.prefs.getStringPref("lima.agent.provider", "claude");
-      const model = Services.prefs.getStringPref("lima.agent.model." + provider, "default");
-      workspace = await lazy.LimaBridge.request("workspace.create", { name, directory, provider, model });
-    } catch (error) {
-      win.alert?.(`Couldn't create the workspace: ${error.message}`);
-      return;
-    }
+    const provider = Services.prefs.getStringPref("lima.agent.provider", "claude");
+    const model = Services.prefs.getStringPref("lima.agent.model." + provider, "default");
+    // Failures reach the caller's notice (with Retry) instead of an alert.
+    const workspace = await lazy.LimaBridge.request("workspace.create", { name, directory, provider, model });
     // The reconciler builds the folder from the workspace.created event.
     for (let i = 0; i < 40; i++) {
       const folder = lazy.LimaWorkspaces.folderFor(workspace.id, "folder", win);
@@ -107,6 +136,7 @@ export const LimaCreate = {
       }
       await new Promise(resolve => win.setTimeout(resolve, 100));
     }
+    throw new Error(`“${workspace.name}” was created, but its sidebar folder didn't appear. Reopen Lima to restore it.`);
   },
 };
 
@@ -137,7 +167,7 @@ function installMenus(win) {
     node.setAttribute("label", label);
     node.setAttribute("image", ICON(iconName));
     node.classList.add("menuitem-iconic", "lima-menuitem");
-    node.addEventListener("command", () => Promise.resolve().then(command).catch(error => log(`${label}: ${error}`)));
+    node.addEventListener("command", () => Promise.resolve().then(command).catch(error => failed(win, label, error, command)));
     return node;
   };
   const separator = id => Object.assign(doc.createElementNS(XUL, "menuseparator"), { id });
@@ -171,11 +201,13 @@ function installMenus(win) {
     let target = null;
     const inFolder = (id, label, iconName, fn) => item(id, label, iconName, () => fn(target));
     const own = [
-      inFolder("lima-folder-chat", "Open Chat", "star", f => lazy.LimaWorkspaces.openChat(win, f.getAttribute("lima-workspace"))),
+      inFolder("lima-folder-chat", "Open Agent", "star", f => lazy.LimaWorkspaces.openChat(win, f.getAttribute("lima-workspace"))),
       inFolder("lima-folder-tab", "New Tab Here", "tab", f => { const tab = win.gBrowser.addTab("about:blank", { triggeringPrincipal: system() }); LimaCreate.place(win, tab, f); lazy.LimaSearchPanel.open(win); }),
       inFolder("lima-folder-note", "New Note Here", "note", f => LimaCreate.note(win, f)),
       inFolder("lima-folder-terminal", "New Terminal Here", "terminal", f => LimaCreate.terminal(win, f)),
-      inFolder("lima-folder-dismiss", "Dismiss Agent", "close", f => lazy.LimaWorkspaces.archive(win, f.getAttribute("lima-workspace"))),
+      inFolder("lima-folder-rename", "Rename Workspace", "file", f => f.rename()),
+      inFolder("lima-folder-reveal", "Reveal Project Folder", "folder", f => lazy.LimaBridge.request("workspace.reveal", { id: f.getAttribute("lima-workspace") })),
+      inFolder("lima-folder-dismiss", "Dismiss Finished Agent", "close", f => lazy.LimaWorkspaces.archive(win, f.getAttribute("lima-workspace"))),
       inFolder("lima-folder-remove", "Archive Workspace…", "trash", f => lazy.LimaWorkspaces.archive(win, f.getAttribute("lima-workspace"))),
       separator("lima-folder-sep"),
     ];
@@ -191,21 +223,120 @@ function installMenus(win) {
       doc.getElementById("lima-folder-note").hidden = !target;
       doc.getElementById("lima-folder-dismiss").hidden = !agent;
       doc.getElementById("lima-folder-remove").hidden = !workspace || agent;
+      doc.getElementById("lima-folder-rename").hidden = !workspace || agent;
+      doc.getElementById("lima-folder-reveal").hidden = !workspace || agent;
       const deleteItem = doc.getElementById("context_zenFolderDelete");
       if (deleteItem) deleteItem.hidden = !!workspace;
+      // Rename Workspace replaces Zen's own Rename on workspace folders.
+      const renameItem = doc.getElementById("context_zenFolderRename");
+      if (renameItem) renameItem.hidden = !!workspace && !agent;
     });
   }
 
-  // Right-click on a tab: create next to it (in its folder).
+  // Right-click on a tab: create next to it (in its folder), or bring the
+  // page into Lima: a workspace, a question, or an agent's task.
   const tabMenu = doc.getElementById("tabContextMenu");
   if (tabMenu && !doc.getElementById("lima-tabctx-note")) {
-    const folderOfTab = () => win.TabContextMenu?.contextTab?.group?.isZenFolder ? win.TabContextMenu.contextTab.group : null;
+    const contextTab = () => win.TabContextMenu?.contextTab;
+    const folderOfTab = () => contextTab()?.group?.isZenFolder ? contextTab().group : null;
+    const addTo = workspaceMenu(win, "lima-tabctx-add", "Add Tab to Workspace", (workspace, tab) => {
+      lazy.LimaWorkspaces.addTab(win, workspace.id, tab);
+      showSidebarNotice(win, { title: `Added to ${workspace.name}`, detail: tab.label, actions: [["Open Agent", () => lazy.LimaWorkspaces.openChat(win, workspace.id)]] });
+    }, contextTab);
     tabMenu.prepend(
+      addTo,
+      item("lima-tabctx-ask", "Ask Lima About Page", "star", () => askAboutPage(win, pageOf(contextTab()?.linkedBrowser))),
+      item("lima-tabctx-send", "Send Page to Agent", "workspace", () => sendPageToAgent(win, pageOf(contextTab()?.linkedBrowser))),
+      separator("lima-tabctx-page-sep"),
       item("lima-tabctx-note", "New Note", "note", () => LimaCreate.note(win, folderOfTab())),
       item("lima-tabctx-terminal", "New Terminal", "terminal", () => LimaCreate.terminal(win, folderOfTab())),
       item("lima-tabctx-workspace", "New AI Workspace", "star", () => LimaCreate.workspace(win)),
       separator("lima-tabctx-sep"));
+    tabMenu.addEventListener("popupshowing", event => {
+      if (event.target !== tabMenu) return;
+      const web = /^https?:/.test(contextTab()?.linkedBrowser?.currentURI?.spec ?? "") && !lazy.PrivateBrowsingUtils.isWindowPrivate(win);
+      for (const id of ["lima-tabctx-add", "lima-tabctx-ask", "lima-tabctx-send", "lima-tabctx-page-sep"]) doc.getElementById(id).hidden = !web;
+      addTo.disabled = !lazy.LimaWorkspaces.roots(win).length;
+    });
   }
+
+  // Right-click on a page or a selection.
+  const content = doc.getElementById("contentAreaContextMenu");
+  if (content && !doc.getElementById("lima-page-ask")) {
+    const page = () => pageOf(win.gContextMenu?.browser);
+    const selection = () => String(win.gContextMenu?.selectionInfo?.fullText ?? win.gContextMenu?.contentData?.selectionInfo?.fullText ?? "").trim();
+    const items = [
+      separator("lima-page-sep"),
+      item("lima-page-summarize", "Summarize Selection", "star", () => {
+        const current = page();
+        lazy.LimaSearchPanel.open(win, "", { context: { kind: "selection", ...current, text: selection() }, ask: "Summarize the selected text." });
+      }),
+      item("lima-page-save", "Save Selection to Note", "note", () => saveSelection(win, page(), selection())),
+      item("lima-page-ask", "Ask Lima About Page", "star", () => askAboutPage(win, page())),
+    ];
+    content.append(...items);
+    content.addEventListener("popupshowing", event => {
+      if (event.target !== content) return;
+      const current = page();
+      const allowed = /^https?:/.test(current.url) && !lazy.PrivateBrowsingUtils.isWindowPrivate(win);
+      const selected = allowed && win.gContextMenu?.isTextSelected && !!selection();
+      doc.getElementById("lima-page-sep").hidden = !allowed;
+      doc.getElementById("lima-page-ask").hidden = !allowed;
+      doc.getElementById("lima-page-summarize").hidden = !selected;
+      doc.getElementById("lima-page-save").hidden = !selected;
+    });
+  }
+}
+
+/** The page a browser shows: title and URL only. */
+function pageOf(browser) {
+  return { url: browser?.currentURI?.spec ?? "", title: String(browser?.contentTitle || browser?.currentURI?.host || "").slice(0, 200) };
+}
+
+/** A menu listing this window's workspaces; `choose(workspace, tab)` runs on pick. */
+function workspaceMenu(win, id, label, choose, contextTab) {
+  const doc = win.document;
+  const menu = doc.createXULElement("menu");
+  menu.id = id;
+  menu.setAttribute("label", label);
+  menu.classList.add("menu-iconic", "lima-menuitem");
+  menu.setAttribute("image", ICON("workspace"));
+  const popup = doc.createXULElement("menupopup");
+  menu.append(popup);
+  popup.addEventListener("popupshowing", event => {
+    if (event.target !== popup) return;
+    const tab = contextTab();
+    popup.replaceChildren(...lazy.LimaWorkspaces.roots(win).map(workspace => {
+      const entry = doc.createXULElement("menuitem");
+      entry.setAttribute("label", workspace.name);
+      entry.addEventListener("command", () => {
+        try { choose(workspace, tab); } catch (error) { failed(win, label, error, () => choose(workspace, tab)); }
+      });
+      return entry;
+    }));
+  });
+  return menu;
+}
+
+function askAboutPage(win, page) {
+  if (!/^https?:/.test(page.url)) throw new Error("Lima can only ask about web pages.");
+  lazy.LimaSearchPanel.open(win, "", { context: { kind: "page", ...page } });
+}
+
+/** The Companion opens with the page named in its draft; nothing is sent
+ * until the user sends it, and they can see exactly what is shared. */
+function sendPageToAgent(win, page) {
+  if (!/^https?:/.test(page.url)) throw new Error("Only web pages can be sent to an agent.");
+  win.dispatchEvent(new win.CustomEvent("LimaAssistantOpen", { detail: { draft: `Use this page: ${page.title}\n${page.url}\n\n` } }));
+}
+
+async function saveSelection(win, page, text) {
+  if (!text) throw new Error("Select some text on the page first.");
+  const quoted = text.slice(0, 40000).split("\n").map(line => `> ${line}`).join("\n");
+  const title = page.title ? `From ${page.title}`.slice(0, 100) : "Saved Selection";
+  const note = await lazy.LimaNotesBookmarks.createNote({ title, kind: "classic", markdown: `${quoted}\n\nSource: [${page.title || page.url}](${page.url})\n` });
+  showSidebarNotice(win, { title: "Selection saved", detail: note.title,
+    actions: [["Open Note", () => lazy.LimaTabs.openOrFocus(win, `about:lima?note=${encodeURIComponent(note.id)}`)]] });
 }
 
 // MARK: Dock: music + dictation
