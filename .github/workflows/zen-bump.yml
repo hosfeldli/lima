@@ -7,7 +7,11 @@ name: Zen bump
 # person. A Firefox version change marks the update critical. Any failure
 # opens (or updates) an issue, which notifies the repository owner.
 #
-# The check runs on Linux; the macOS job starts only for a new release.
+# If the pin on main is current but the live feed still serves an older Zen,
+# an earlier run failed after pushing the bump. The resume job then finishes
+# that release from the step that failed. Both wait while a release runs.
+#
+# The check runs on Linux; macOS jobs start only when there is work.
 on:
   schedule:
     - cron: "17 */3 * * *"
@@ -35,9 +39,11 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      actions: read     # see whether a release is already running
     outputs:
       tag: ${{ steps.check.outputs.tag }}
       needed: ${{ steps.check.outputs.needed }}
+      resume: ${{ steps.check.outputs.resume }}
     env:
       GH_TOKEN: ${{ github.token }}
       REQUESTED: ${{ inputs.tag }}
@@ -55,8 +61,22 @@ jobs:
           [[ "$latest" =~ ^[0-9A-Za-z._-]+$ ]] || { echo "unexpected tag: $latest"; exit 1; }
           echo "tag=$latest" >> "$GITHUB_OUTPUT"
           [[ $status == 0 || $status == 10 ]] || exit "$status"
-          if [[ $status == 10 ]]; then echo "needed=true"; else echo "needed=false"; fi >> "$GITHUB_OUTPUT"
-          echo "Zen latest: $latest (pinned is current: $([[ $status == 0 ]] && echo yes || echo no))"
+          running="$(gh run list -R "$GITHUB_REPOSITORY" --workflow release.yml --json status \
+            --jq '[.[] | select(.status != "completed")] | length')"
+          feed="$(python3 -c 'import json; print(json.load(open("browser/release.json"))["updates"]["feedURL"])')"
+          live="$(curl -fsSL --proto '=https' --max-time 30 -H 'Cache-Control: no-cache' "$feed" \
+            | python3 -c 'import json, sys; print(json.load(sys.stdin)["engine"].split()[1])')"
+          needed=false resume=false
+          if [[ "$running" != 0 ]]; then
+            echo "A release run is in progress; checking again next time."
+          elif [[ $status == 10 ]]; then
+            needed=true
+          elif [[ "$live" != "$latest" ]]; then
+            resume=true
+          fi
+          echo "needed=$needed" >> "$GITHUB_OUTPUT"
+          echo "resume=$resume" >> "$GITHUB_OUTPUT"
+          echo "Zen latest: $latest, pinned current: $([[ $status == 0 ]] && echo yes || echo no), live feed: zen $live, release running: $running"
 
   bump:
     needs: check
@@ -115,6 +135,64 @@ jobs:
         run: |
           title="Automated Zen $ZEN_TAG update failed"
           body="The [Zen bump run]($GITHUB_SERVER_URL/$REPOSITORY/actions/runs/$GITHUB_RUN_ID) for Zen $ZEN_TAG failed, so this security update has not shipped. It retries every three hours; fix the cause or run the workflow manually."
+          existing="$(gh issue list -R "$REPOSITORY" --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')"
+          if [[ -n "$existing" ]]; then
+            gh issue comment "$existing" -R "$REPOSITORY" --body "$body"
+          else
+            gh issue create -R "$REPOSITORY" --title "$title" --body "$body"
+          fi
+
+  resume:
+    needs: check
+    if: needs.check.outputs.resume == 'true'
+    runs-on: macos-15
+    timeout-minutes: 20
+    permissions:
+      contents: write   # version commit and release tag on main
+      actions: write    # dispatch the release workflow
+      issues: write     # report failures
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ZEN_TAG: ${{ needs.check.outputs.tag }}
+      REPOSITORY: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Finish the interrupted release
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          feed="$(python3 -c 'import json; print(json.load(open("browser/release.json"))["updates"]["feedURL"])')"
+          curl -fsSL --proto '=https' --max-time 30 -H 'Cache-Control: no-cache' -o "$RUNNER_TEMP/live.json" "$feed"
+          read -r live_build live_gecko < <(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d["build"], d["engine"].split()[-1])' "$RUNNER_TEMP/live.json")
+          gecko="$(python3 -c 'import json; print(json.load(open("browser/lima.lock.json"))["zen"]["firefoxVersion"])')"
+          critical="$([[ "$gecko" != "$live_gecko" ]] && echo true || echo false)"
+          build() { browser/scripts/release/release.sh check | awk -F'[()]' '{print $2}'; }
+          if [[ "$(build)" == "$live_build" ]]; then
+            echo "The Zen bump is on main without a version bump; preparing one."
+            browser/scripts/release/release.sh prepare --bump patch --push
+          fi
+          tag="v$(tr -d '[:space:]' < VERSION)"
+          if ! git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            browser/scripts/release/release.sh tag --push
+          fi
+          staged="$(gh release view "$tag" -R "$REPOSITORY" --json isDraft,assets \
+            --jq 'select(.isDraft) | [.assets[].name] | index("latest.json") != null' 2>/dev/null || true)"
+          if [[ "$staged" == true ]]; then
+            gh workflow run release.yml -R "$REPOSITORY" -f tag="$tag" -f publish=true -f critical="$critical" -f publish_only=true
+            echo "Resumed publishing the staged $tag (critical=$critical)." >> "$GITHUB_STEP_SUMMARY"
+          else
+            gh workflow run release.yml -R "$REPOSITORY" -f tag="$tag" -f publish=true -f critical="$critical"
+            echo "Dispatched a full release of $tag (critical=$critical)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Report failure
+        if: failure()
+        run: |
+          title="Automated Zen $ZEN_TAG update failed"
+          body="The [resume run]($GITHUB_SERVER_URL/$REPOSITORY/actions/runs/$GITHUB_RUN_ID) could not finish the Zen $ZEN_TAG release. See *Recovering a failed release* in docs/RELEASING.md."
           existing="$(gh issue list -R "$REPOSITORY" --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')"
           if [[ -n "$existing" ]]; then
             gh issue comment "$existing" -R "$REPOSITORY" --body "$body"

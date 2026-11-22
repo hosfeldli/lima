@@ -1,9 +1,40 @@
 # Lima source build migration
 
-**Status (2026-11-21): on hold.** Security updates ship through the automated repack
-(`docs/RELEASING.md`), which also applies Lima's branding. A source build can't ship a Firefox fix before
-Zen's release does, and it takes hours per architecture. The tooling below stays for an occasional
-fully compiled identity.
+## Status (2026-11-21): incomplete, no source-built app exists
+
+The owner first asked to finish this migration, then chose the automated repack for releases. Security
+updates have to ship as soon as Zen publishes them, without anyone at the Mac. A source build can't ship a
+Firefox fix before Zen's release, because it waits on Zen's rebase. It also takes hours per architecture.
+The repack now applies Lima's branding as well (`docs/architecture/build.md`). This section records where
+the source build actually stopped, so it can be resumed.
+
+**What ran (arm64, `browser/work/zen-300f9292ddba-arm64`, Zen `300f9292ddba`, Firefox 160.0.1):**
+- Preparation completed: verified source archive, Surfer import with the Lima identity edits, Gecko
+  toolchain bootstrap, and Zen's en-US strings copied in. `mach configure` passed with the Lima identity:
+  app name `lima`, bundle ID `dev.lima.browser`, vendor and profile `Lima` / `Lima Browser`, remoting `lima`.
+- The compile ran about 74 minutes with three jobs. It reached `toolkit/xre` and `uriloader`, then stopped
+  when the disk filled up (1.6 GB free; the object directory was 10 GB). This was not a compiler error.
+- No `mach package` ran and no `build/source/Lima.app` exists. The owner asked for the work directory to be
+  deleted to free 16 GB, so a resume starts over from `make source-prepare`.
+
+**Never exercised, because no app was built:**
+- `prepare_source.py engine` against a finished tree, `build-source.sh package`, `verify_source_bundle.py`,
+  and the source-mode paths in `repack.sh` (no launcher, `MacOS/lima` as the engine).
+- `CodeTrust` and `lima_codesign.py` with a compiled `MacOS/lima`. Unit tests cover the layout rule only.
+- `source_smoke.py` on a compiled bundle, including `check_bundle`'s scan for Zen names.
+
+**Open parity gates (none passed):**
+- **Architectures:** arm64 never finished. x86_64 (Intel) was never attempted. Hosted Intel runners and
+  the 6-hour job limit make it impractical in CI.
+- **Locales:** only en-US is wired in. Other locales need Zen's `download-language-packs.sh` step.
+- **Rollback into the existing profile:** the compiled app reports Gecko's version (160.0.1) where the
+  repack reports 5.0.1. Opening a source-built profile with the repack again triggers Gecko's downgrade
+  warning. Profile and keychain continuity with a real 5.0.1 profile is untested.
+- **Signed update from 5.0.1**, DRM/Widevine and codecs, macOS permissions, and performance: as in the
+  acceptance table below.
+
+**To resume:** free at least 35 GB, or set `LIMA_SOURCE_WORK` to a larger volume. Then run
+`LIMA_SOURCE_JOBS=3 make browser-source`, and work through the handoff and acceptance gates below.
 
 ## Goal
 

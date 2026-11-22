@@ -22,6 +22,11 @@ on:
         required: true
         default: false
         type: boolean
+      publish_only:
+        description: Skip the build and publish the already staged draft (recovery)
+        required: false
+        default: false
+        type: boolean
 
 permissions: {}
 
@@ -32,6 +37,7 @@ concurrency:
 jobs:
   build:
     name: Build, sign and stage
+    if: ${{ !inputs.publish_only }}
     runs-on: macos-15
     timeout-minutes: 90
     environment: release
@@ -78,7 +84,8 @@ jobs:
   publish:
     name: Publish to the update feed
     needs: build
-    if: inputs.publish
+    # Runs after a successful build, or alone to resume a staged draft.
+    if: ${{ !cancelled() && inputs.publish && (needs.build.result == 'success' || (inputs.publish_only && needs.build.result == 'skipped')) }}
     runs-on: macos-15
     timeout-minutes: 20
     environment: release-publish
@@ -121,7 +128,7 @@ jobs:
       - name: Open or update an issue
         run: |
           title="Release $TAG failed"
-          body="The [release run]($GITHUB_SERVER_URL/$REPOSITORY/actions/runs/$GITHUB_RUN_ID) for $TAG failed before reaching installs. Rerun it once the cause is fixed: gh workflow run release.yml -f tag=$TAG -f publish=true"
+          body="The [release run]($GITHUB_SERVER_URL/$REPOSITORY/actions/runs/$GITHUB_RUN_ID) for $TAG failed. Installs may already see it if the publish job got past the feed swap. Follow *Recovering a failed release* in docs/RELEASING.md: check the live feed first, then resume with publish_only=true if $TAG is already staged."
           existing="$(gh issue list -R "$REPOSITORY" --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')"
           if [[ -n "$existing" ]]; then
             gh issue comment "$existing" -R "$REPOSITORY" --body "$body"

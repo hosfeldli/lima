@@ -362,25 +362,41 @@ cmd_publish() {
   : "${LIMA_UPDATE_BUCKET:?LIMA_UPDATE_BUCKET is required}"
   require gh gcloud curl swift
   validate_tag "$tag"
-  [[ "$(gh release view "$tag" -R "$REPOSITORY" --json isDraft --jq .isDraft)" == true ]] || fail "$tag is not a staged draft"
+  local draft live resumed=0
+  draft="$(gh release view "$tag" -R "$REPOSITORY" --json isDraft --jq .isDraft)"
   work="$(mktemp -d)"
   gh release download "$tag" -R "$REPOSITORY" -D "$work" -p latest.json -p latest.json.sig -p SHA256SUMS
   swift "$ED25519" verify "$UPDATE_PUBLIC_KEY" "$work/latest.json" "$work/latest.json.sig" >/dev/null || fail "staged feed signature"
   [[ "$(json "$work/latest.json" "['build']")" == "$(build_number "$v")" ]] || fail "staged feed is not $tag"
-  (( $(build_number "$v") > $(published_feed_build) )) || fail "$tag is not newer than the live feed"
+  live="$(published_feed_build)"
+  # A publish that failed after the feed swap left installs seeing this
+  # release. Resume the remaining idempotent steps instead of refusing.
+  if (( live == $(build_number "$v") )); then
+    curl -fsSL --proto '=https' -H 'Cache-Control: no-cache' -o "$work/live.json" "$FEED_URL"
+    cmp -s "$work/live.json" "$work/latest.json" || fail "the live feed has build $live but is not the staged $tag feed"
+    resumed=1
+    echo "The live feed already serves $tag; resuming the steps after the feed swap"
+  else
+    [[ "$draft" == true ]] || fail "$tag is not a staged draft"
+    (( $(build_number "$v") > live )) || fail "$tag is not newer than the live feed"
+  fi
 
   step "Checking the public download"
   curl -fsSL --proto '=https' -o "$work/download.zip" "$(json "$work/latest.json" "['url']")"
   [[ "$(sha256 "$work/download.zip")" == "$(json "$work/latest.json" "['sha256']")" ]] || fail "public zip does not match the signed feed"
 
-  step "Publishing the feed"
   local cache=(--cache-control="no-cache, max-age=0")
-  gcloud storage cp "${cache[@]}" --content-type=text/plain "$work/latest.json.sig" "gs://$LIMA_UPDATE_BUCKET/stable/latest.json.sig"
-  gcloud storage cp "${cache[@]}" --content-type=application/json "$work/latest.json" "gs://$LIMA_UPDATE_BUCKET/stable/latest.json"
+  if (( ! resumed )); then
+    step "Publishing the feed"
+    gcloud storage cp "${cache[@]}" --content-type=text/plain "$work/latest.json.sig" "gs://$LIMA_UPDATE_BUCKET/stable/latest.json.sig"
+    gcloud storage cp "${cache[@]}" --content-type=application/json "$work/latest.json" "gs://$LIMA_UPDATE_BUCKET/stable/latest.json"
+  fi
   # lima.liamhosfeld.com/download redirects here: always the newest published DMG.
   gcloud storage cp "${cache[@]}" --content-type=application/x-apple-diskimage \
     "gs://$LIMA_UPDATE_BUCKET/stable/$v/Lima-$v.dmg" "gs://$LIMA_UPDATE_BUCKET/stable/Lima.dmg"
-  gh release edit "$tag" -R "$REPOSITORY" --draft=false --latest
+  if [[ "$draft" == true ]]; then
+    gh release edit "$tag" -R "$REPOSITORY" --draft=false --latest
+  fi
 
   step "Verifying the live feed"
   curl -fsSL --proto '=https' -H 'Cache-Control: no-cache' -o "$work/live.json" "$FEED_URL"

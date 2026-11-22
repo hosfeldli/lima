@@ -11,12 +11,22 @@ installed app's signature.
 release.sh prepare --bump patch --push      VERSION, lima-host Info.plist, limaRuntimeVersion
 release.sh tag --push                       annotated vX.Y.Z on origin/main (immutable)
 gh workflow run release.yml -f tag=vX.Y.Z -f publish=true -f critical=false
-  └─ build   (environment: release, approval)
+  └─ build   (environment: release, no reviewers; skipped with publish_only=true)
        preflight → tests → signed repack → zip + DMG → signed feed → verify
        → private archive (GCS) → public versioned downloads (GCS) → GitHub draft
-  └─ publish (environment: release-publish, second approval, no signing keys)
-       verify staged feed + public download → upload latest.json(.sig) → GitHub release
+  └─ publish (environment: release-publish, no reviewers, no signing keys)
+       verify staged feed + public download → upload latest.json(.sig)
+       → stable/Lima.dmg → un-draft GitHub release → verify live feed
 ```
+
+`zen-bump.yml` runs this whole path unattended (see *Automatic security releases*). Neither environment
+requires approval. The environments separate credentials instead:
+- `release` is the only environment that can read the signing certificate and the feed key from
+  Secret Manager.
+- `release-publish` can write to the updates bucket but holds no keys.
+
+GCP issues either credential only to jobs dispatched from `main`. The checks below gate every release,
+attended or not.
 
 The phases also run locally, one at a time: `release.sh preflight|build|verify|stage|publish --tag vX.Y.Z`.
 
@@ -46,8 +56,16 @@ Every three hours a Linux job compares Zen's latest release with the pin. When t
 3. Commits the bump, then runs `release.sh prepare --bump patch --push` and `release.sh tag --push`.
 4. Dispatches `release.yml` with `publish=true`. It sets `critical=true` when the Firefox version changed.
 
-Any failure opens or updates a "failed" issue, which notifies you. The scheduled check retries every three
-hours. Commits land on `main` as `github-actions[bot]`, so pull before starting local work. Both release
+Any failure opens or updates a "failed" issue, which notifies you. A failure before step 3 pushes nothing,
+and the next check retries the whole bump. After step 3 the pin on `main` is current, so the check compares
+it with the engine in the live feed. If they differ and no release is running, a `resume` job finishes
+that release:
+- It bumps the version if only the Zen commit landed.
+- It creates the tag if that's missing.
+- It dispatches `release.yml` with `publish_only=true` if the draft is already staged, or a full release
+  otherwise.
+
+Neither job starts while a release run is queued or in progress. Commits land on `main` as `github-actions[bot]`, so pull before starting local work. Both release
 environments must stay free of required reviewers, or the unattended release stops for approval.
 Rebranding edits that no longer match Zen's files are reported as warnings in the job summary. They
 never block a security update. Only a missing Lima `brand.ftl` fails the build.
@@ -66,6 +84,25 @@ never block a security update. Only a missing Lima `brand.ftl` fails the build.
    verifies the installed app before reopening the original profile. A failed verification restores the old
    bundle. The previous app is stored under `~/Library/Application Support/Lima Browser/Updates/previous`.
    The log is `~/Library/Logs/Lima/update.log`.
+
+## Recovering a failed release
+
+Start by finding out what went live. Don't rerun the workflow blind.
+
+```
+curl -s https://storage.googleapis.com/lima-updates-940267100054/stable/latest.json | python3 -m json.tool
+gh release view vX.Y.Z --json isDraft,assets --jq '{isDraft, assets: [.assets[].name]}'
+```
+
+| What you see | State | What to do |
+|---|---|---|
+| Feed `build` is the new release | **Live.** Installs already see it, and the feed swap is irreversible. A later step failed: the default DMG, un-drafting the GitHub release, or verifying the live feed | `gh workflow run release.yml -f tag=vX.Y.Z -f publish=true -f publish_only=true`. Publish resumes after the feed swap |
+| Feed is older, and the draft has `latest.json` | Staged, not live | Same command. Rebuilding would make new bytes, which staging refuses (objects are immutable) |
+| Feed is older, and there's no draft or `latest.json` | Build or staging failed | Fix the cause, then `gh workflow run release.yml -f tag=vX.Y.Z -f publish=true`. A partial stage refuses rebuilt bytes, so if that happens release the next patch version instead |
+| Zen bump on `main`, but no `vX.Y.Z` tag | Tagging or dispatch failed | Wait for the next check (the `resume` job handles it), or run `zen-bump.yml` manually |
+
+There is no un-publish. A bad live release is fixed by releasing a higher build. Close the "failed" issue
+once the live feed shows the intended build.
 
 ## Infrastructure (configured 2026-11-21)
 
