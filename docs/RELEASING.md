@@ -35,18 +35,36 @@ Each phase protects something specific:
 Security releases (a Zen bump that changes Firefox): pass `critical=true`. Lima then shows a high-priority
 "includes security fixes" bar.
 
+## Automatic security releases
+
+Zen ships Firefox's security fixes, so `zen-bump.yml` releases a new Zen tag without waiting for a person.
+Every three hours a Linux job compares Zen's latest release with the pin. When they differ, a macOS job:
+
+1. Runs `bump-zen.sh`, which verifies Zen's Developer ID team, notarization and DMG digest.
+2. Runs the native tests, repacks Lima (including the Lima rebranding of Zen's `omni.ja`), and runs
+   `source_smoke.py` headless against the result.
+3. Commits the bump, then runs `release.sh prepare --bump patch --push` and `release.sh tag --push`.
+4. Dispatches `release.yml` with `publish=true`. It sets `critical=true` when the Firefox version changed.
+
+Any failure opens or updates a "failed" issue, which notifies you. The scheduled check retries every three
+hours. Commits land on `main` as `github-actions[bot]`, so pull before starting local work. Both release
+environments must stay free of required reviewers, or the unattended release stops for approval.
+Rebranding edits that no longer match Zen's files are reported as warnings in the job summary. They
+never block a security update. Only a missing Lima `brand.ftl` fails the build.
+
 ## How installs update
 
-1. Every six hours the browser asks `lima-host` to run `update.check`.
+1. Lima checks shortly after startup and every six hours. **Settings → Updates** also offers a manual check.
 2. `lima-host` fetches `latest.json` and `latest.json.sig` and verifies the Ed25519 signature against the key
    compiled into the app's `Info.plist`. It rejects anything that isn't a strictly newer build, isn't https,
    or isn't on the feed's host.
 3. It downloads the zip, checks size and SHA-256 against the signed feed, and extracts it. The new app must
    satisfy the installed app's designated requirement (same identifier, same pinned certificate) with strict
    and nested-code validation.
-4. "Restart to update" starts `lima-host apply-update`, which waits for the browser to quit, re-verifies,
-   swaps the bundle and verifies it again. On failure it restores the old app. It keeps the previous app in
-   `~/Library/Application Support/Lima Browser/Updates/previous` for `update.rollback`, and relaunches.
+4. **Restart to update** passes the active Gecko profile directory to `lima-host apply-update`. The helper waits
+   for the browser to quit, verifies the replacement, and exchanges the app bundles on the same volume. It
+   verifies the installed app before reopening the original profile. A failed verification restores the old
+   bundle. The previous app is stored under `~/Library/Application Support/Lima Browser/Updates/previous`.
    The log is `~/Library/Logs/Lima/update.log`.
 
 ## Infrastructure (configured 2026-11-21)

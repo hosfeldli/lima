@@ -1,18 +1,27 @@
 name: Zen bump
 
-# Daily: if Zen shipped a new release (which is how Firefox security fixes
-# reach Lima), verify its signature and notarization, repack and verify Lima
-# against it, and open a pull request. Nothing is released automatically.
-# The daily check runs on Linux; the macOS job starts only for a new release.
+# Every three hours: if Zen shipped a new release (which is how Firefox
+# security fixes reach Lima), verify its signature and notarization, repack
+# Lima against it, run the native tests and a headless runtime smoke test,
+# then commit, tag and release it to the update feed without waiting for a
+# person. A Firefox version change marks the update critical. Any failure
+# opens (or updates) an issue, which notifies the repository owner.
+#
+# The check runs on Linux; the macOS job starts only for a new release.
 on:
   schedule:
-    - cron: "17 7 * * *"
+    - cron: "17 */3 * * *"
   workflow_dispatch:
     inputs:
       tag:
         description: Zen tag (default latest)
         required: false
         type: string
+      release:
+        description: Tag and publish after verification
+        required: false
+        default: true
+        type: boolean
 
 permissions: {}
 
@@ -26,7 +35,6 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      pull-requests: read
     outputs:
       tag: ${{ steps.check.outputs.tag }}
       needed: ${{ steps.check.outputs.needed }}
@@ -47,52 +55,69 @@ jobs:
           [[ "$latest" =~ ^[0-9A-Za-z._-]+$ ]] || { echo "unexpected tag: $latest"; exit 1; }
           echo "tag=$latest" >> "$GITHUB_OUTPUT"
           [[ $status == 0 || $status == 10 ]] || exit "$status"
-          open=0
-          if [[ $status == 10 ]]; then
-            open="$(gh pr list --head "zen-bump/$latest" --state open --json number --jq length)"
-          fi
-          if [[ $status == 10 && "$open" == 0 ]]; then echo "needed=true"; else echo "needed=false"; fi >> "$GITHUB_OUTPUT"
-          echo "Zen latest: $latest (pinned is current: $([[ $status == 0 ]] && echo yes || echo no), open PRs: $open)"
+          if [[ $status == 10 ]]; then echo "needed=true"; else echo "needed=false"; fi >> "$GITHUB_OUTPUT"
+          echo "Zen latest: $latest (pinned is current: $([[ $status == 0 ]] && echo yes || echo no))"
 
   bump:
     needs: check
     if: needs.check.outputs.needed == 'true'
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 75
     permissions:
-      contents: write
-      pull-requests: write
+      contents: write   # bump commit and release tag on main
+      actions: write    # dispatch the release workflow
+      issues: write     # report failures
     env:
       GH_TOKEN: ${{ github.token }}
       ZEN_TAG: ${{ needs.check.outputs.tag }}
       REPOSITORY: ${{ github.repository }}
+      RELEASE: ${{ github.event_name == 'schedule' || inputs.release }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: true
+          fetch-depth: 0
           persist-credentials: false
-      - name: Bump, repack and verify
+      - name: Bump and verify Zen
+        id: bump
         run: |
+          before="$(python3 -c 'import json; print(json.load(open("browser/lima.lock.json"))["zen"]["firefoxVersion"])')"
           browser/scripts/bump-zen.sh "$ZEN_TAG" | tee "$RUNNER_TEMP/bump.txt"
-          swift test --package-path native
-          browser/scripts/repack.sh
-      - name: Open pull request
+          after="$(python3 -c 'import json; print(json.load(open("browser/lima.lock.json"))["zen"]["firefoxVersion"])')"
+          echo "critical=$([[ "$before" != "$after" ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "Firefox $before → $after" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Native tests
+        run: swift test --package-path native
+      - name: Repack and smoke test
         run: |
-          branch="zen-bump/$ZEN_TAG"
+          browser/scripts/repack.sh 2> >(tee "$RUNNER_TEMP/repack-warnings.txt" >&2)
+          python3 browser/scripts/source_smoke.py build/Lima.app
+          if grep -q "warning:" "$RUNNER_TEMP/repack-warnings.txt"; then
+            { echo "### Repack warnings"; echo '```'; grep "warning:" "$RUNNER_TEMP/repack-warnings.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Commit, tag and release
+        if: env.RELEASE == 'true'
+        env:
+          CRITICAL: ${{ steps.bump.outputs.critical }}
+        run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch -c "$branch"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
           git add browser/lima.lock.json browser/zen-upstream
           git commit -m "Bump Zen to $ZEN_TAG"
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git" "HEAD:refs/heads/$branch"
-          {
-            echo "Automated Zen bump. Zen ships Firefox security fixes, so review and release promptly."
-            echo
-            echo '```'
-            cat "$RUNNER_TEMP/bump.txt"
-            echo '```'
-            echo
-            echo "Verified in this run: Zen Developer ID team and notarization, DMG digest, native tests, repack with hardened-runtime signing and entitlement policy."
-            echo "Still needed: \`make run\` smoke test, then \`release.sh prepare --bump patch\` and a release with critical=true if Firefox changed."
-          } > "$RUNNER_TEMP/body.md"
-          gh pr create --head "$branch" --base main --title "Bump Zen to $ZEN_TAG" --body-file "$RUNNER_TEMP/body.md"
+          browser/scripts/release/release.sh prepare --bump patch --push
+          browser/scripts/release/release.sh tag --push
+          tag="v$(tr -d '[:space:]' < VERSION)"
+          gh workflow run release.yml -R "$REPOSITORY" -f tag="$tag" -f publish=true -f critical="$CRITICAL"
+          echo "Released $tag (Zen $ZEN_TAG, critical=$CRITICAL); see the Release workflow." >> "$GITHUB_STEP_SUMMARY"
+      - name: Report failure
+        if: failure()
+        run: |
+          title="Automated Zen $ZEN_TAG update failed"
+          body="The [Zen bump run]($GITHUB_SERVER_URL/$REPOSITORY/actions/runs/$GITHUB_RUN_ID) for Zen $ZEN_TAG failed, so this security update has not shipped. It retries every three hours; fix the cause or run the workflow manually."
+          existing="$(gh issue list -R "$REPOSITORY" --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')"
+          if [[ -n "$existing" ]]; then
+            gh issue comment "$existing" -R "$REPOSITORY" --body "$body"
+          else
+            gh issue create -R "$REPOSITORY" --title "$title" --body "$body"
+          fi

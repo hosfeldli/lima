@@ -104,3 +104,27 @@ jobs:
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
       - name: Publish
         run: browser/scripts/release/release.sh publish --tag "$TAG" --yes
+
+  report:
+    name: Report failure
+    needs: [build, publish]
+    if: failure()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+      REPOSITORY: ${{ github.repository }}
+    steps:
+      - name: Open or update an issue
+        run: |
+          title="Release $TAG failed"
+          body="The [release run]($GITHUB_SERVER_URL/$REPOSITORY/actions/runs/$GITHUB_RUN_ID) for $TAG failed before reaching installs. Rerun it once the cause is fixed: gh workflow run release.yml -f tag=$TAG -f publish=true"
+          existing="$(gh issue list -R "$REPOSITORY" --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')"
+          if [[ -n "$existing" ]]; then
+            gh issue comment "$existing" -R "$REPOSITORY" --body "$body"
+          else
+            gh issue create -R "$REPOSITORY" --title "$title" --body "$body"
+          fi
