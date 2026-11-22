@@ -2,6 +2,7 @@
 import { bar, bridge, call, el, errorText, icon, markdown, onEvent, prefs, relativeTime, setPage } from "./lib.js";
 import { resultView } from "./components.js";
 import { agentControls, PROVIDERS } from "./composer.js";
+import { companion, setCompanionState } from "./companion.js";
 
 const page = (...children) => el("div", { class: "page narrow" }, ...children);
 const card = (title, ...children) => el("section", { class: "card" }, title ? el("h2", { text: title }) : null, ...children);
@@ -194,6 +195,7 @@ export async function renderIntegrations(app, section) {
     ["data", "Data & permissions", "backup recovery encryption MCP storage grants permission", [
       card("MCP for external agents", mcp), card("Encrypted storage", storage),
     ]],
+    ["updates", "Updates", "version download release restart stable check", [card(null, updateSettings())]],
   ];
   const aliases = { google: "connections", grammar: "writing" };
   let active = aliases[section] ?? (groups.some(([id]) => id === section) ? section : "general");
@@ -261,6 +263,74 @@ export async function renderIntegrations(app, section) {
       } }, "Export recovery key")));
   }
   drawStorage().catch(e => fail(storage, e));
+}
+
+function updateSettings() {
+  const mascot = companion("chat-avatar");
+  const installed = el("span", { class: "muted" });
+  const heading = el("h2", { text: "Checking update status…" });
+  const detail = el("p", { class: "muted" });
+  const outcome = el("p", { class: "update-outcome", role: "status", hidden: true });
+  const progress = el("progress", { "aria-label": "Update in progress", hidden: true });
+  const check = el("button", { class: "ghost", disabled: true, onclick: () => run("checkForUpdate") }, "Check for updates");
+  const install = el("button", { class: "primary", hidden: true, onclick: () => run("installUpdate") }, "Restart to update");
+  const checked = el("small", { class: "muted" });
+  const node = el("div", { class: "update-settings" },
+    el("div", { class: "update-summary" }, mascot, el("div", { class: "grow", role: "status" }, installed, heading, detail)),
+    progress, outcome, el("div", { class: "row update-actions" }, check, install, checked));
+  let state;
+  let working;
+  let revision = 0;
+  const phases = {
+    disabled: ["Automatic updates are off", "This build is outside the stable update channel."],
+    idle: ["Lima is up to date", ""],
+    checking: ["Checking for updates", "Contacting the Lima release server."],
+    available: ["An update is available", "Preparing the download."],
+    downloading: ["Downloading and verifying", "Lima checks the update’s signature before offering to install it."],
+    ready: ["Ready to install", "Lima will reopen using this browser profile, with your tabs, folders, and settings."],
+    installing: ["Restarting Lima", "Saving the browser session before replacing the app."],
+    failed: ["Update check failed", "Try checking again."],
+  };
+  function paint() {
+    if (!state) return;
+    const { phase, version, currentVersion, checkedAt, lastInstall, error } = state;
+    const [label, explanation] = phases[phase] ?? phases.idle;
+    const busy = working || ["checking", "available", "downloading", "installing"].includes(phase);
+    installed.textContent = currentVersion ? `Lima ${currentVersion} · ${phase === "disabled" ? "Development" : "Stable"}` : "Lima";
+    heading.textContent = phase === "ready" && version ? `Lima ${version} is ready`
+      : phase === "idle" && !checkedAt ? "Check for a new version" : label;
+    detail.textContent = phase === "idle" && !checkedAt ? "Check for the latest stable release." : explanation;
+    outcome.hidden = !(error || lastInstall?.ok === false);
+    outcome.textContent = error || lastInstall?.error || "";
+    progress.hidden = !busy;
+    check.disabled = Boolean(busy);
+    check.hidden = ["disabled", "ready", "installing"].includes(phase);
+    install.hidden = phase !== "ready";
+    install.disabled = Boolean(busy);
+    checked.textContent = checkedAt ? `Last checked ${new Date(checkedAt).toLocaleString()}` : "";
+    setCompanionState(mascot, busy ? "think" : phase === "ready" ? "complete" : phase === "failed" ? "failed" : "idle");
+  }
+  async function run(kind) {
+    const ticket = revision;
+    working = kind !== "updateStatus";
+    if (kind === "checkForUpdate") state = { ...state, phase: "checking", error: null };
+    paint();
+    try {
+      const result = await bridge.browser(kind, {});
+      if (result && revision === ticket && !(kind === "checkForUpdate" && result.phase === "idle")) state = result;
+    } catch (error) {
+      state = { ...state, phase: kind === "installUpdate" ? "ready" : "failed", error: errorText(error) };
+    } finally { working = false; paint(); }
+  }
+  const unsubscribe = onEvent(({ event, data }) => {
+    if (event !== "update.status" || !data) return;
+    revision++;
+    state = data;
+    paint();
+  });
+  window.addEventListener("pagehide", unsubscribe, { once: true });
+  run("updateStatus");
+  return node;
 }
 
 function sidebarSettings() {

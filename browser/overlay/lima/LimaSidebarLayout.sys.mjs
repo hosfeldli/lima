@@ -1,5 +1,6 @@
 /* Zen stores its tabs in internal containers. Present one sidebar in Lima. */
 const installed = new WeakSet();
+const visiblePins = new WeakSet();
 
 export function disableSpaceRouting() {
   const { gZenSpaceRoutingManager } = ChromeUtils.importESModule(
@@ -15,6 +16,8 @@ export async function flattenSidebar(win) {
   const manager = win.gZenWorkspaces;
   if (!manager) return;
   await win.gZenStartup?.promiseInitialized;
+  const { SessionStore } = ChromeUtils.importESModule("moz-src:///browser/components/sessionstore/SessionStore.sys.mjs");
+  await SessionStore.promiseInitialized;
   if (win.closed) return;
 
   const stored = Services.prefs.getStringPref("lima.sidebar.container", "");
@@ -32,12 +35,23 @@ export async function flattenSidebar(win) {
       }
     }, true);
   }
-  const pinned = manager.workspaceElement(id)?.pinnedTabsContainer;
+  const active = manager.workspaceElement(id);
+  if (active?.collapsiblePins && !visiblePins.has(active)) {
+    visiblePins.add(active);
+    const expand = () => { if (active.hasCollapsedPinnedTabs) active.collapsiblePins.collapsed = false; };
+    expand();
+    // Zen reapplies the saved collapse state in a deferred restore callback.
+    const restore = new win.MutationObserver(expand);
+    restore.observe(active, { attributes: true, attributeFilter: ["collapsedpinnedtabs"] });
+    win.addEventListener("unload", () => restore.disconnect(), { once: true });
+  }
+  const pinned = active?.pinnedTabsContainer;
   if (!pinned) return;
   const tabs = [...manager.allStoredTabs].filter(tab =>
     !tab.closing && !tab.hasAttribute("zen-essential") && !tab.hasAttribute("zen-empty-tab") &&
     tab.getAttribute("zen-workspace-id") && tab.getAttribute("zen-workspace-id") !== id);
-  const folders = new Set();
+  const folders = new Set(manager.getWorkspaces().filter(space => space.uuid !== id).flatMap(space =>
+    [...(manager.workspaceElement(space.uuid)?.pinnedTabsContainer?.children ?? [])].filter(item => item.isZenFolder)));
   const ungrouped = [];
   for (const tab of tabs) {
     let group = tab.group;
@@ -46,8 +60,10 @@ export async function flattenSidebar(win) {
     else ungrouped.push(tab);
   }
   for (const folder of folders) {
+    if (folder.parentElement === pinned) continue;
     pinned.insertBefore(folder, pinned.lastChild);
     win.gZenFolders.changeFolderToSpace(folder, id, { hasDndSwitch: true });
   }
   if (ungrouped.length) manager.moveTabsToWorkspace(ungrouped, id);
+  if (folders.size) win.gBrowser.tabContainer._invalidateCachedTabs();
 }

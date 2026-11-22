@@ -84,6 +84,10 @@ enum UpdateVerifier {
     /// the installed app's designated requirement: same bundle identifier,
     /// signed by the same pinned certificate.
     static func appSatisfiesInstalledRequirement(_ candidate: URL, installed: URL) throws {
+        try verifyApp(candidate, requirement: installedRequirement(installed))
+    }
+
+    static func installedRequirement(_ installed: URL) throws -> SecRequirement {
         var installedCode: SecStaticCode?
         var requirement: SecRequirement?
         guard SecStaticCodeCreateWithPath(installed as CFURL, [], &installedCode) == errSecSuccess, let installedCode,
@@ -92,6 +96,10 @@ enum UpdateVerifier {
         guard CodeTrust.leafCertificate(installedCode) != nil else {
             throw BridgeError(.notAuthorized, "Development builds don't install updates.")
         }
+        return requirement
+    }
+
+    static func verifyApp(_ candidate: URL, requirement: SecRequirement) throws {
         var candidateCode: SecStaticCode?
         guard SecStaticCodeCreateWithPath(candidate as CFURL, [], &candidateCode) == errSecSuccess, let candidateCode else {
             throw BridgeError(.badRequest, "The update isn't an app.")
@@ -128,7 +136,9 @@ final class UpdateService: @unchecked Sendable {
     var emit: (@Sendable (JSONValue) -> Void)?
 
     init(configuration: UpdateConfiguration? = .load(),
-         directory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Lima Browser/Updates")) {
+         directory: URL = ProcessInfo.processInfo.environment["LIMA_DATA_DIR"].map {
+             URL(fileURLWithPath: $0).appendingPathComponent("Updates")
+         } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Lima Browser/Updates")) {
         self.configuration = configuration
         self.directory = directory
         self.phase = configuration == nil ? .disabled : .idle
@@ -139,6 +149,7 @@ final class UpdateService: @unchecked Sendable {
         var object: [String: JSONValue] = [
             "phase": .string(phase.rawValue),
             "currentBuild": configuration.map { .number(Double($0.build)) } ?? .null,
+            "currentVersion": .string(limaRuntimeVersion),
             "checkedAt": checkedAt.map { .number($0.timeIntervalSince1970 * 1000) } ?? .null,
             "error": lastError.map(JSONValue.string) ?? .null,
             "canRollBack": .bool(FileManager.default.fileExists(atPath: previousApp.path)),
@@ -170,8 +181,14 @@ final class UpdateService: @unchecked Sendable {
     /// Fetches the signed feed; downloads and stages a newer build.
     func check() async throws -> JSONValue {
         guard let configuration else { return status }
-        if [.checking, .downloading, .installing, .ready].contains(locked({ phase })) { return status }
-        set(.checking)
+        let started = locked {
+            guard [.idle, .failed].contains(phase) else { return false }
+            phase = .checking
+            lastError = nil
+            return true
+        }
+        guard started else { return status }
+        emit?(status)
         do {
             let session = URLSession(configuration: .ephemeral)
             let (data, response) = try await session.data(from: configuration.feedURL)
@@ -226,32 +243,52 @@ final class UpdateService: @unchecked Sendable {
 
     /// Starts the installer, which waits for `browserPID` to exit, swaps the
     /// bundle, verifies it and relaunches Lima (or restores the old copy).
-    func install(browserPID: pid_t) throws {
+    func install(browserPID: pid_t, profilePath: String) throws {
         guard let configuration else { throw BridgeError(.badRequest, "Updates are off in development builds.") }
         guard browserPID > 1 else { throw BridgeError(.badRequest, "browserPid is required.") }
-        guard let staged = locked({ phase == .ready ? staged : nil }) else { throw BridgeError(.badRequest, "No update is ready.") }
-        try launchApplier(source: staged, configuration: configuration, browserPID: browserPID, keepBackup: true)
-        set(.installing)
+        let profile = try UpdateApplier.profile(path: profilePath, outside: [configuration.app, directory])
+        guard let staged = locked({
+            guard phase == .ready, let staged else { return nil as URL? }
+            phase = .installing
+            return staged
+        }) else { throw BridgeError(.badRequest, "No update is ready.") }
+        do {
+            try launchApplier(source: staged, configuration: configuration, browserPID: browserPID, profile: profile, keepBackup: true)
+            emit?(status)
+        } catch {
+            set(.ready, error: error.localizedDescription)
+            throw error
+        }
     }
 
     /// Reinstalls the copy kept from the last update.
-    func rollback(browserPID: pid_t) throws {
+    func rollback(browserPID: pid_t, profilePath: String) throws {
         guard let configuration else { throw BridgeError(.badRequest, "Updates are off in development builds.") }
         guard browserPID > 1 else { throw BridgeError(.badRequest, "browserPid is required.") }
         guard FileManager.default.fileExists(atPath: previousApp.path) else { throw BridgeError(.badRequest, "There's no previous version to restore.") }
+        let profile = try UpdateApplier.profile(path: profilePath, outside: [configuration.app, directory])
         let restore = directory.appendingPathComponent("restore/Lima.app")
         try? FileManager.default.removeItem(at: restore.deletingLastPathComponent())
         try FileManager.default.createDirectory(at: restore.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try FileManager.default.copyItem(at: previousApp, to: restore)
-        try launchApplier(source: restore, configuration: configuration, browserPID: browserPID, keepBackup: false)
+        try launchApplier(source: restore, configuration: configuration, browserPID: browserPID, profile: profile, keepBackup: false)
         set(.installing)
     }
 
-    private func launchApplier(source: URL, configuration: UpdateConfiguration, browserPID: pid_t, keepBackup: Bool) throws {
+    private func launchApplier(source: URL, configuration: UpdateConfiguration, browserPID: pid_t, profile: URL, keepBackup: Bool) throws {
+        let parent = configuration.app.deletingLastPathComponent()
+        if configuration.app.path.contains("/AppTranslocation/") ||
+            (try? parent.resourceValues(forKeys: [.volumeIsReadOnlyKey]).volumeIsReadOnly) == true {
+            throw BridgeError(.badRequest, "Move Lima.app to Applications in Finder and reopen it there before installing updates.")
+        }
+        guard FileManager.default.isWritableFile(atPath: parent.path) else {
+            throw BridgeError(.notAuthorized, "Lima needs write access to the folder where its app is installed.")
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: CodeTrust.selfExecutable)
         process.arguments = ["apply-update", "--source", source.path, "--target", configuration.app.path,
-                             "--wait-pid", String(browserPID), "--state", directory.path] + (keepBackup ? ["--keep-backup"] : [])
+                             "--wait-pid", String(browserPID), "--state", directory.path, "--profile", profile.path] +
+                            (keepBackup ? ["--keep-backup"] : [])
         process.standardInput = FileHandle.nullDevice
         let log = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Lima/update.log")
         try? FileManager.default.createDirectory(at: log.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -270,14 +307,35 @@ final class UpdateService: @unchecked Sendable {
 /// old bundle (its open executable survives the bundle being moved) and
 /// re-verifies everything right before and after the swap.
 public enum UpdateApplier {
+    static func profile(path: String, outside protectedPaths: [URL]) throws -> URL {
+        let candidate = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
+        var directory: ObjCBool = false
+        guard path.hasPrefix("/"), candidate.path != "/", FileManager.default.fileExists(atPath: candidate.path, isDirectory: &directory),
+              directory.boolValue, !protectedPaths.contains(where: {
+                  let protected = $0.resolvingSymlinksInPath().standardizedFileURL.path
+                  return candidate.path == protected || candidate.path.hasPrefix(protected + "/")
+              })
+        else { throw BridgeError(.badRequest, "Lima couldn't identify a browser profile outside the update files.") }
+        return candidate
+    }
+
+    static func relaunchArguments(target: URL, profile: URL, environment: [String: String] = [:]) -> [String] {
+        let overrides = ["LIMA_DATA_DIR", "LIMA_KEY_FILE", "LIMA_WORKSPACES_ROOT"].flatMap { name in
+            environment[name].map { ["--env", "\(name)=\($0)"] } ?? []
+        }
+        return ["-n", "-a", target.path] + overrides + ["--args", "-profile", profile.path]
+    }
+
     public static func run(_ arguments: [String]) -> Never {
         func value(_ flag: String) -> String? { arguments.firstIndex(of: flag).flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil } }
         guard let source = value("--source").map(URL.init(fileURLWithPath:)),
               let target = value("--target").map(URL.init(fileURLWithPath:)),
               let state = value("--state").map(URL.init(fileURLWithPath:)),
+              let path = value("--profile"),
+              let profile = try? profile(path: path, outside: [target, source, state]),
               let pid = value("--wait-pid").flatMap(Int32.init)
         else {
-            FileHandle.standardError.write(Data("usage: lima-host apply-update --source <app> --target <app> --wait-pid <pid> --state <dir> [--keep-backup]\n".utf8))
+            FileHandle.standardError.write(Data("usage: lima-host apply-update --source <app> --target <app> --wait-pid <pid> --state <dir> --profile <dir> [--keep-backup]\n".utf8))
             exit(64)
         }
         // Only the runtime (lima-host) may drive an install.
@@ -287,24 +345,36 @@ public enum UpdateApplier {
         }
         setsid()
         let keepBackup = arguments.contains("--keep-backup")
+        let requirement = try? UpdateVerifier.installedRequirement(target)
         let result = apply(source: source, target: target, state: state, waitFor: pid, keepBackup: keepBackup)
-        let record: [String: Any] = ["ok": result == nil, "error": result ?? NSNull(), "at": Date().timeIntervalSince1970 * 1000,
-                                     "build": UpdateVerifier.bundleBuild(target)?.build ?? 0]
-        if let data = try? JSONSerialization.data(withJSONObject: record) {
-            try? data.write(to: state.appendingPathComponent("last-install.json"), options: .atomic)
+        func record(_ error: String?) {
+            let result: [String: Any] = ["ok": error == nil, "error": error ?? NSNull(), "at": Date().timeIntervalSince1970 * 1000,
+                                         "build": UpdateVerifier.bundleBuild(target)?.build ?? 0]
+            if let data = try? JSONSerialization.data(withJSONObject: result) {
+                try? data.write(to: state.appendingPathComponent("last-install.json"), options: .atomic)
+            }
         }
+        record(result)
         print("lima-host apply-update: \(result ?? "installed")")
+        guard kill(pid, 0) != 0, let requirement, (try? UpdateVerifier.verifyApp(target, requirement: requirement)) != nil else { exit(1) }
         let relaunch = Process()
         relaunch.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        relaunch.arguments = [target.path]
-        try? relaunch.run()
-        relaunch.waitUntilExit()
+        relaunch.arguments = relaunchArguments(target: target, profile: profile, environment: ProcessInfo.processInfo.environment)
+        do { try relaunch.run(); relaunch.waitUntilExit() }
+        catch { record("Lima couldn't reopen automatically. Open Lima.app again from Finder."); exit(1) }
+        guard relaunch.terminationStatus == 0 else {
+            record("Lima couldn't reopen automatically. Open Lima.app again from Finder.")
+            exit(1)
+        }
         exit(result == nil ? 0 : 1)
     }
 
     /// Returns nil on success, otherwise why the install was rolled back.
     static func apply(source: URL, target: URL, state: URL, waitFor pid: pid_t, keepBackup: Bool) -> String? {
         let fm = FileManager.default
+        guard source.resolvingSymlinksInPath() != target.resolvingSymlinksInPath() else {
+            return "The replacement app is already at the installation path."
+        }
         // Wait (up to two minutes) for the browser to quit.
         for _ in 0..<1200 where kill(pid, 0) == 0 { usleep(100_000) }
         guard kill(pid, 0) != 0 else { return "Lima didn't quit, so the update wasn't installed." }
@@ -313,28 +383,50 @@ public enum UpdateApplier {
             return (error as? BridgeError)?.message ?? "\(error)"
         }
         let backup = state.appendingPathComponent("previous/Lima.app")
-        let pending = state.appendingPathComponent("replaced-\(getpid())/Lima.app")
+        let swapDirectory = target.deletingLastPathComponent().appendingPathComponent(".lima-replace-\(UUID().uuidString)")
+        let pending = swapDirectory.appendingPathComponent("Lima.app")
+        var preserveSwap = false
+        defer { if !preserveSwap { try? fm.removeItem(at: swapDirectory) } }
         do {
-            try fm.createDirectory(at: pending.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            try fm.moveItem(at: target, to: pending)
-        } catch { return "Lima couldn't move the installed app: \(error.localizedDescription)" }
+            try fm.createDirectory(at: swapDirectory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            try fm.copyItem(at: source, to: pending)
+            try UpdateVerifier.appSatisfiesInstalledRequirement(pending, installed: target)
+        } catch { return "Lima couldn't prepare the replacement app: \(error.localizedDescription)" }
+        guard renamex_np(target.path, pending.path, UInt32(RENAME_SWAP)) == 0 else {
+            return "Lima couldn't replace the installed app: \(String(cString: strerror(errno)))"
+        }
 
         do {
-            try fm.moveItem(at: source, to: target)
             try UpdateVerifier.appSatisfiesInstalledRequirement(target, installed: pending)
         } catch {
-            try? fm.removeItem(at: target)
-            try? fm.moveItem(at: pending, to: target)
+            if renamex_np(target.path, pending.path, UInt32(RENAME_SWAP)) != 0 {
+                preserveSwap = true
+                return "Verification failed and Lima couldn’t restore its previous app automatically. The previous app is at \(pending.path)."
+            }
             return "The update failed verification after install and was rolled back: \((error as? BridgeError)?.message ?? error.localizedDescription)"
         }
 
         if keepBackup {
-            try? fm.removeItem(at: backup)
-            try? fm.createDirectory(at: backup.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            try? fm.moveItem(at: pending, to: backup)
+            let next = state.appendingPathComponent("previous-\(UUID().uuidString)")
+            do {
+                try fm.createDirectory(at: next, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                try fm.copyItem(at: pending, to: next.appendingPathComponent("Lima.app"))
+                let destination = backup.deletingLastPathComponent()
+                if fm.fileExists(atPath: destination.path) {
+                    guard renamex_np(destination.path, next.path, UInt32(RENAME_SWAP)) == 0 else {
+                        throw POSIXError(.EIO)
+                    }
+                    try? fm.removeItem(at: next)
+                } else {
+                    try fm.moveItem(at: next, to: destination)
+                }
+            } catch {
+                preserveSwap = true
+                print("lima-host: couldn't retain rollback in the update directory. Previous app: \(pending.path)")
+            }
         }
-        try? fm.removeItem(at: pending.deletingLastPathComponent())
-        try? fm.removeItem(at: source.deletingLastPathComponent())
+        try? fm.removeItem(at: source)
+        _ = rmdir(source.deletingLastPathComponent().path)
         return nil
     }
 }
@@ -348,16 +440,23 @@ extension Runtime {
         }
         register("update.check") { [unowned self] _, context in
             try Self.requireLocalSettings(context)
-            return try await self.updates.check()
+            let service = self.updates
+            Task { _ = try? await service.check() }
+            return service.status
         }
         register("update.install") { [unowned self] params, context in
             try Self.requireLocalSettings(context)
-            try self.updates.install(browserPID: pid_t(params?["browserPid"]?.doubleValue ?? 0))
+            let chats = await self.conversations.list()
+            let shells = await self.terminals.list()
+            guard !chats.contains(where: \.running), !shells.contains(where: {
+                $0.state == .running || $0.state == .waitingForInput || $0.userEditing == true
+            }) else { throw BridgeError(.badRequest, "Finish active agents and terminal commands before restarting Lima.") }
+            try self.updates.install(browserPID: pid_t(params?["browserPid"]?.doubleValue ?? 0), profilePath: try params.string("profilePath"))
             return self.updates.status
         }
         register("update.rollback") { [unowned self] params, context in
             try Self.requireLocalSettings(context)
-            try self.updates.rollback(browserPID: pid_t(params?["browserPid"]?.doubleValue ?? 0))
+            try self.updates.rollback(browserPID: pid_t(params?["browserPid"]?.doubleValue ?? 0), profilePath: try params.string("profilePath"))
             return self.updates.status
         }
     }

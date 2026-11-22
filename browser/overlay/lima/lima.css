@@ -725,7 +725,16 @@ zen-folder[collapsed] > .tab-group-label-container > .lima-workspace-disclosure:
 :root[lima-window] :is(#zen-workspaces-button, #zen-spaces-menubar, #context_zenWorkspaces,
   #context_zenFolderChangeWorkspace, #context_zenFolderToSpace, #context_zen-add-domain-to-routing,
   [command="cmd_zenOpenWorkspaceCreation"], [command="cmd_zenOpenSpaceRoutingSettings"],
+  [data-l10n-id="zen-menubar-toggle-pinned-tabs"],
   .zen-current-workspace-indicator) { display: none !important; }
+
+notification-message[lima-update-notice] {
+  background: var(--lima-panel);
+  color: var(--lima-ink);
+  border: 1px solid var(--lima-line);
+  border-radius: var(--lima-radius);
+  margin: 5px 8px;
+}
 
 @-moz-document url-prefix("about:preferences"), url-prefix("chrome://browser/content/preferences/"),
                url-prefix("about:settings"), url-prefix("chrome://browser/content/zen-settings"),

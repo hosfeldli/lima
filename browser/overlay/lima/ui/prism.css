@@ -698,5 +698,12 @@ button.change-row:hover { background: var(--panel-2); }
 .welcome-description { color: var(--ink-2); line-height: 1.55; margin: 0 0 16px; }
 .welcome-step [role="status"]:empty { display: none; }
 .welcome-navigation { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; margin-top: 12px; }
+.update-settings { display: grid; gap: 12px; }
+.update-summary { display: flex; align-items: center; gap: 12px; }
+.update-summary h2 { margin: 2px 0 3px; }
+.update-summary p, .update-outcome { margin: 0; }
+.update-outcome { color: var(--lima-error); overflow-wrap: anywhere; }
+.update-settings progress { width: 100%; block-size: 5px; accent-color: var(--action); }
+.update-actions { flex-wrap: wrap; justify-content: space-between; }
 .welcome-permission { border-block-start: 1px solid var(--line); padding-block: 12px; }
 .welcome-permission .welcome-description { margin-block: 4px 8px; }

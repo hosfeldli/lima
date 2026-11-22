@@ -91,11 +91,39 @@ private func adHocExecutable() throws -> URL {
     #expect(!CodeTrust.isSignedLikeSelf(path: script.path))
 }
 
+@Test func engineTrustFollowsTheBundleLayout() throws {
+    let contents = TestEnvironment.freshDirectory().appendingPathComponent("Lima.app/Contents")
+    let macOS = contents.appendingPathComponent("MacOS")
+    try FileManager.default.createDirectory(at: macOS, withIntermediateDirectories: true)
+    try Data().write(to: macOS.appendingPathComponent("lima"))
+    // A source build's compiled engine is the bundle executable itself.
+    #expect(CodeTrust.engineExecutable(in: contents).hasSuffix("/MacOS/lima"))
+    // A repack's launcher only re-execs the Zen engine, which alone is trusted.
+    try Data().write(to: macOS.appendingPathComponent("zen"))
+    #expect(CodeTrust.engineExecutable(in: contents).hasSuffix("/MacOS/zen"))
+}
+
 // Integration checks against real builds, run by `make release-rehearsal`:
 //   LIMA_TEST_SIGNED_APP    a release-signed Lima.app (the "installed" copy)
 //   LIMA_TEST_CANDIDATE_APP the same release, extracted from its update zip
 //   LIMA_TEST_ADHOC_APP     a development (ad-hoc) Lima.app
 private let environment = ProcessInfo.processInfo.environment
+
+@Test func updaterRelaunchesWithTheOriginalProfile() throws {
+    let root = TestEnvironment.freshDirectory()
+    let app = root.appendingPathComponent("Applications/Lima.app")
+    let updates = root.appendingPathComponent("App support/Updates")
+    let profile = root.appendingPathComponent("Browser data/Existing profile")
+    for folder in [app, updates, profile] {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    }
+    let original = try UpdateApplier.profile(path: profile.path, outside: [app, updates])
+    #expect(UpdateApplier.relaunchArguments(target: app, profile: original) == [
+        "-n", "-a", app.path, "--args", "-profile", profile.resolvingSymlinksInPath().path,
+    ])
+    #expect(throws: BridgeError.self) { try UpdateApplier.profile(path: updates.path, outside: [app, updates]) }
+    #expect(throws: BridgeError.self) { try UpdateApplier.profile(path: app.path, outside: [app, updates]) }
+}
 
 @Test(.enabled(if: environment["LIMA_TEST_SIGNED_APP"] != nil && environment["LIMA_TEST_CANDIDATE_APP"] != nil))
 func releaseUpdateSatisfiesTheInstalledRequirement() throws {
@@ -119,6 +147,10 @@ func installerSwapsVerifiedUpdateAndRollsBackABadOne() throws {
     let state = root.appendingPathComponent("state")
     try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
     try fm.createDirectory(at: state, withIntermediateDirectories: true)
+    let profile = root.appendingPathComponent("Existing profile")
+    try fm.createDirectory(at: profile, withIntermediateDirectories: true)
+    let browserFiles = ["places.sqlite", "cookies.sqlite", "prefs.js", "sessionstore.jsonlz4"]
+    for name in browserFiles { try Data(name.utf8).write(to: profile.appendingPathComponent(name)) }
     try fm.copyItem(at: URL(fileURLWithPath: environment["LIMA_TEST_SIGNED_APP"]!), to: target)
     let exited = Process()
     exited.executableURL = URL(fileURLWithPath: "/usr/bin/true")
@@ -139,4 +171,7 @@ func installerSwapsVerifiedUpdateAndRollsBackABadOne() throws {
     #expect(UpdateApplier.apply(source: good, target: target, state: state, waitFor: exited.processIdentifier, keepBackup: true) == nil)
     #expect(fm.fileExists(atPath: state.appendingPathComponent("previous/Lima.app/Contents/Info.plist").path))
     #expect(!fm.fileExists(atPath: good.path))
+    for name in browserFiles {
+        #expect(try Data(contentsOf: profile.appendingPathComponent(name)) == Data(name.utf8))
+    }
 }

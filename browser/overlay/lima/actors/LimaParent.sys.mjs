@@ -104,6 +104,19 @@ export class LimaParent extends JSWindowActorParent {
         await LimaWelcome.finish(win, browser, payload);
         return null;
       }
+      case "updateStatus":
+      case "checkForUpdate":
+      case "installUpdate": {
+        if (lazy.PrivateBrowsingUtils.isWindowPrivate(win) ||
+            !browser?.currentURI?.spec.startsWith("about:lima?view=integrations")) {
+          throw new Error("Open Updates in Lima Settings.");
+        }
+        if (kind === "installUpdate") {
+          const { LimaUpdates } = ChromeUtils.importESModule("resource://lima/LimaUpdates.sys.mjs");
+          return LimaUpdates.restartToUpdate();
+        }
+        return lazy.LimaBridge.request(kind === "updateStatus" ? "update.status" : "update.check");
+      }
       case "filesPrivacySettings": {
         const page = Services.io.newURI("x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders");
         Cc["@mozilla.org/uriloader/external-protocol-service;1"]

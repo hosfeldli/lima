@@ -1,11 +1,12 @@
 /* Lima updates: asks the runtime to check the signed release feed, and
- * offers "Restart to update" once a verified build is staged. All checks
+ * links to Lima Settings once a verified build is staged. All checks
  * (feed signature, digest, code signature, no downgrades) happen natively
  * in lima-host; this module only schedules them and shows the result. */
 
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
+  LimaTabs: "resource://lima/LimaTabs.sys.mjs",
 });
 
 const FIRST_CHECK_MS = 30 * 1000;
@@ -20,13 +21,9 @@ function windows() {
 }
 
 async function restartToUpdate() {
-  try {
-    await lazy.LimaBridge.request("update.install", { browserPid: Services.appinfo.processID });
-  } catch (error) {
-    Cu.reportError(error);
-    return;
-  }
-  // The installer waits for this process to exit, swaps the bundle and relaunches Lima.
+  const profilePath = Services.dirsvc.get("ProfD", Ci.nsIFile).path;
+  await lazy.LimaBridge.request("update.install", { browserPid: Services.appinfo.processID, profilePath });
+  // Allow Zen to finish writing session state before replacing the app.
   Services.startup.quit(Ci.nsIAppStartup.eAttemptQuit);
 }
 
@@ -41,12 +38,15 @@ function show(status) {
       NOTIFICATION_ID,
       {
         label: status.critical
-          ? `Lima ${status.version} includes security fixes. Restart to update.`
-          : `Lima ${status.version} is ready. Restart to update.`,
+          ? `Lima ${status.version} includes security fixes.`
+          : `Lima ${status.version} is ready.`,
         priority: status.critical ? box.PRIORITY_WARNING_HIGH : box.PRIORITY_INFO_MEDIUM,
       },
-      [{ label: "Restart to Update", accessKey: "R", callback: () => { restartToUpdate(); return true; } }]
-    );
+      [{ label: "View Update", accessKey: "V", callback: () => {
+        lazy.LimaTabs.openOrFocus(win, "about:lima?view=integrations&section=updates");
+        return true;
+      } }]
+    ).then(notification => notification?.setAttribute("lima-update-notice", "true")).catch(() => {});
   }
 }
 
@@ -77,4 +77,5 @@ export const LimaUpdates = {
     }, FIRST_CHECK_MS, Ci.nsITimer.TYPE_ONE_SHOT);
   },
   check,
+  restartToUpdate,
 };

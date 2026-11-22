@@ -24,6 +24,23 @@ function basicsFolders(win) {
       (["lima basics", "welcome to lima"].includes(folder.label?.toLowerCase()) && folder.tabs.some(tab => tabURL(tab) === INTRO))));
 }
 
+async function retireBasics(win, keep = null) {
+  for (const folder of basicsFolders(win)) {
+    for (const tab of [...folder.tabs].filter(tab => tab.group === folder && tab !== keep &&
+      (tabURL(tab) === INTRO || isZenOnboarding(tabURL(tab))))) {
+      if (tab.selected && keep) win.gBrowser.selectedTab = keep;
+      win.gBrowser.removeTab(tab, { animate: false });
+    }
+    if (!folder.isConnected) continue;
+    await folder.unpackTabs();
+    if (folder.isConnected && folder.allItems.every(item => item.hasAttribute("zen-empty-tab"))) await folder.delete();
+    if (folder.isConnected && !folder.allItems.length) {
+      folder.remove();
+      win.gBrowser.tabContainer._invalidateCachedTabs();
+    }
+  }
+}
+
 async function hop(win, browser, position) {
   const doc = win.document;
   const destination = doc.getElementById("lima-assistant-toggle");
@@ -63,45 +80,24 @@ export const LimaWelcome = {
     const { LimaTabs } = ChromeUtils.importESModule("resource://lima/LimaTabs.sys.mjs");
     LimaTabs.openOrFocus(win, "about:lima");
     const source = win.gBrowser.getTabForBrowser(browser);
-    const folders = basicsFolders(win);
-    for (const folder of folders) {
-      for (const tab of [...folder.tabs].filter(tab => tab.group === folder &&
-        (tabURL(tab) === INTRO || isZenOnboarding(tabURL(tab))))) {
-        if (tab !== source) win.gBrowser.removeTab(tab, { animate: false });
-      }
-    }
+    await retireBasics(win, source);
     if (source && !source.closing) win.gBrowser.removeTab(source, { animate: false });
-    for (const folder of folders) if (folder.isConnected) await folder.unpackTabs();
   },
 
   async install(win) {
     await win.gZenStartup?.promiseInitialized;
+    const { SessionStore } = ChromeUtils.importESModule("moz-src:///browser/components/sessionstore/SessionStore.sys.mjs");
+    await SessionStore.promiseInitialized;
     if (win.closed || !win.gZenFolders) return;
-    if (Services.prefs.getBoolPref(FINISHED, false)) return;
-    const basics = basicsFolders(win);
-    for (const folder of basics) {
-      folder.label = "Lima Basics";
-      const direct = folder.tabs.filter(tab => tab.group === folder && !tab.hasAttribute("zen-empty-tab"));
-      let intro = direct.find(tab => tabURL(tab) === INTRO);
-      if (!intro) {
-        const wasShowingWelcome = direct.some(tab => tab.selected && tabURL(tab) === "about:lima");
-        intro = introTab(win);
-        folder.addTabs([intro]);
-        if (wasShowingWelcome) win.gBrowser.selectedTab = intro;
-      }
-      for (const tab of direct) {
-        const address = tabURL(tab);
-        if (tab === intro || !isZenOnboarding(address)) continue;
-        if (tab.selected) win.gBrowser.selectedTab = intro;
-        win.gBrowser.removeTab(tab, { animate: false });
-      }
-    }
-    if (!basics.length && !Services.prefs.getBoolPref(CREATED, false) &&
-        !Services.prefs.prefHasUserValue("zen.welcome-screen.seen")) {
-      const intro = introTab(win);
-      win.gZenFolders.createFolder([intro], { label: "Lima Basics" });
-      win.gBrowser.selectedTab = intro;
-    }
+    const finished = Services.prefs.getBoolPref(FINISHED, false);
+    const existing = [...win.gBrowser.tabs].find(tab => tabURL(tab) === INTRO && !tab.closing);
+    const firstLaunch = !finished && !Services.prefs.getBoolPref(CREATED, false) && !existing &&
+      ![...win.gBrowser.tabs].some(tab => !tab.hasAttribute("zen-empty-tab") &&
+        !["", "about:blank", "about:newtab", "about:home", "about:lima"].includes(tabURL(tab)) &&
+        !isZenOnboarding(tabURL(tab)));
     Services.prefs.setBoolPref(CREATED, true);
+    const walkthrough = finished ? null : existing ?? (firstLaunch ? introTab(win) : null);
+    if (firstLaunch && walkthrough) win.gBrowser.selectedTab = walkthrough;
+    await retireBasics(win, walkthrough);
   },
 };
