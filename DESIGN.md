@@ -65,7 +65,7 @@ Status is "Implemented" where the behavior ships, and "Target" where it is speci
 | New workspace | New workspace destination and named creation from a prompt | The handoff row shows progress, errors preserve the draft | Implemented |
 | Workspace overview | Objective, directory, branch, agent rows, and links to its tabs | Keep header stable while branch and activity load, show workspace errors inline | Implemented |
 | Single-agent chat | Conversation, tool rows, bottom composer, model and provider controls | Message not sent keeps the draft with Retry Message; Response interrupted marks a stopped reply | Implemented |
-| Multi-agent orchestration | One sidebar folder and own chat for each helper, Dismiss Finished Agent | Starting and working states become completed or failed from the helper’s reply | Implemented. Dependency view in the parent chat is a target |
+| Multi-agent orchestration | One sidebar folder and own chat for each helper, Dismiss Finished Agent | Helpers start when their dependencies succeed; failures block only their dependents | Implemented |
 | Terminal and Git | Live shell beside Files and Changes, diff preview on selection | Ownership bar only during a handoff: Agent is requesting keyboard access, Agent has terminal control, Terminal control returned to you | Implemented. Stage Selected and Revert Selected are targets |
 | Notes and Canvas | White editor and precise canvas controls using shared colors | Keep note layout during load and show storage errors next to the editor | Implemented. Revision history is a target |
 | Context and weekly report | Compact timeline and readable report | Empty state describes the available activity, failures stay local to the list | Implemented |
@@ -73,7 +73,8 @@ Status is "Implemented" where the behavior ships, and "Target" where it is speci
 | Updates | Lima is up to date, Downloading update…, Ready to Restart | Update Failed keeps the current version, with Retry | Implemented |
 | Onboarding | Five optional steps in an ordinary tab: Meet Lima, Connect an AI, Try Search, Create a Workspace, You're Ready | Each step's failure stays on that step; detected setups are skipped | Implemented |
 | Screenshot Studio | Light gray tray and workspace, with an empty tray before capture | Keep an existing capture visible while OCR runs, report failures in the toolbar | Implemented |
-| Persistent task records | One record per task shared by runtime, Companion, chat and sidebar, with Planning through Canceled states | A handoff is not completion; the agent's result sets the final state | Target. Today the Companion and sidebar derive state from the workspace chat |
+| Persistent task records | One Orchestrator record per handoff shared by runtime, Companion, Task Progress and sidebar | A handoff is not completion; a verified report sets the final state, and interrupted turns are reported, not replayed | Implemented ([orchestration](docs/architecture/orchestration.md)) |
+| Task Progress | A view beside Chat, Agents, Activity and Files in the workspace chat, with helpers, dependencies, history and outcome | Stop Task, Pause, Resume and Retry act on the task tree | Implemented |
 | Attention popup | Count on the Companion icon, compact popup anchored to the sidebar listing requests | Requests stay until resolved | Partly implemented: the attention mark and prompts exist, the anchored popup is a target |
 | Shortcut registry | Keyboard Shortcuts settings with conflict detection | Shortcut Conflict names the other owner | Target |
 | UX regression suite | Screenshot coverage for Search, sidebar, Companion, Chat, Terminal, Notes, Settings | Failures block release | Target. `source_smoke.py` covers identity and runtime startup |

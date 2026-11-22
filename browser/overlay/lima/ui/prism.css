@@ -182,13 +182,10 @@ kbd { font: 600 10.5px/1 var(--font); padding: 3px 5px; border: 1px solid var(--
 .chat-star { width: 15px; height: 15px; }
 .chat-title { font: 650 var(--t-md)/1 var(--font); margin: 0; white-space: nowrap; }
 .chat-sub { font-size: var(--t-sm); color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
-.chat-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr); }
-.chat-body.solo { grid-template-columns: minmax(0, 1fr); }
+.chat-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); }
 .chat-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--line); }
 .chat-body.solo .chat-main { border-right: 0; }
 .chat-main > .mod-head { margin: 0; padding-inline: var(--s4); }
-.chat-side { overflow: auto; min-height: 0; background: var(--panel); }
-.chat-side .mod { border-width: 0 0 1px; margin: 0; }
 .chat-page .messages { flex: 1; overflow: auto; padding: var(--s2) var(--s4) var(--s4); }
 .chat-page .messages > * { max-width: 760px; }
 .chat-empty { padding: var(--s4) 0; color: var(--ink-3); max-width: 520px; }
@@ -340,7 +337,6 @@ pre.code .ln { width: 44px; flex: none; text-align: right; padding-right: 10px; 
 @media (max-width: 760px) {
   .chat-body { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
   .chat-main { border-right: 0; }
-  .chat-side { max-height: 32vh; border-top: 1px solid var(--line); }
   .studio { grid-template-columns: 1fr; grid-template-rows: auto 1fr; } .tray { grid-auto-flow: column; grid-auto-columns: 120px; border-right: 0; border-bottom: 1px solid var(--line); }
   .explorer { width: min(180px, 39%); }
   .page-sheet { padding: var(--s4) var(--s3) 30vh; }
@@ -355,7 +351,7 @@ pre.code .ln { width: 44px; flex: none; text-align: right; padding-right: 10px; 
 .assistant-error, .assistant-content > .chat-empty { margin: 8px 12px; }
 .assistant-error { color: var(--action-hover); }
 .assistant-content { display: flex; flex: 1; min-height: 0; }
-.assistant-content .chat-head, .assistant-content .mod-head, .assistant-content .chat-side { display: none; }
+.assistant-content .chat-head, .assistant-content .mod-head { display: none; }
 .assistant-content .chat-body { display: flex; padding: 0; }
 .assistant-content .chat-main { flex: 1; border: 0; }
 .assistant-content .messages { padding-inline: 12px; }
@@ -714,3 +710,31 @@ button.change-row:hover { background: var(--panel-2); }
 .run-status[data-tone="bad"] { color: var(--action-hover); font-weight: 600; }
 .run-actions { margin-top: var(--s2); }
 .run-actions[hidden] { display: none; }
+
+/* Orchestrated task status in the Companion: one record per handoff. */
+.companion-task-status { display: grid; gap: 2px; }
+.companion-task-status + .companion-task-status { margin-top: var(--s2); padding-top: var(--s2); border-top: 1px solid var(--line); }
+.companion-task-status p { margin: 0; }
+.companion-task-line strong { font-weight: 650; }
+.companion-task-status[data-state="blocked"] .companion-task-line strong,
+.companion-task-status[data-state="failed"] .companion-task-line strong { color: var(--action-hover); }
+.companion-task-outcome { white-space: pre-wrap; font-size: var(--t-sm); margin-top: 4px !important; }
+.companion-task-status .row { margin-top: 4px; gap: 6px; flex-wrap: wrap; }
+
+/* Chat views: one column, with Task Progress, Agents, Activity and Files as
+   views inside the tab instead of a column on the right. */
+.chat-views { gap: 2px; }
+.chat-views > button.tab { appearance: none; border: 0; background: transparent; padding: 5px 9px; border-radius: var(--r); color: var(--ink-3); cursor: default; }
+.chat-views > button.tab:hover { color: var(--ink); background: var(--panel); }
+.chat-views > button.tab[aria-selected="true"] { color: var(--ink); background: var(--panel-2); }
+.chat-views > button.tab:focus-visible { outline: 2px solid var(--action); outline-offset: 1px; }
+.chat-views > button.tab[hidden] { display: none; }
+.chat-view[hidden] { display: none !important; }
+.chat-main > .task-progress, .chat-main > .list, .chat-main > .steps { flex: 1; overflow: auto; padding: var(--s2) var(--s4) var(--s4); max-width: 760px; }
+.task-card { display: grid; gap: 6px; padding: var(--s3); border: 1px solid var(--line); border-radius: var(--r); background: var(--surface, #fff); }
+.task-card p { margin: 0; }
+.task-outcome { white-space: pre-wrap; font-size: var(--t-sm); }
+.task-progress h3 { font-size: var(--t-sm); margin: var(--s4) 0 var(--s2); color: var(--ink-2); }
+.task-events { list-style: none; margin: 0; padding: 0; font-size: var(--t-sm); }
+.task-events li { display: grid; grid-template-columns: 48px 1fr; gap: 6px; padding: 3px 0; border-bottom: 1px solid var(--line); }
+.task-events time { color: var(--ink-3); font-variant-numeric: tabular-nums; }

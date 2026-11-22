@@ -120,6 +120,9 @@ class Workspaces {
         case "workspace.browserRequest":
           this.#answer(data);
           break;
+        case "task.updated":
+          if (data?.workspaceID) this.#paintTask(data);
+          break;
       }
     });
     this.#enqueue(async () => {
@@ -619,6 +622,25 @@ class Workspaces {
     const id = folder.getAttribute("lima-workspace");
     if (!id || folder.label === this.#workspaces.get(id)?.name) return;
     lazy.LimaBridge.request("workspace.rename", { id, name: folder.label }).catch(error => log(`rename: ${error.message}`));
+  }
+
+  // MARK: Task state on the folder (the Orchestrator's record)
+
+  static #TASK_LABELS = {
+    accepted: "Preparing your task", planned: "Starting", queued: "Waiting for available capacity", waiting: "Waiting for agents",
+    running: "Working", paused: "Work paused", blocked: "Needs attention", verifying: "Verifying results",
+    completed: "Task completed", completed_with_warnings: "Completed with warnings", failed: "Task failed", canceled: "Stopped",
+  };
+
+  #paintTask(task) {
+    const win = this.#win();
+    const folder = win && this.folderFor(task.workspaceID, "folder", win);
+    if (!folder) return;
+    const label = folder.querySelector(":scope > .tab-group-label-container");
+    const state = Workspaces.#TASK_LABELS[task.state] ?? task.state;
+    folder.setAttribute("lima-task", task.state);
+    const latest = task.events?.at(-1)?.message;
+    if (label) label.title = `${folder.label} · ${state}${latest && latest !== state ? ` · ${latest}` : ""}`;
   }
 
   // MARK: Prism: where the agent is

@@ -593,7 +593,8 @@ zen-folder[lima-archiving] > .tab-group-label-container { opacity: .7; }
 }
 #lima-assistant-toggle[data-activity="delegate"] > html|span { animation-name: lima-assistant-hop; }
 #lima-assistant-toggle[lima-attention] > html|span,
-zen-folder[lima-workspace][lima-attention] > .tab-group-label-container > .tab-group-folder-icon::after {
+zen-folder[lima-workspace][lima-attention] > .tab-group-label-container > .tab-group-folder-icon::after,
+zen-folder[lima-workspace][lima-task="blocked"] > .tab-group-label-container > .tab-group-folder-icon::after {
   mask: url("resource://lima-ui/marks/attention.svg") center / contain no-repeat !important;
   color: #b55d67;
   background: currentColor !important;

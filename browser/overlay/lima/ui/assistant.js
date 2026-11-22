@@ -152,9 +152,10 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     const reply = el("div", { class: "companion-task-reply" });
     const row = el("article", { class: "companion-task" },
       el("p", { class: "companion-task-request", text }), reply);
-    const task = { row, reply };
+    const task = { row, reply, requestId: crypto.randomUUID(), taskIds: [] };
     tasks.push(task);
-    const settled = tasks.filter(item => ["complete", "failed"].includes(item.phase));
+    const settled = tasks.filter(item => ["complete", "failed"].includes(item.phase)
+      || (item.phase === "tracked" && item.taskIds.every(id => TERMINAL.has(orchestrated.get(id)?.task.state))));
     if (settled.length > 15) {
       const oldest = settled[0];
       oldest.row.remove();
@@ -192,11 +193,11 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
             else await bridge.browser("assistantRevealGroup", { id: result.id });
           } catch (error) { paintTask(task, "failed", errorText(error)); }
         } }, icon(note ? "note" : "folder"), note ? "Open note" : "Show folder");
-        paintTask(task, "complete", el("p", { text: note ? `Created “${result.title}”.`
+        paintTask(task, "complete", el("p", { text: note ? `I'll handle that directly. Created “${result.title}”.`
           : `Created “${result.title}” with ${result.count} ${result.count === 1 ? "tab" : "tabs"}.` }), open);
         return;
       }
-      if (plan.answer) { paintTask(task, "complete", markdown(plan.answer)); return; }
+      if (plan.answer) { paintTask(task, "complete", el("p", { class: "muted", text: "Here's the answer." }), markdown(plan.answer)); return; }
       if (plan.workspaceIds.some(id => !workspaces.has(id))) throw new Error("A workspace changed during planning. Send the request again.");
       plan.pages = pages.filter(Boolean);
       plan.text = text;
@@ -207,27 +208,105 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
   }
 
   async function submit(task, plan) {
-    paintTask(task, "working", "Starting the workspace agent…");
+    paintTask(task, "working", plan.workspaceIds.length ? "I'll send this to your existing workspace." : "This requires several steps. I'll coordinate the work.");
     try {
       const pages = plan.pages.map(tab => [tab.title, tab.url, tab.excerpt].filter(Boolean).join("\n"));
-      const revision = conversationRevision;
       const destinations = [];
-      for (const id of plan.workspaceIds.length ? plan.workspaceIds : [undefined]) {
-        const { workspace, conversation } = await call("assistant.delegate", {
-          id, name: plan.newName, text: plan.text, mascot: plan.mascot, ...plan.agent, references: pages.join("\n\n"),
+      for (const [index, id] of (plan.workspaceIds.length ? plan.workspaceIds : [undefined]).entries()) {
+        // One request ID per destination: resubmitting never creates a second task.
+        const { task: record, workspace } = await call("task.submit", {
+          requestId: `${task.requestId}:${index}`, id, name: plan.newName, text: plan.text, mascot: plan.mascot, ...plan.agent,
+          references: pages.join("\n\n"), referenceCount: pages.length,
         });
         workspaces.set(workspace.id, workspace);
         destinations.push(workspace);
         handedOff = workspace.id;
-        if (revision === conversationRevision || !conversations.get(conversation.id)?.message?.id) rememberConversation(conversation);
+        tracked.set(record.id, task);
+        task.taskIds.push(record.id);
+        orchestrated.set(record.id, { task: record, children: [] });
       }
-      paintTask(task, "complete", el("p", { text: destinations.length === 1
-        ? `Sent to ${destinations[0].name}. The agent is starting your task.`
-        : `Sent to ${destinations.length} workspaces. The agents are starting your task.` }),
-        ...destinations.map(workspace => el("button", { class: "ghost", onclick: () => openWorkspace(workspace) }, workspace.name)));
+      task.phase = "tracked";
+      paintTracked(task);
       if (!home && !input.value && !tasks.some(item => ["working", "approval"].includes(item.phase))) close().catch(() => {});
     } catch (error) { paintTask(task, "failed", errorText(error)); }
     finally { draw(); }
+  }
+
+  // MARK: Orchestrated tasks: one persistent record per handoff
+
+  const STATES = {
+    accepted: "Preparing your task…", planned: "Assigned", queued: "Waiting for available capacity", waiting: "Waiting for agents",
+    running: "Working", paused: "Work paused", blocked: "Blocked", verifying: "Verifying results…", completed: "Task completed",
+    completed_with_warnings: "Completed with warnings", failed: "Failed", canceled: "Stopped",
+  };
+  const TERMINAL = new Set(["completed", "completed_with_warnings", "failed", "canceled"]);
+  const orchestrated = new Map();
+  const tracked = new Map();
+
+  function taskView(record) {
+    const { task: item, children } = record;
+    const active = children.filter(child => ["running", "verifying"].includes(child.state)).length;
+    const queued = children.filter(child => ["queued", "waiting"].includes(child.state)).length;
+    const last = item.events.at(-1)?.message ?? "";
+    const workspace = workspaces.get(item.workspaceID);
+    const where = workspace ? (item.state === "accepted" || item.state === "planned" ? `Assigned to ${workspace.name}` : workspace.name) : "";
+    const agents = [active ? `${active} ${active === 1 ? "agent" : "agents"} working` : "", queued ? `${queued} queued` : ""].filter(Boolean).join(" · ");
+    const actions = [];
+    if (workspace) actions.push(el("button", { class: "ghost", onclick: () => openWorkspace(workspace) }, TERMINAL.has(item.state) ? "Review Result" : "Open Workspace"));
+    if (!TERMINAL.has(item.state)) actions.push(el("button", { class: "ghost", onclick: () => control("task.cancel", item.id) }, "Stop Task"));
+    if (["paused", "blocked", "failed"].includes(item.state)) actions.push(el("button", { class: "ghost", onclick: () => control("task.resume", item.id) }, item.state === "paused" ? "Resume" : "Retry"));
+    return el("div", { class: "companion-task-status", "data-state": item.state },
+      el("p", { class: "companion-task-line" }, el("strong", { text: STATES[item.state] ?? item.state }),
+        where ? el("span", { class: "muted", text: ` · ${where}` }) : null),
+      last && last !== STATES[item.state] ? el("p", { class: "muted", text: last }) : null,
+      agents ? el("p", { class: "muted", text: agents }) : null,
+      TERMINAL.has(item.state) && item.outcome ? el("p", { class: "companion-task-outcome", text: item.outcome }) : null,
+      el("div", { class: "row" }, ...actions));
+  }
+
+  async function control(method, id) {
+    try {
+      const record = await call(method, { id });
+      orchestrated.set(record.task.id, record);
+      const owner = tracked.get(record.task.id);
+      if (owner) paintTracked(owner);
+    } catch (error) { reportError(error); }
+  }
+
+  function paintTracked(task) {
+    const records = task.taskIds.map(id => orchestrated.get(id)).filter(Boolean);
+    task.reply.dataset.state = records.every(record => TERMINAL.has(record.task.state)) ? "complete" : "working";
+    task.reply.replaceChildren(...records.map(taskView));
+  }
+
+  let refreshing = new Map();
+  function refreshTask(id) {
+    clearTimeout(refreshing.get(id));
+    refreshing.set(id, setTimeout(async () => {
+      const record = await call("task.get", { id }).catch(() => null);
+      if (!record) return;
+      orchestrated.set(id, record);
+      const owner = tracked.get(id);
+      if (owner) paintTracked(owner);
+    }, 120));
+  }
+
+  /** Reopening the Companion shows the tasks still in progress and recent results. */
+  async function restoreTasks() {
+    const records = await call("task.list", { limit: 6 }).catch(() => []);
+    for (const record of records.reverse()) {
+      if (tracked.has(record.task.id)) continue;
+      if (TERMINAL.has(record.task.state) && Date.now() - (record.task.finishedAt ?? 0) > 6 * 3600_000) continue;
+      const reply = el("div", { class: "companion-task-reply" });
+      const row = el("article", { class: "companion-task" }, el("p", { class: "companion-task-request", text: record.task.request }), reply);
+      const task = { row, reply, phase: "tracked", taskIds: [record.task.id] };
+      tasks.push(task);
+      tracked.set(record.task.id, task);
+      orchestrated.set(record.task.id, record);
+      taskChat.hidden = false;
+      taskChat.prepend(row);
+      paintTracked(task);
+    }
   }
 
   function rememberConversation(data) {
@@ -249,6 +328,14 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     else workspaces.set(data.id, data);
   }
   const unsubscribe = onEvent(({ event, data }) => {
+    if (event === "task.updated" && data) {
+      const root = data.parentID ?? data.id;
+      if (tracked.has(root)) {
+        if (!data.parentID) { const record = orchestrated.get(root); if (record) record.task = data; paintTracked(tracked.get(root)); }
+        refreshTask(root);
+      }
+      return;
+    }
     if (event === "assistant.draft" && !home && typeof data?.text === "string") {
       input.value = data.text;
       prefs.set(draftKey, data.text);
@@ -291,6 +378,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     } catch (error) { reportError(error); }
   }
   await load();
+  await restoreTasks();
   await agent.ready;
   draw();
 }

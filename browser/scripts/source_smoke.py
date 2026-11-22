@@ -86,6 +86,7 @@ const compiled = COMPILED;
   const directRuns = await countRuns();
   const recorded = /[?&#]execution=/.test(tab.linkedBrowser.currentURI.spec);
   gBrowser.removeTab(tab);
+  const tasks = await LimaBridge.request("task.list", { limit: 5 }).catch(() => null);
   // Lima's own surfaces never sit on the right edge of the window.
   const { LimaSearchPanel } = ChromeUtils.importESModule("resource://lima/LimaSearchPanel.sys.mjs");
   LimaSearchPanel.open(window, "what is a browser?");
@@ -105,6 +106,7 @@ const compiled = COMPILED;
     pageActions: ["lima-tabctx-add", "lima-tabctx-ask", "lima-tabctx-send", "lima-page-summarize", "lima-page-save", "lima-page-ask",
       "lima-folder-reveal", "lima-folder-rename"].every(id => document.getElementById(id)),
     rightEdgeClear: rightEdge.length ? rightEdge.join(",") : true,
+    orchestrator: Array.isArray(tasks),
     branding: Services.appinfo.name === "Lima" && Services.appinfo.vendor === "Lima",
     profileIdentity: !compiled || (AppConstants.MOZ_APP_NAME === "lima" && AppConstants.MOZ_MACBUNDLE_ID === "dev.lima.browser"),
     noZenServices: !Services.prefs.getStringPref("zen.share.base-url", "") && !/zen-browser\\.app/.test(Services.prefs.getStringPref("zen.injections.match-urls", "")),

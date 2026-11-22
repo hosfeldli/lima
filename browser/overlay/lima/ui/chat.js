@@ -91,25 +91,36 @@ async function initializeChat(app, chatId, compact, signal) {
   let sendFailed = false;
   input.value = prefs.get(draftKey, "");
 
-  // Modules: Chat (conversation + composer) | Steps · Agents · Files.
-  const chatTab = el("span", { class: "tab" }, "Chat");
-  const steps = el("ol", { class: "steps" });
+  // One column. Chat, Task Progress, Agents, Activity and Files are views
+  // inside this tab; nothing is pinned to the right of the conversation.
   const counted = (label, n) => [label, n ? el("span", { class: "count", text: String(n) }) : null].filter(Boolean);
-  const stepsTab = el("span", { class: "tab" }, "Steps");
-  const agentsTab = el("span", { class: "tab" }, "Agents");
-  const filesTab = el("span", { class: "tab" }, "Files");
+  const steps = el("ol", { class: "steps" });
   const agents = el("ul", { class: "list" });
   const files = el("ul", { class: "list" });
-  const side = el("aside", { class: "chat-side" },
-    el("section", { class: "mod" }, el("div", { class: "mod-head" }, stepsTab), steps),
-    el("section", { class: "mod", hidden: true }, el("div", { class: "mod-head" }, agentsTab), agents),
-    el("section", { class: "mod", hidden: true }, el("div", { class: "mod-head" }, filesTab), files));
+  const progress = el("div", { class: "task-progress" });
+  const views = { chat: messages, progress, agents, activity: steps, files };
+  const viewTab = (name, label) => el("button", { class: "tab", role: "tab", "data-view": name, "aria-selected": String(name === "chat"),
+    onclick: () => showView(name) }, label);
+  const chatTab = viewTab("chat", "Chat");
+  const progressTab = viewTab("progress", "Task Progress");
+  const agentsTab = viewTab("agents", "Agents");
+  const stepsTab = viewTab("activity", "Activity");
+  const filesTab = viewTab("files", "Files");
+  progressTab.hidden = agentsTab.hidden = filesTab.hidden = true;
+  let currentView = "chat";
+  function showView(name) {
+    currentView = name;
+    for (const tab of [chatTab, progressTab, agentsTab, stepsTab, filesTab]) tab.setAttribute("aria-selected", String(tab.dataset.view === name));
+    for (const [key, node] of Object.entries(views)) node.hidden = key !== name;
+    if (name === "progress") drawProgress();
+  }
+  for (const [key, node] of Object.entries(views)) { node.classList.add("chat-view"); node.hidden = key !== "chat"; }
   const body = el("div", { class: "chat-body solo" },
-    el("section", { class: "chat-main" }, el("div", { class: "mod-head" }, chatTab), messages,
+    el("section", { class: "chat-main" }, el("div", { class: "mod-head chat-views", role: "tablist" }, chatTab, progressTab, agentsTab, stepsTab, filesTab),
+      messages, progress, agents, steps, files,
       el("div", { class: "composer" }, prompts.node, activity.node, recovery,
         el("div", { class: "composer-box" }, input, completionMenu.node,
-          el("div", { class: "composer-row" }, controls.provider, controls.model, el("span", { class: "spacer" }), stopButton, sendButton)))),
-    side);
+          el("div", { class: "composer-row" }, controls.provider, controls.model, el("span", { class: "spacer" }), stopButton, sendButton)))));
   app.replaceChildren(el("div", { class: compact ? "chat-page assistant-chat" : "chat-page" },
     el("header", { class: "chat-head" }, character, title, subtitle, el("span", { class: "spacer" }), mascot),
     body));
@@ -248,6 +259,53 @@ async function initializeChat(app, chatId, compact, signal) {
     area.focus();
   }
 
+  // Task Progress: the Orchestrator's record for this workspace's latest
+  // task: its state, helpers, dependencies, history and outcome.
+  const TASK_STATES = {
+    accepted: "Preparing your task…", planned: "Planned", queued: "Waiting for available capacity", waiting: "Waiting for dependencies",
+    running: "Working", paused: "Work paused", blocked: "Blocked", verifying: "Verifying results…", completed: "Task completed",
+    completed_with_warnings: "Completed with warnings", failed: "Failed", canceled: "Stopped",
+  };
+  const TASK_DONE = new Set(["completed", "completed_with_warnings", "failed", "canceled"]);
+  let progressRequest = 0;
+  async function drawProgress() {
+    if (!workspace || signal.aborted) return;
+    const owner = workspace.parentID ?? workspace.id;
+    const request = ++progressRequest;
+    const records = await call("task.list", { workspaceId: owner, limit: 1 }).catch(error => { progress.replaceChildren(el("p", { class: "error", text: errorText(error) })); return null; });
+    if (!records || signal.aborted || request !== progressRequest) return;
+    const record = records[0];
+    if (!record) {
+      progress.replaceChildren(el("p", { class: "muted", text: "Tasks you hand to this workspace from the Companion appear here, with their agents and results." }));
+      return;
+    }
+    const { task, children } = record;
+    const names = new Map(children.map(child => [child.id, child.title]));
+    const control = (label, method) => el("button", { class: "ghost", onclick: async () => {
+      try { await call(method, { id: task.id }); drawProgress(); } catch (error) { reportError(error); }
+    } }, label);
+    progress.replaceChildren(
+      el("section", { class: "task-card", "data-state": task.state },
+        el("div", { class: "row" }, el("strong", { class: "grow", text: task.title }), el("span", { class: "badge", text: TASK_STATES[task.state] ?? task.state })),
+        task.context?.length ? el("p", { class: "muted", text: task.context.join(" · ") }) : null,
+        task.outcome ? el("p", { class: "task-outcome", text: task.outcome }) : null,
+        el("div", { class: "row" },
+          !TASK_DONE.has(task.state) ? control("Stop Task", "task.cancel") : null,
+          ["running", "waiting", "queued"].includes(task.state) ? control("Pause", "task.pause") : null,
+          ["paused", "blocked", "failed"].includes(task.state) ? control(task.state === "paused" ? "Resume" : "Retry", "task.resume") : null)),
+      children.length ? el("h3", { text: "Agents" }) : null,
+      children.length ? el("ul", { class: "list" }, children.map(child => el("li", {
+        class: child.conversationID ? "clickable" : "", title: child.objective,
+        onclick: () => { if (child.conversationID) bridge.openTab(`about:lima?chat=${encodeURIComponent(child.conversationID)}`); },
+      }, el("span", { class: "grow" }, el("strong", { text: child.title }),
+          el("span", { class: "muted", text: ` · ${child.events.at(-1)?.message ?? ""}` }),
+          child.dependsOn.length ? el("span", { class: "muted", text: ` · after ${child.dependsOn.map(id => names.get(id) ?? "another task").join(", ")}` }) : null),
+        el("span", { class: "badge", text: TASK_STATES[child.state] ?? child.state })))) : null,
+      el("h3", { text: "Activity" }),
+      el("ol", { class: "task-events" }, task.events.slice(-12).reverse().map(event => el("li", {},
+        el("time", { text: new Date(event.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) }), el("span", { text: event.message })))));
+  }
+
   // Steps: every tool call, timestamped by its reply; nothing disappears.
   function drawSteps() {
     const stepList = JSON.stringify(conversation.messages.map(message => [message.id, message.status, message.tools]));
@@ -262,21 +320,21 @@ async function initializeChat(app, chatId, compact, signal) {
         rows.push(el("li", { class: current ? "now" : message.status === "failed" ? "failed" : "" }, el("time", { text: time }), toolRow(tool, current)));
       });
     }
-    stepsTab.replaceChildren(...counted("Steps", rows.length));
+    stepsTab.replaceChildren(...counted("Activity", rows.length));
     steps.replaceChildren(...(rows.length ? rows.slice(-40) : [el("li", { class: "muted" }, el("time", { text: "" }), el("span", { text: "Tool calls appear here as the agent works." }))]));
     if (!compact) steps.lastElementChild?.scrollIntoView?.({ block: "nearest" });
   }
 
   async function drawWorkspaceModules() {
     if (!workspace || compact || signal.aborted) return;
-    body.classList.remove("solo");
+    progressTab.hidden = false;
     const request = ++modulesRequest;
     const [all, chats] = await Promise.all([call("workspace.list").catch(() => []), call("chat.list").catch(() => [])]);
     if (signal.aborted || request !== modulesRequest) return;
     const summaries = new Map(chats.map(chat => [chat.id, chat]));
     const helpers = all.filter(w => w.parentID === workspace.id);
     helperChats = new Set(helpers.map(helper => helper.conversationID));
-    agents.parentElement.hidden = !helpers.length;
+    agentsTab.hidden = !helpers.length;
     agentsTab.replaceChildren(...counted("Agents", helpers.length));
     agents.replaceChildren(...helpers.map(h => {
       const summary = summaries.get(h.conversationID);
@@ -288,7 +346,7 @@ async function initializeChat(app, chatId, compact, signal) {
     }));
     const entries = await call("fs.list", { path: workspace.directory }).catch(() => []);
     if (signal.aborted || request !== modulesRequest) return;
-    files.parentElement.hidden = false;
+    filesTab.hidden = false;
     filesTab.replaceChildren(...counted("Files", entries.length));
     files.replaceChildren(...(entries.length ? entries.slice(0, 30).map(f => el("li", {}, icon(f.directory ? "folder" : "file"), el("span", { class: "grow", text: f.name })))
       : [el("li", { class: "muted", text: "Empty folder" })]));
@@ -314,6 +372,10 @@ async function initializeChat(app, chatId, compact, signal) {
 
   const unsubscribe = onEvent(message => {
     const data = message.data;
+    if (message.event === "task.updated" && workspace && [data?.workspaceID, data?.parentID].some(Boolean)) {
+      if (currentView === "progress") drawProgress();
+      return;
+    }
     if (message.event === "integrations.setup.updated" && data?.phase === "done" && conversation) {
       controls.refresh(conversation, false).then(draw);
     }
