@@ -120,10 +120,12 @@ enum UpdateVerifier {
     }
 }
 
+final class DownloadTaskBox: @unchecked Sendable { var task: URLSessionDownloadTask? }
+
 /// Checks, downloads, verifies and stages Lima updates. Installation runs
 /// in a separate `lima-host apply-update` process after the browser quits.
 final class UpdateService: @unchecked Sendable {
-    enum Phase: String, Sendable { case disabled, idle, checking, available, downloading, ready, installing, failed }
+    enum Phase: String, Sendable { case disabled, idle, checking, available, downloading, verifying, ready, installing, failed }
 
     private let lock = NSLock()
     private var phase: Phase
@@ -131,6 +133,8 @@ final class UpdateService: @unchecked Sendable {
     private var staged: URL?
     private var lastError: String?
     private var checkedAt: Date?
+    /// Download progress, 0–1, while downloading.
+    private var progress: Double?
     let configuration: UpdateConfiguration?
     let directory: URL
     var emit: (@Sendable (JSONValue) -> Void)?
@@ -153,6 +157,7 @@ final class UpdateService: @unchecked Sendable {
             "checkedAt": checkedAt.map { .number($0.timeIntervalSince1970 * 1000) } ?? .null,
             "error": lastError.map(JSONValue.string) ?? .null,
             "canRollBack": .bool(FileManager.default.fileExists(atPath: previousApp.path)),
+            "progress": progress.map(JSONValue.number) ?? .null,
         ]
         if let feed {
             object["version"] = .string(feed.version)
@@ -181,8 +186,11 @@ final class UpdateService: @unchecked Sendable {
     /// Fetches the signed feed; downloads and stages a newer build.
     func check() async throws -> JSONValue {
         guard let configuration else { return status }
+        // A staged update keeps checking, so a newer security release
+        // replaces it before the user restarts.
+        let stagedBuild: Int? = locked { phase == .ready ? feed?.build : nil }
         let started = locked {
-            guard [.idle, .failed].contains(phase) else { return false }
+            guard [.idle, .failed, .ready].contains(phase) else { return false }
             phase = .checking
             lastError = nil
             return true
@@ -197,8 +205,9 @@ final class UpdateService: @unchecked Sendable {
                 throw BridgeError(.internalError, "The update server didn't respond.")
             }
             let feed = try UpdateVerifier.feed(data, signature: signature, configuration: configuration)
-            lock.withLock { self.feed = feed; checkedAt = Date() }
-            guard let feed else { set(.idle); return status }
+            lock.withLock { if feed != nil || stagedBuild == nil { self.feed = feed }; checkedAt = Date() }
+            guard let feed else { set(stagedBuild == nil ? .idle : .ready); return status }
+            if feed.build == stagedBuild { set(.ready); return status }
             set(.available)
             try await download(feed, configuration: configuration, session: session)
             return status
@@ -216,9 +225,9 @@ final class UpdateService: @unchecked Sendable {
         try? fm.removeItem(at: staging)
         try fm.createDirectory(at: staging, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         guard let url = URL(string: feed.url) else { throw BridgeError(.badRequest, "The update feed is malformed.") }
-        let (temporary, response) = try await session.download(from: url)
         let archive = staging.appendingPathComponent("Lima.zip")
-        try fm.moveItem(at: temporary, to: archive)
+        let response = try await downloadWithProgress(url, to: archive, expectedBytes: feed.bytes, session: session)
+        set(.verifying)
         guard (response as? HTTPURLResponse)?.statusCode == 200,
               ((try? fm.attributesOfItem(atPath: archive.path)[.size] as? NSNumber)?.intValue) == feed.bytes,
               try UpdateVerifier.sha256(of: archive) == feed.sha256
@@ -241,9 +250,48 @@ final class UpdateService: @unchecked Sendable {
         set(.ready)
     }
 
+    /// Downloads to `destination`, reporting progress about twice a second.
+    private func downloadWithProgress(_ url: URL, to destination: URL, expectedBytes: Int, session: URLSession) async throws -> URLResponse {
+        let box = DownloadTaskBox()
+        let ticker = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard let task = box.task, let self else { continue }
+                let total = task.countOfBytesExpectedToReceive > 0 ? Double(task.countOfBytesExpectedToReceive) : Double(expectedBytes)
+                guard total > 0 else { continue }
+                let fraction = min(1, Double(task.countOfBytesReceived) / total)
+                if abs(fraction - (self.locked { self.progress ?? -1 })) >= 0.01 {
+                    self.locked { self.progress = fraction }
+                    self.emit?(self.status)
+                }
+            }
+        }
+        defer { ticker.cancel(); locked { progress = nil } }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URLResponse, Error>) in
+                let task = session.downloadTask(with: url) { temporary, response, error in
+                    if let error { continuation.resume(throwing: error); return }
+                    guard let temporary, let response else {
+                        continuation.resume(throwing: BridgeError(.internalError, "The update server closed the download.")); return
+                    }
+                    do {
+                        try? FileManager.default.removeItem(at: destination)
+                        try FileManager.default.moveItem(at: temporary, to: destination)
+                        continuation.resume(returning: response)
+                    } catch { continuation.resume(throwing: error) }
+                }
+                box.task = task
+                locked { progress = 0 }
+                task.resume()
+            }
+        } onCancel: { box.task?.cancel() }
+    }
+
     /// Starts the installer, which waits for `browserPID` to exit, swaps the
     /// bundle, verifies it and relaunches Lima (or restores the old copy).
-    func install(browserPID: pid_t, profilePath: String) throws {
+    /// With `relaunch` false (installing because the user quit Lima), Lima
+    /// stays closed and opens updated next time.
+    func install(browserPID: pid_t, profilePath: String, relaunch: Bool = true) throws {
         guard let configuration else { throw BridgeError(.badRequest, "Updates are off in development builds.") }
         guard browserPID > 1 else { throw BridgeError(.badRequest, "browserPid is required.") }
         let profile = try UpdateApplier.profile(path: profilePath, outside: [configuration.app, directory])
@@ -253,7 +301,7 @@ final class UpdateService: @unchecked Sendable {
             return staged
         }) else { throw BridgeError(.badRequest, "No update is ready.") }
         do {
-            try launchApplier(source: staged, configuration: configuration, browserPID: browserPID, profile: profile, keepBackup: true)
+            try launchApplier(source: staged, configuration: configuration, browserPID: browserPID, profile: profile, keepBackup: true, relaunch: relaunch)
             emit?(status)
         } catch {
             set(.ready, error: error.localizedDescription)
@@ -275,7 +323,7 @@ final class UpdateService: @unchecked Sendable {
         set(.installing)
     }
 
-    private func launchApplier(source: URL, configuration: UpdateConfiguration, browserPID: pid_t, profile: URL, keepBackup: Bool) throws {
+    private func launchApplier(source: URL, configuration: UpdateConfiguration, browserPID: pid_t, profile: URL, keepBackup: Bool, relaunch: Bool = true) throws {
         let parent = configuration.app.deletingLastPathComponent()
         if configuration.app.path.contains("/AppTranslocation/") ||
             (try? parent.resourceValues(forKeys: [.volumeIsReadOnlyKey]).volumeIsReadOnly) == true {
@@ -288,7 +336,7 @@ final class UpdateService: @unchecked Sendable {
         process.executableURL = URL(fileURLWithPath: CodeTrust.selfExecutable)
         process.arguments = ["apply-update", "--source", source.path, "--target", configuration.app.path,
                              "--wait-pid", String(browserPID), "--state", directory.path, "--profile", profile.path] +
-                            (keepBackup ? ["--keep-backup"] : [])
+                            (keepBackup ? ["--keep-backup"] : []) + (relaunch ? [] : ["--no-relaunch"])
         process.standardInput = FileHandle.nullDevice
         let log = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Lima/update.log")
         try? FileManager.default.createDirectory(at: log.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -356,6 +404,8 @@ public enum UpdateApplier {
         }
         record(result)
         print("lima-host apply-update: \(result ?? "installed")")
+        // Installed because the user quit: Lima opens updated next time.
+        if arguments.contains("--no-relaunch") { exit(result == nil ? 0 : 1) }
         guard kill(pid, 0) != 0, let requirement, (try? UpdateVerifier.verifyApp(target, requirement: requirement)) != nil else { exit(1) }
         let relaunch = Process()
         relaunch.executableURL = URL(fileURLWithPath: "/usr/bin/open")
@@ -451,7 +501,8 @@ extension Runtime {
             guard !chats.contains(where: \.running), !shells.contains(where: {
                 $0.state == .running || $0.state == .waitingForInput || $0.userEditing == true
             }) else { throw BridgeError(.badRequest, "Finish active agents and terminal commands before restarting Lima.") }
-            try self.updates.install(browserPID: pid_t(params?["browserPid"]?.doubleValue ?? 0), profilePath: try params.string("profilePath"))
+            try self.updates.install(browserPID: pid_t(params?["browserPid"]?.doubleValue ?? 0), profilePath: try params.string("profilePath"),
+                                     relaunch: params?["relaunch"]?.boolValue ?? true)
             return self.updates.status
         }
         register("update.rollback") { [unowned self] params, context in
