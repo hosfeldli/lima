@@ -272,32 +272,34 @@ function updateSettings() {
   const detail = el("p", { class: "muted" });
   const outcome = el("p", { class: "update-outcome", role: "status", hidden: true });
   const progress = el("progress", { "aria-label": "Update in progress", hidden: true });
-  const check = el("button", { class: "ghost", disabled: true, onclick: () => run("checkForUpdate") }, "Check for updates");
-  const install = el("button", { class: "primary", hidden: true, onclick: () => run("installUpdate") }, "Restart to update");
+  const check = el("button", { class: "ghost", disabled: true, onclick: () => run("checkForUpdate") }, "Check for Updates");
+  const install = el("button", { class: "primary", hidden: true, onclick: () => run("installUpdate") }, "Restart to Update");
+  const whatsNew = el("button", { class: "ghost", onclick: () => bridge.openTab("https://github.com/hosfeldli/lima/releases") }, "View What's New");
   const checked = el("small", { class: "muted" });
   const node = el("div", { class: "update-settings" },
     el("div", { class: "update-summary" }, mascot, el("div", { class: "grow", role: "status" }, installed, heading, detail)),
-    progress, outcome, el("div", { class: "row update-actions" }, check, install, checked));
+    progress, outcome, el("div", { class: "row update-actions" }, check, install, whatsNew, checked));
   let state;
   let working;
   let revision = 0;
   const phases = {
     disabled: ["Automatic updates are off", "This build is outside the stable update channel."],
     idle: ["Lima is up to date", ""],
-    checking: ["Checking for updates", "Contacting the Lima release server."],
-    available: ["An update is available", "Preparing the download."],
-    downloading: ["Downloading and verifying", "Lima checks the update’s signature before offering to install it."],
-    ready: ["Ready to install", "Lima will reopen using this browser profile, with your tabs, folders, and settings."],
-    installing: ["Restarting Lima", "Saving the browser session before replacing the app."],
-    failed: ["Update check failed", "Try checking again."],
+    checking: ["Checking for updates…", "Contacting the Lima release server."],
+    available: ["Downloading update…", "Preparing the download."],
+    downloading: ["Downloading update…", "Lima verifies the update’s signature before offering to install it."],
+    verifying: ["Verifying update…", "Checking the signature and code signing before offering to install it."],
+    ready: ["Ready to Restart", "Lima will reopen using this browser profile, with your tabs, folders, and settings."],
+    installing: ["Restarting Lima…", "Saving the browser session before replacing the app."],
+    failed: ["Update Failed", "Your current version keeps working. Try again."],
   };
   function paint() {
     if (!state) return;
     const { phase, version, currentVersion, checkedAt, lastInstall, error } = state;
     const [label, explanation] = phases[phase] ?? phases.idle;
-    const busy = working || ["checking", "available", "downloading", "installing"].includes(phase);
+    const busy = working || ["checking", "available", "downloading", "verifying", "installing"].includes(phase);
     installed.textContent = currentVersion ? `Lima ${currentVersion} · ${phase === "disabled" ? "Development" : "Stable"}` : "Lima";
-    heading.textContent = phase === "ready" && version ? `Lima ${version} is ready`
+    heading.textContent = phase === "ready" && version ? `Lima ${version} · Ready to Restart`
       : phase === "idle" && !checkedAt ? "Check for a new version" : label;
     detail.textContent = phase === "idle" && !checkedAt ? "Check for the latest stable release." : explanation;
     outcome.hidden = !(error || lastInstall?.ok === false);
@@ -305,6 +307,7 @@ function updateSettings() {
     progress.hidden = !busy;
     check.disabled = Boolean(busy);
     check.hidden = ["disabled", "ready", "installing"].includes(phase);
+    check.textContent = phase === "failed" ? "Retry" : "Check for Updates";
     install.hidden = phase !== "ready";
     install.disabled = Boolean(busy);
     checked.textContent = checkedAt ? `Last checked ${new Date(checkedAt).toLocaleString()}` : "";
@@ -405,26 +408,49 @@ function providerSettings() {
     codex: ["npm install -g @openai/codex", "https://github.com/openai/codex#quickstart"],
     opencode: ["brew install anomalyco/tap/opencode-v2", "https://opencode.ai/docs/providers"],
   };
+  // One row per provider. The state separates a missing CLI, a CLI that
+  // won't report its version, and an installed CLI that isn't signed in.
+  const STATES = {
+    ready: ["Ready", name => `${name} is installed and signed in.`],
+    notInstalled: ["Not Installed", name => `${name} isn't installed on this Mac. Install it, then check again.`],
+    signIn: ["Sign-In Required", name => `${name} is installed, but Lima couldn't verify its sign-in. Sign in and check again.`],
+    unavailable: ["Unavailable", name => `${name} was found, but it didn't respond to Lima's version check. Reinstall it or view the details.`],
+  };
   async function draw() {
-    const [providers, configured] = await Promise.all([call("agents.discover"), call("agents.configured")]);
+    items.replaceChildren(el("p", { class: "muted", role: "status", text: "Checking…" }));
+    let providers, configured;
+    try {
+      [providers, configured] = await Promise.all([call("agents.discover"), call("agents.configured")]);
+    } catch (error) {
+      items.replaceChildren(el("div", { class: "notice bad" }, icon("warning"),
+        el("span", { class: "grow" }, el("strong", { text: "Disconnected. " }), "Lima's runtime didn't answer, so provider status is unknown. ", errorText(error)),
+        el("button", { class: "ghost", onclick: () => draw() }, "Check Again")));
+      return;
+    }
     await controls.refresh();
     items.replaceChildren(...providers.map(provider => {
       const id = provider.provider;
-      const name = PROVIDERS[id];
+      const name = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode" }[id] ?? PROVIDERS[id];
       const [command, docs] = mappings[id];
       const installed = provider.status === "available";
       const ready = configured.includes(id);
-      return el("article", { class: "settings-provider" },
-        el("div", { class: "row" }, el("strong", { text: name }), el("span", { class: "spacer" }),
-          el("span", { class: "badge", text: ready ? "Connected" : installed ? "Needs sign-in" : "Needs installation" })),
+      const state = ready ? "ready" : provider.status === "not_installed" ? "notInstalled" : provider.status === "version_probe_failed" ? "unavailable" : "signIn";
+      const [label, explain] = STATES[state];
+      return el("article", { class: "settings-provider", "data-state": state },
+        el("div", { class: "row" }, el("strong", { text: name }), el("span", { class: "spacer" }), el("span", { class: "badge", text: label })),
+        el("p", { class: "muted", text: explain(name) }),
         provider.executablePath ? el("code", { text: provider.executablePath, title: provider.installations?.[0]?.resolvedPath }) : null,
-        !installed ? setupAction("install." + id, "Install", "Run " + command + " on this Mac?", draw) : null,
-        installed && !ready && id !== "opencode" ? setupAction(id, "Sign in", "Start " + name + " sign-in?", draw) : null,
-        !ready ? el("button", { class: "ghost", onclick: () => bridge.openTab(docs) }, "Setup guide") : null);
+        state === "notInstalled" ? setupAction("install." + id, "Install", "Run " + command + " on this Mac?", draw) : null,
+        installed && !ready && id !== "opencode" ? setupAction(id, "Sign In", "Start " + name + " sign-in?", draw) : null,
+        !ready ? el("div", { class: "row" },
+          el("button", { class: "ghost", onclick: () => bridge.openTab(docs) }, "Open Setup"),
+          el("button", { class: "ghost", onclick: () => draw() }, "Check Again")) : null,
+        provider.diagnostic || provider.version ? el("details", {}, el("summary", { text: "View Details" }),
+          el("pre", { class: "muted", text: [provider.version && `Version: ${provider.version}`, provider.diagnostic].filter(Boolean).join("\n") })) : null);
     }));
   }
   node.append(el("div", { class: "row" }, el("strong", { text: "Default AI" }), controls.provider, controls.model,
-    el("button", { class: "ghost", onclick: () => draw().catch(error => fail(items, error)) }, "Check again")), items);
+    el("button", { class: "ghost", onclick: () => draw().catch(error => fail(items, error)) }, "Check Again")), items);
   draw().catch(error => fail(items, error));
   return node;
 }

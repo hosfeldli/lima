@@ -5,7 +5,7 @@ import { setupAction } from "./views.js";
 
 export function renderWelcome(app) {
   setPage("Lima Basics");
-  const steps = ["Meet Lima", "Connect your AI", "Choose permissions", "Try Lima"];
+  const steps = ["Meet Lima", "Connect an AI", "Try Search", "Create a Workspace", "You're Ready"];
   const indicator = el("p", { class: "welcome-position", "aria-live": "polite" });
   const title = el("h2", { tabindex: "-1" });
   const content = el("div", { class: "welcome-step-content" });
@@ -41,9 +41,9 @@ export function renderWelcome(app) {
       throw error;
     }
   };
-  const skip = button("Skip setup", finish);
+  const skip = button("Skip for Now", finish);
   const back = button("Back", () => show(index - 1));
-  const next = button("Get started", () => index + 1 === steps.length ? finish() : show(index + 1), "primary");
+  const next = button("Continue", () => index + 1 === steps.length ? finish() : show(index + 1), "primary");
   const paragraph = text => el("p", { class: "welcome-description", text });
   function show(step, focus = true) {
     const ticket = ++generation;
@@ -52,30 +52,27 @@ export function renderWelcome(app) {
     title.textContent = steps[step];
     status.textContent = "";
     back.disabled = step === 0;
-    next.textContent = ["Get started", "Skip for now", "Continue", "Finish"][step];
-    if (step === 0) content.replaceChildren(paragraph("I’m Lima, your Companion. Ask me a quick question or give me a task. I can organize your tabs, take notes, and show you what a workspace agent is doing."),
-      paragraph("I’ll check which AI tools are already on this Mac. You can skip any setup step and come back later."));
+    next.textContent = step === 1 ? "Skip for Now" : step === steps.length - 1 ? "Finish" : "Continue";
+    skip.hidden = step === steps.length - 1;
+    if (step === 0) content.replaceChildren(paragraph("Your browser, workspace, and AI tools in one place."),
+      paragraph("I’m Lima, your Companion. I’ll check what’s already set up on this Mac, so you only see the steps you need."));
     if (step === 1) detect(ticket);
-    if (step === 2) content.replaceChildren(
-      paragraph("These permissions are optional. You can grant them later when you use a feature that needs them."),
-      el("div", { class: "welcome-permission" }, el("strong", { text: "Grammar shortcut" }),
-        paragraph("Enable ⌘G in Writing Tools. In macOS Accessibility settings, allow Lima to read the selected text."),
-        button("Open Writing Tools", () => bridge.openTab("about:lima?view=integrations&section=writing")),
-        button("Open Accessibility settings", () => bridge.browser("accessibilitySettings", {}))),
-      el("div", { class: "welcome-permission" }, el("strong", { text: "Project folders" }),
-        paragraph("If macOS blocks a workspace from opening Documents or Desktop, check Lima’s access under Files & Folders."),
-        button("Open Files & Folders settings", () => bridge.browser("filesPrivacySettings", {}))));
-    if (step === 3) content.replaceChildren(
-      paragraph("Open the Companion in the top left to ask me for help. Press ⌘T to search tabs, notes, and tools. Use Plus in the sidebar to start a note, terminal, or AI workspace."),
-      paragraph("Click a workspace row to open its chat. The arrow on the row shows its tabs and terminal. Requests that need your input appear in the Companion."),
-      el("div", { class: "row" },
-        button("Open Companion", () => bridge.browser("openAssistant", {})),
-        button("Try Lima Search", () => bridge.browser("search", {})),
-        button("Open Notes", () => bridge.openTab("about:lima?view=notes"))));
+    if (step === 2) content.replaceChildren(paragraph("Press ⌘T to find pages, tools, notes, and workspaces. Ask a question there and I’ll answer in place."),
+      el("div", { class: "row" }, button("Try It", () => bridge.browser("search", { text: "" }), "primary")));
+    if (step === 3) content.replaceChildren(paragraph("Connect an AI agent to a project folder. Its chat, terminal, and pages live together in one sidebar folder."),
+      el("div", { class: "row" }, button("Try It", () => bridge.browser("create", { what: "workspace", pickFolder: true }), "primary")));
+    if (step === 4) content.replaceChildren(paragraph("Start browsing. Lima is available whenever you need it."),
+      paragraph("Open the Companion in the top left of the sidebar to delegate a task. Requests that need your approval appear there."),
+      el("details", { class: "welcome-permission" }, el("summary", { text: "Optional permissions" }),
+        paragraph("You can grant these later, when you use a feature that needs them."),
+        el("div", { class: "row" },
+          button("Grammar shortcut (⌘G)", () => bridge.openTab("about:lima?view=integrations&section=writing")),
+          button("Accessibility settings", () => bridge.browser("accessibilitySettings", {})),
+          button("Files & Folders settings", () => bridge.browser("filesPrivacySettings", {})))));
     if (focus) title.focus();
   }
   async function detect(ticket) {
-    content.replaceChildren(paragraph("Checking for Claude, Codex, and OpenCode…"));
+    content.replaceChildren(paragraph("Choose Claude Code, Codex, or OpenCode. Checking which are on this Mac…"));
     try {
       const [providers, configured] = await Promise.all([call("agents.discover"), call("agents.configured")]);
       if (ticket !== generation) return;
@@ -100,8 +97,8 @@ export function renderWelcome(app) {
         ...installed.filter(provider => ["claude", "codex"].includes(provider.provider)).map(provider =>
           setupAction(provider.provider, `Sign in to ${PROVIDERS[provider.provider]}`, `Start ${PROVIDERS[provider.provider]} sign-in on this Mac?`, recheck)),
         el("div", { class: "row" },
-          button("Open AI provider settings", () => bridge.openTab("about:lima?view=integrations&section=agents")),
-          button("Check again", recheck)));
+          button("Open Setup", () => bridge.openTab("about:lima?view=integrations&section=agents")),
+          button("Check Again", recheck)));
     } catch (error) {
       if (ticket === generation) {
         content.replaceChildren(paragraph("I couldn’t check which AI tools are ready."), button("Try again", () => detect(ticket)));

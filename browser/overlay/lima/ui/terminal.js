@@ -85,6 +85,8 @@ function mountTerminal(app, attached, pending) {
   const mascot = companion("workspace-avatar");
   const notice = el("div", { class: "terminal-notice", hidden: true });
   const leaseBar = el("div", { class: "lease", hidden: true });
+  let hadAgent = false;
+  let returnedTimer;
   const host = el("div", { class: "terminal-host" });
   const tree = el("div", { class: "tree", role: "tree" });
   const rootLabel = el("span", { class: "explorer-root" });
@@ -373,10 +375,10 @@ function mountTerminal(app, attached, pending) {
     if (info.state === "exited") next = { state: "disconnected", label: "Shell ended", detail: info.exitCode != null ? `Exit status ${info.exitCode}` : "", icon: "terminal" };
     else if (info.state === "disconnected") next = { state: "disconnected", label: "Shell disconnected", icon: "warning" };
     else if (info.shellReady === false) next = { ...terminalMotion, state: "starting", label: "Waiting for the first shell prompt" };
-    else if (info.pendingRequests.length && !agent) next = { state: "blocked", label: "Agent waiting for keyboard access", icon: "warning" };
+    else if (info.pendingRequests.length && !agent) next = { state: "blocked", label: "Agent is requesting keyboard access", icon: "warning" };
     else if (info.state === "waitingForInput") next = { state: "blocked", label: "Command waiting for input", icon: "terminal" };
     else if (info.state === "running") next = { ...terminalMotion, state: "working", label: agent ? "Agent running a command" : "Command running" };
-    else if (agent) next = { ...terminalMotion, state: "working", label: "Agent has the keyboard" };
+    else if (agent) next = { ...terminalMotion, state: "working", label: "Agent has terminal control" };
     else if (info.userEditing) next = { state: "idle", label: "Editing at the prompt", icon: "terminal" };
     else if (info.state === "uncertain") next = { state: "idle", label: "Terminal connected", detail: "Waiting for a shell status update", icon: "terminal" };
     else next = { state: "idle", label: "Prompt ready", icon: "terminal" };
@@ -418,19 +420,30 @@ function mountTerminal(app, attached, pending) {
     }
     setPage(`${info.state === "running" ? "▶ " : ""}${inWorkspace ? "Terminal" : home(info.cwd).split("/").pop() || "Terminal"}`, "terminal");
 
+    // Ownership bar: visible only while a handoff is active, plus a brief
+    // confirmation when control comes back to the user.
     leaseBar.replaceChildren();
+    clearTimeout(returnedTimer);
     if (agent) {
       leaseBar.hidden = false;
-      leaseBar.append(el("span", { class: "grow", text: "The agent is typing here. Type anything to take the keyboard back." }),
-        el("button", { onclick: () => keyboard("reclaim") }, "Take back"));
+      leaseBar.dataset.state = "agent";
+      leaseBar.append(el("span", { class: "grow", text: "Agent has terminal control. Typing anything also takes it back." }),
+        el("button", { class: "primary", onclick: () => keyboard("reclaim") }, "Take Back Control"));
     } else if (info.pendingRequests.length) {
       leaseBar.hidden = false;
-      leaseBar.append(el("span", { class: "grow", text: "The agent is asking to type in this terminal." }),
+      leaseBar.dataset.state = "request";
+      leaseBar.append(el("span", { class: "grow", text: "Agent is requesting keyboard access" }),
         el("button", { class: "primary", onclick: () => keyboard("grant") }, "Allow"),
         el("button", { onclick: () => keyboard("deny") }, "Deny"));
+    } else if (hadAgent) {
+      leaseBar.hidden = false;
+      leaseBar.dataset.state = "returned";
+      leaseBar.append(el("span", { class: "grow", text: "Terminal control returned to you" }));
+      returnedTimer = setTimeout(() => { if (leaseBar.dataset.state === "returned") leaseBar.hidden = true; }, 3000);
     } else {
       leaseBar.hidden = true;
     }
+    hadAgent = !!agent;
   }
   update(info);
 

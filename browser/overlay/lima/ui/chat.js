@@ -88,6 +88,7 @@ async function initializeChat(app, chatId, compact, signal) {
   const title = el("h1", { class: "chat-title", text: "AI Chat" });
   const subtitle = el("div", { class: "chat-sub" });
   const draftKey = `draft.${chatId}`;
+  let sendFailed = false;
   input.value = prefs.get(draftKey, "");
 
   // Modules: Chat (conversation + composer) | Steps · Agents · Files.
@@ -121,6 +122,7 @@ async function initializeChat(app, chatId, compact, signal) {
     const text = input.value.trim();
     if (!text || !loaded || pendingRequest || completionMenu.handle(text) || !controls.settings().provider) return;
     requestError = undefined;
+    sendFailed = false;
     pendingRequest = true;
     sendButton.disabled = true;
     paintNow();
@@ -137,7 +139,9 @@ async function initializeChat(app, chatId, compact, signal) {
         autosize();
       }
     } catch (error) {
+      // The draft stays in the composer; the conversation is untouched.
       requestError = error;
+      sendFailed = true;
     } finally { pendingRequest = false; draw(); }
   }
 
@@ -208,7 +212,7 @@ async function initializeChat(app, chatId, compact, signal) {
     node.append(body);
     if (message.status === "failed" && message.error) {
       node.append(el("div", { class: "failure" },
-        el("strong", { text: failureActivity(message.error, "Reply failed").label }),
+        el("strong", { text: message.error.kind === "cancelled" ? "Response interrupted" : failureActivity(message.error, "Reply failed").label }),
         el("span", { class: "grow", text: message.error.message }),
         message.error.kind === "cancelled" ? null : el("button", { onclick: async event => {
           event.currentTarget.disabled = true;
@@ -220,7 +224,7 @@ async function initializeChat(app, chatId, compact, signal) {
           }
           catch (error) { reportError(error); }
           draw();
-        } }, "Retry")));
+        } }, "Retry Message")));
     } else if (message.status === "complete" && message.text) {
       node.append(el("button", { class: "ghost copy", onclick: () => bridge.copy(message.text) }, icon("copy"), "Copy"));
     }
@@ -293,7 +297,8 @@ async function initializeChat(app, chatId, compact, signal) {
   function paintNow() {
     if (signal.aborted) return;
     const reply = runningReply() ?? conversation?.messages.findLast(item => item.role === "assistant");
-    const next = requestError ? failureActivity(requestError, loaded ? "Request failed" : "Conversation unavailable")
+    const next = requestError ? { ...failureActivity(requestError, loaded ? (sendFailed ? "Message not sent" : "Request failed") : "Conversation unavailable"),
+        ...(sendFailed ? { label: "Message not sent" } : {}) }
       : !loaded ? { state: "starting", label: "Opening conversation", icon: "notebook", motion: "think" }
       : pendingRequest && !runningReply() ? { state: "starting", label: "Sending request", icon: "send", motion: "think" }
       : replyActivity(reply, { tool: activeTool, provider: conversation?.provider, surface: workspaceActivity?.surface });
@@ -302,6 +307,7 @@ async function initializeChat(app, chatId, compact, signal) {
     const folderError = requestError ?? reply?.error;
     recovery.replaceChildren(
       !loaded && requestError ? el("button", { class: "ghost", onclick: loadConversation }, "Retry") : null,
+      loaded && sendFailed && requestError ? el("button", { class: "ghost", onclick: send }, "Retry Message") : null,
       isFolderPermissionError(folderError) ? filesPrivacyButton(reportError) : null);
     recovery.hidden = !recovery.childElementCount;
   }
