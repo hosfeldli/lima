@@ -253,3 +253,62 @@ func waitIdle(_ service: ConversationService, _ id: String) async throws -> Conv
     #expect(result.messages.last?.status == .failed)
     #expect(result.messages.last?.error?.kind == .rateLimited)
 }
+
+@Test(.timeLimit(.minutes(1))) func companionThreadsRecordContextAndContinueAsChats() async throws {
+    // Echoes its prompt so the test can see the context the follow-up carried.
+    let cli = try fakeCLI("claude", script: """
+    prompt=$(cat)
+    printf '%s' "$prompt" > "$(dirname "$0")/prompt"
+    echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
+    """)
+    let (service, dir) = try await makeConversations(cliDir: cli)
+    defer {
+        try? FileManager.default.removeItem(at: cli)
+        try? FileManager.default.removeItem(at: dir)
+    }
+    let thread = try await service.create(provider: .claude, model: nil, workingDirectory: NSTemporaryDirectory(), companion: true)
+    _ = try await service.record(thread.id, role: .user, text: "Plan a Tokyo trip")
+    let handed = try await service.record(thread.id, role: .assistant, text: "Handed off to Tokyo trip.", taskIDs: ["t1"])
+    #expect(handed.title == "Plan a Tokyo trip")
+    #expect(handed.taskIDs == ["t1"])
+    #expect(await service.list().first { $0.id == thread.id }?.companion == true)
+    #expect(await service.list().first { $0.id == thread.id }?.preview == "Handed off to Tokyo trip.")
+
+    _ = try await service.send(thread.id, text: "Add a day in Kyoto")
+    let result = try await waitIdle(service, thread.id)
+    #expect(result.messages.map(\.text) == ["Plan a Tokyo trip", "Handed off to Tokyo trip.", "Add a day in Kyoto", "ok"])
+    let prompt = try String(contentsOf: cli.appendingPathComponent("prompt"), encoding: .utf8)
+    #expect(prompt.contains("User: Plan a Tokyo trip") && prompt.contains("Assistant: Handed off to Tokyo trip."))
+}
+
+@Test(.timeLimit(.minutes(1))) func switchingProviderMidReplyRestartsTheReplyOnTheNewProvider() async throws {
+    // Claude never finishes; Codex answers at once.
+    let cli = try fakeCLI("claude", script: """
+    cat >/dev/null
+    sleep 30
+    """)
+    let codex = cli.appendingPathComponent("codex")
+    try """
+    #!/bin/sh
+    cat >/dev/null
+    echo '{"type":"thread.started","thread_id":"C1"}'
+    echo '{"type":"item.completed","item":{"type":"agent_message","text":"from codex"}}'
+    echo '{"type":"turn.completed"}'
+    """.write(to: codex, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: codex.path)
+    let (service, dir) = try await makeConversations(cliDir: cli)
+    defer {
+        try? FileManager.default.removeItem(at: cli)
+        try? FileManager.default.removeItem(at: dir)
+    }
+    let conversation = try await service.create(provider: .claude, model: nil, workingDirectory: NSTemporaryDirectory())
+    _ = try await service.send(conversation.id, text: "Hello")
+    #expect(try await service.get(conversation.id).messages.last?.status == .streaming)
+
+    let switched = try await service.configure(conversation.id, provider: .codex, model: nil)
+    #expect(switched.provider == .codex)
+    #expect(switched.messages.filter { $0.role == .assistant }.count == 1)
+    let result = try await waitIdle(service, conversation.id)
+    #expect(result.messages.map(\.text) == ["Hello", "from codex"])
+    #expect(result.messages.last?.notice == "Restarted this reply on Codex.")
+}

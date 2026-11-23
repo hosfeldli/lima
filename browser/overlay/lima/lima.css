@@ -16,10 +16,12 @@
   --lima-line-strong: var(--lima-border);
 }
 
-/* Keep the Zen frame and Lima's pages on the same palette. Private windows
+/* Keep the Zen frame and Lima's pages on the same palette, light or dark
+ * (lima-theme, set by LimaWindow from LimaAppearance). Private windows
  * retain Zen's appearance as a window-level privacy cue. */
 :root[lima-window]:not([zen-private-window="true"]) {
   color-scheme: light;
+  --lima-scheme: light;
   --zen-primary-color: var(--lima-accent) !important;
   --zen-colors-primary: var(--lima-accent) !important;
   --zen-colors-secondary: var(--lima-accent-fill) !important;
@@ -38,15 +40,20 @@
   --zen-toolbar-element-bg: var(--lima-elevated) !important;
   --zen-urlbar-background: var(--lima-bg) !important;
   --toolbox-textcolor: var(--lima-fg) !important;
-  --toolbar-color-scheme: light !important;
+  --toolbar-color-scheme: var(--lima-scheme) !important;
   --toolbar-field-background-color: var(--lima-bg) !important;
   --toolbar-field-focus-background-color: var(--lima-bg) !important;
   --tab-selected-bgcolor: var(--lima-bg) !important;
   --tab-background-color-hover: var(--lima-elevated) !important;
 }
 
+:root[lima-window][lima-theme="dark"]:not([zen-private-window="true"]) {
+  color-scheme: dark;
+  --lima-scheme: dark;
+}
+
 :root[lima-window]:not([zen-private-window="true"]) #navigator-toolbox {
-  color-scheme: light !important;
+  color-scheme: var(--lima-scheme) !important;
   color: var(--lima-fg) !important;
   background-color: var(--lima-sidebar) !important;
 }
@@ -586,9 +593,7 @@ zen-folder[lima-archiving] > .tab-group-label-container { opacity: .7; }
   color: inherit;
   background: transparent;
 }
-#lima-assistant-controls { display: flex; align-items: center; flex: none; }
-#lima-assistant-controls[floating] { position: fixed; left: 74px; top: 6px; z-index: 12; }
-#lima-assistant-toggle[floating] { background: var(--lima-panel); color: var(--lima-ink); }
+#lima-assistant-toggle[floating] { position: fixed; left: 74px; top: 6px; z-index: 12; background: var(--lima-panel); color: var(--lima-ink); }
 #lima-assistant-toggle:hover,
 #lima-assistant-toggle[aria-expanded="true"] { background: var(--lima-hover); color: var(--lima-ink); }
 #lima-assistant-toggle:focus-visible { outline: 2px solid var(--lima-accent); outline-offset: -2px; }
@@ -655,48 +660,6 @@ zen-folder[lima-workspace]:is([lima-attention], [lima-task="blocked"]) > .tab-gr
   transform: none;
 }
 #lima-assistant-panel > browser { flex: 1; min-height: 0; width: 100%; height: 100%; }
-
-#lima-quick-terminal-toggle {
-  appearance: none;
-  display: grid;
-  align-self: center;
-  place-items: center;
-  flex: 0 0 30px;
-  width: 30px;
-  height: 30px;
-  margin-inline-start: 4px;
-  padding: 0;
-  position: relative;
-  z-index: 12;
-  border: 1px solid var(--lima-line);
-  border-radius: var(--lima-radius);
-  background: var(--lima-bg);
-  color: var(--lima-ink-2);
-}
-#lima-quick-terminal-toggle:is(:hover, [aria-expanded="true"]) { background: var(--lima-hover); color: var(--lima-ink); }
-#lima-quick-terminal-toggle:focus-visible { outline: 2px solid var(--lima-accent); outline-offset: -2px; }
-#lima-quick-terminal-toggle > html|span {
-  width: 17px;
-  height: 17px;
-  background: currentColor;
-  mask: url("resource://lima-ui/icons/terminal.svg") center / contain no-repeat;
-}
-#lima-quick-terminal-panel {
-  position: fixed;
-  z-index: 10;
-  top: var(--lima-assistant-top, 48px);
-  left: 8px;
-  width: min(680px, calc(100vw - 16px));
-  height: min(380px, calc(100vh - var(--lima-assistant-top, 48px) - 12px));
-  overflow: clip;
-  border: 1px solid var(--lima-line-strong);
-  border-radius: 14px;
-  background: var(--lima-bg);
-  box-shadow: 0 12px 38px rgb(0 0 0 / .14);
-  visibility: hidden;
-}
-#lima-quick-terminal-panel[open] { visibility: visible; }
-#lima-quick-terminal-panel > browser { flex: 1; min-height: 0; width: 100%; height: 100%; }
 
 :root[lima-window] #zen-toast-container .zen-toast {
   --zen-toast-shortcut-background: var(--lima-hover);

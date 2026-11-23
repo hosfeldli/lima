@@ -1,4 +1,5 @@
 import { tabURL } from "resource://lima/LimaWorkspaces.sys.mjs";
+import { isBlockedURL } from "resource://lima/LimaBlockedSites.sys.mjs";
 
 const INTRO = "about:lima?view=welcome";
 const CREATED = "lima.welcome.created";
@@ -11,13 +12,9 @@ ChromeUtils.defineESModuleGetters(lazy, {
   ShellService: "moz-src:///browser/components/shell/ShellService.sys.mjs",
 });
 
-function isZenOnboarding(url) {
-  try {
-    const address = new URL(url);
-    return address.protocol === "https:" && ["zen-browser.app", "www.zen-browser.app"].includes(address.host)
-      && ["/welcome", "/privacy-policy"].includes(address.pathname.replace(/\/$/, ""));
-  } catch { return false; }
-}
+// Any zen-browser.app page (LimaBlockedSites cancels their loads; restored
+// or leftover tabs are cleared here).
+const isZenOnboarding = isBlockedURL;
 
 function introTab(win) {
   return win.gBrowser.addTab(INTRO, { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(), inBackground: true });

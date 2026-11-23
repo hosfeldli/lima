@@ -274,7 +274,7 @@ Checks: `node --test browser/tests/search-ranking.test.mjs`, `node browser/tests
 |---|---|
 | §2 layout: 560 px, 20 vh from the top, 48 px field, 38 px rows, 14 px radius, 15 px padding, 28 px footer, 65 vh max | Implemented |
 | §2 no AI or agent controls in the surface; footer is hints only (↑↓ Select, ↩ Open, ⌘↩ AI Chat, esc Close) | Implemented. The earlier Quick Ask and Companion footer buttons were removed; ⌘⇧↩ still sends the query to the Companion as a draft |
-| §3 tokens: Search uses only `--lima-*` tokens. `[lima-theme="dark"]` maps them to charcoal and neutrals; the panel follows the `lima.theme` pref (`light`, `dark`, `system`; default `light`) | Implemented for Search. Lima pages and Zen chrome remain light-only |
+| §3 tokens: Search uses only `--lima-*` tokens. `[lima-theme="dark"]` maps them to charcoal and neutrals; the panel follows the `lima.theme` pref (`light`, `dark`, `system`; default `system`, which tracks macOS appearance live through the runtime's `system.appearance`) | Implemented for Search, browser windows and Lima pages (private windows keep Zen's look) |
 | §3 130 ms opacity + 6 px entrance, off under Reduce Motion | Implemented |
 | §4 explicit targets `@page`, `@tabs`, `@workspace`, `@notes`, `@files` anywhere in the query; a small scope cue beside the input names the target | Implemented. `@page` attaches the current page's title and URL as a visible chip |
 | §5 icon, title, secondary line, trailing `↩ action` on the selected row | Implemented |

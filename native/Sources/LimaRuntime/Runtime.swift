@@ -186,7 +186,10 @@ public final class Runtime: @unchecked Sendable {
                 let workspace = try await workspaces.get(workspaceID)
                 try await workspaces.requireActive(workspaceID)
                 if workspace.browserTestURL != nil, !["workspace.browserAction", "workspace.browserPlan"].contains(request.method) {
-                    throw BridgeError(.notAuthorized, "This helper may only interact with its assigned browser tab.")
+                    // A browser-only helper reaching beyond its tab asks first.
+                    try await approveAction(context, question: "Let \(workspace.name) go beyond its browser tab?",
+                        facts: [.init(label: "Tab", value: workspace.browserTestURL ?? ""), .init(label: "Wants to use", value: request.method)],
+                        risk: "access")
                 }
             }
             if Self.conversationMethods.contains(request.method) {
@@ -232,7 +235,7 @@ public final class Runtime: @unchecked Sendable {
 
     func visibleConversations() async -> [ConversationSummary] {
         let live = Set(await workspaces.list().map(\.id))
-        return await conversations.list().filter { $0.workspaceID.map { live.contains($0) } ?? true }
+        return await conversations.list().filter { $0.companion != true && ($0.workspaceID.map { live.contains($0) } ?? true) }
     }
 
     private func buildSearchIndex() async {
@@ -329,6 +332,7 @@ final class EventSink: @unchecked Sendable {
             let id = conversation.id
             Task { await runtime.orchestrator.observe(conversationID: id) }
             Task {
+                if conversation.companion == true { return }
                 if let id = conversation.workspaceID, (try? await runtime.workspaces.get(id)) == nil { return }
                 runtime.search.index.upsert(SearchDocument(
                 source: "conversation", id: conversation.id, title: conversation.title,

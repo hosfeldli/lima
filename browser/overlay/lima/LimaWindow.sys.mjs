@@ -4,6 +4,7 @@
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   LimaAssistant: "resource://lima/LimaAssistant.sys.mjs",
+  LimaAppearance: "resource://lima/LimaAppearance.sys.mjs",
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
   LimaSidebar: "resource://lima/LimaSidebar.sys.mjs",
   LimaTabs: "resource://lima/LimaTabs.sys.mjs",
@@ -42,7 +43,16 @@ export const LimaWindow = {
       Services.prefs.getStringPref("lima.personality", "full");
     applyPersonality();
     Services.prefs.addObserver("lima.personality", applyPersonality);
-    win.addEventListener("unload", () => Services.prefs.removeObserver("lima.personality", applyPersonality), { once: true });
+    // Light or dark, following macOS unless Settings pins one. Private
+    // windows keep Zen's own look (see lima.css).
+    const root = win.document.documentElement;
+    const applyTheme = theme => root.setAttribute("lima-theme", theme);
+    applyTheme(lazy.LimaAppearance.theme());
+    const unwatchTheme = lazy.LimaAppearance.subscribe(applyTheme);
+    win.addEventListener("unload", () => {
+      Services.prefs.removeObserver("lima.personality", applyPersonality);
+      unwatchTheme();
+    }, { once: true });
     win.gBrowser.tabContainer.addEventListener("TabGroupRemoved", event => lazy.LimaWorkspaces.onFolderRemoved(event));
     win.gBrowser.tabContainer.addEventListener("TabClose", event => lazy.LimaWorkspaces.onTabClose(event.target));
     attachContextRecorder(win);

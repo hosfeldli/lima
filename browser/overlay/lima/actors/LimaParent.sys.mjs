@@ -8,6 +8,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
   tabURL: "resource://lima/LimaWorkspaces.sys.mjs",
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
   LimaNotesBookmarks: "resource://lima/LimaNotesBookmarks.sys.mjs",
+  LimaAppearance: "resource://lima/LimaAppearance.sys.mjs",
   LimaVisualActivity: "resource://lima/LimaVisualActivity.sys.mjs",
   approximateLocation: "resource://lima/LimaWorkspaces.sys.mjs",
 });
@@ -59,6 +60,8 @@ function ensureEventPump() {
       }
     }
   });
+  // Open Lima pages switch light/dark live.
+  lazy.LimaAppearance.subscribe(theme => broadcastToLimaPages("ui.theme", theme));
   lazy.LimaVisualActivity.subscribe(data => {
     for (const actor of actors) {
       const win = actor.browsingContext?.topChromeWindow;
@@ -150,9 +153,6 @@ export class LimaParent extends JSWindowActorParent {
     const win = this.browsingContext.topChromeWindow;
     const browser = this.browsingContext.top.embedderElement;
     switch (kind) {
-      case "closeQuickTerminal":
-        if (browser?.id === "lima-quick-terminal-browser") win.dispatchEvent(new win.CustomEvent("LimaQuickTerminalClose"));
-        return null;
       case "locationPreference":
       case "locationCheck":
       case "locationSettings": {
@@ -208,6 +208,12 @@ export class LimaParent extends JSWindowActorParent {
         }
         return null;
       }
+      case "themeChanged": {
+        if (["system", "light", "dark"].includes(payload?.value) && !lazy.PrivateBrowsingUtils.isWindowPrivate(win)) {
+          Services.prefs.setStringPref("lima.theme", payload.value);
+        }
+        return lazy.LimaAppearance.theme();
+      }
       case "browserActionOverlayChanged": {
         if (!lazy.PrivateBrowsingUtils.isWindowPrivate(win)) {
           Services.prefs.setBoolPref("lima.browser.actionOverlay", payload?.value === true);
@@ -220,6 +226,8 @@ export class LimaParent extends JSWindowActorParent {
           provider: Services.prefs.getStringPref("lima.agent.provider", "claude"),
           models: Object.fromEntries(providers.map(provider => [provider, Services.prefs.getStringPref("lima.agent.model." + provider, "default")])),
           personality: Services.prefs.getStringPref("lima.personality", "full"),
+          theme: lazy.LimaAppearance.theme(),
+          themeSetting: Services.prefs.getStringPref("lima.theme", "system"),
           browserActionOverlay: Services.prefs.getBoolPref("lima.browser.actionOverlay", false),
         };
       }

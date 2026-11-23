@@ -77,3 +77,22 @@ private func ms(_ date: Date) -> Double { date.timeIntervalSince1970 * 1000 }
     #expect(await runtime.companionMemoryContext().isEmpty)
     #expect(await call(runtime, "companionMemory.get", origin: .chat).error?.code == .notAuthorized)
 }
+
+@Test(.timeLimit(.minutes(1))) func companionThreadsStayOutOfChatListsAndSearch() async throws {
+    let (runtime, directory) = try await workspaceRuntime()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let thread = try #require(await call(runtime, "chat.create", ["companion": .bool(true)]).result?["id"]?.stringValue)
+    let plain = try #require(await call(runtime, "chat.create").result?["id"]?.stringValue)
+    #expect(await call(runtime, "chat.record", ["id": .string(thread), "role": .string("user"), "text": .string("Hi")]).ok)
+    #expect(await call(runtime, "chat.record", ["id": .string(plain), "role": .string("user"), "text": .string("Hi")]).error != nil)
+    let listed = await call(runtime, "chat.list").result?.arrayValue?.compactMap { $0["id"]?.stringValue } ?? []
+    #expect(listed.contains(plain) && !listed.contains(thread))
+    let companion = await call(runtime, "chat.list", ["companion": .bool(true)]).result?.arrayValue?.compactMap { $0["id"]?.stringValue } ?? []
+    #expect(companion == [thread])
+}
+
+@Test func appearanceIsReportedToTheBrowser() async throws {
+    let (runtime, directory) = try await workspaceRuntime()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    #expect(await call(runtime, "system.appearance").result?["dark"]?.boolValue == Runtime.systemIsDark())
+}

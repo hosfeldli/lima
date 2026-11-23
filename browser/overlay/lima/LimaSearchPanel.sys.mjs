@@ -22,6 +22,7 @@ import { INITIAL_LIMIT, ResultSet, TARGETS, aiSuggestion, navigationURL, parseQu
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
+  LimaAppearance: "resource://lima/LimaAppearance.sys.mjs",
   LimaTabs: "resource://lima/LimaTabs.sys.mjs",
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
@@ -132,9 +133,12 @@ class Panel {
   }
 
   applyTheme() {
-    const pref = Services.prefs.getStringPref("lima.theme", "light");
-    const dark = pref === "dark" || (pref === "system" && this.win.matchMedia("(prefers-color-scheme: dark)").matches);
-    this.scrim.setAttribute("lima-theme", dark ? "dark" : "light");
+    // Follow macOS live while the panel is open (default "system").
+    if (!this.unwatchAppearance) {
+      this.unwatchAppearance = lazy.LimaAppearance.subscribe(() => { if (this.isOpen) this.applyTheme(); });
+      this.win.addEventListener("unload", () => this.unwatchAppearance(), { once: true });
+    }
+    this.scrim.setAttribute("lima-theme", lazy.LimaAppearance.theme());
   }
 
   /** `context` (optional): { kind: "page" | "selection", title, url, text }.

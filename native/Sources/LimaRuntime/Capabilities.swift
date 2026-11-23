@@ -162,7 +162,7 @@ public final class CapabilityRegistry: @unchecked Sendable {
         if let required = definition.input, required.required, input.trimmingCharacters(in: .whitespaces).isEmpty {
             throw BridgeError(.badRequest, "\(definition.title) needs \(required.placeholder.lowercased())")
         }
-        try authorize(definition, input: input, context: context, approvalDigest: approvalDigest)
+        try await authorize(definition, input: input, runtime: runtime, context: context, approvalDigest: approvalDigest)
 
         var record = CapabilityRun(runId: UUID().uuidString, capability: id, title: definition.title, icon: definition.icon,
                                    origin: context.origin.rawValue, input: String(input.prefix(200)),
@@ -184,30 +184,32 @@ public final class CapabilityRegistry: @unchecked Sendable {
         }
     }
 
-    /// Lima's UI authorizes direct user actions. Agents and automations use
-    /// the broker's approval flow for confirmation-level operations.
-    func authorize(_ definition: CapabilityDefinition, input: String, context: CallContext, approvalDigest: String?) throws {
+    /// Lima's UI authorizes direct user actions. For agents and outside AI
+    /// tools nothing is refused outright: an ungranted scope or a risky
+    /// capability asks the user in Lima (Runtime.approveAction).
+    func authorize(_ definition: CapabilityDefinition, input: String, runtime: Runtime, context: CallContext, approvalDigest: String?) async throws {
+        if context.origin == .browser { return }
+        let facts: [WorkspacePrompts.Fact] = [.init(label: "Action", value: definition.title)]
+            + (input.isEmpty ? [] : [.init(label: "Input", value: String(input.prefix(200)))])
+        var asked = false
         if context.origin == .mcp {
-            guard let scope = definition.mcpScope else {
-                throw BridgeError(.notAuthorized, "\(definition.id) is not available to external agents")
-            }
-            guard MCPGrants.shared.allows(scope: scope) else {
-                throw BridgeError(.confirmationRequired, "Allow \(scope) for MCP clients in Lima → Integrations first")
+            if let scope = definition.mcpScope {
+                if !MCPGrants.shared.allows(scope: scope) {
+                    try await runtime.requireMCPScope(scope, context: context, action: "use \(definition.title)")
+                    asked = true
+                }
+            } else {
+                try await runtime.approveAction(context, question: "Let an outside AI tool use \(definition.title)?", facts: facts, risk: "access")
+                asked = true
             }
         }
         let decision = AuthorizationBroker.defaultPolicy[definition.risk] ?? .block
-        switch decision {
-        case .allow:
-            return
-        case .block:
-            throw BridgeError(.notAuthorized, "\(definition.title) is blocked by policy")
-        case .confirm, .requestAuthorization, .separatePermission:
-            if context.origin == .browser { return }
-            let operation = ActionOperation(kind: definition.risk, origin: context.origin, targets: [definition.id], arguments: [input])
-            guard let approvalDigest, approvalDigest == (try? ApprovalLedger.shared.digest(operation)), ApprovalLedger.shared.consume(operation) else {
-                throw BridgeError(.confirmationRequired, "\(definition.title) needs your approval in Lima")
-            }
-        }
+        guard decision != .allow, !asked else { return }
+        let operation = ActionOperation(kind: definition.risk, origin: context.origin, targets: [definition.id], arguments: [input])
+        if let approvalDigest, approvalDigest == (try? ApprovalLedger.shared.digest(operation)), ApprovalLedger.shared.consume(operation) { return }
+        try await runtime.approveAction(context, question: "\(definition.title)?",
+            facts: facts + [.init(label: "Why it asks", value: Runtime.brief(definition.risk, reasons: []))],
+            risk: decision == .block ? "system" : "access")
     }
 
     private func finish(_ record: CapabilityRun, runtime: Runtime, definition: CapabilityDefinition) {

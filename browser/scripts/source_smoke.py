@@ -158,6 +158,38 @@ const compiled = COMPILED;
       kept && closed && /AI Chat/.test(footer) && !document.querySelector("#lima-search button:not(.lima-s-chip-remove, .lima-s-button)"))
       || { question, aria, moved, back, url, plain, kept, closed, footer },
     searchSpeed: metrics.open < 100 || metrics,
+    // macOS light/dark comes from the runtime; windows carry the resolved
+    // theme and switch with the setting.
+    appearance: await (async () => {
+      const { LimaAppearance } = ChromeUtils.importESModule("resource://lima/LimaAppearance.sys.mjs");
+      const root = Services.wm.getMostRecentWindow("navigator:browser")?.document.documentElement;
+      if (typeof (await LimaBridge.request("system.appearance"))?.dark !== "boolean") return "no runtime appearance";
+      if (root?.getAttribute("lima-theme") !== LimaAppearance.theme()) return `window ${root?.getAttribute("lima-theme")}`;
+      const before = Services.prefs.getStringPref("lima.theme", "system");
+      Services.prefs.setStringPref("lima.theme", "dark");
+      const dark = root.getAttribute("lima-theme");
+      Services.prefs.setStringPref("lima.theme", "light");
+      const light = root.getAttribute("lima-theme");
+      Services.prefs.setStringPref("lima.theme", before);
+      return (dark === "dark" && light === "light") || { dark, light };
+    })(),
+    // Zen's own site never opens in Lima.
+    zenBlocked: await (async () => {
+      const { isBlockedURL } = ChromeUtils.importESModule("resource://lima/LimaBlockedSites.sys.mjs");
+      const matches = isBlockedURL("https://zen-browser.app/welcome/") && isBlockedURL("https://docs.zen-browser.app/") &&
+        !isBlockedURL("https://example.com/") && !isBlockedURL("https://notzen-browser.app/");
+      if (!matches) return "matching";
+      // A tab opened just for a Zen page closes instead of loading it.
+      const win = Services.wm.getMostRecentWindow("navigator:browser");
+      const tab = win.gBrowser.addTab("https://zen-browser.app/welcome/", {
+        triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(), inBackground: true });
+      for (let i = 0; i < 40 && tab.isConnected; i++) await new Promise(resolve => win.setTimeout(resolve, 100));
+      const spec = tab.isConnected ? tab.linkedBrowser.currentURI.spec : "closed";
+      if (tab.isConnected) win.gBrowser.removeTab(tab);
+      return spec === "closed" || { spec };
+    })(),
+    dockFrames: (await Promise.all(["dock-light-0", "dock-light-11", "dock-dark-0", "dock-dark-done"].map(name =>
+      fetch(`resource://lima-ui/marks/${name}.png`).then(response => response.ok, () => false)))).every(Boolean),
     // First launch: the walkthrough has the window and the sidebar waits to the left.
     welcomeSidebar: (() => {
       const intro = [...gBrowser.tabs].some(tab => tab.linkedBrowser?.currentURI?.spec === "about:lima?view=welcome");

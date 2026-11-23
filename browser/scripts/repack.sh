@@ -170,14 +170,21 @@ for size in 16 32 128 256 512; do
 done
 iconutil -c icns "$ICON_SET" -o "$R/lima.icns"
 sips -s format png "$BROWSER/branding/grammar.svg" --out "$R/lima/ui/marks/grammar-mascot.png" >/dev/null
-for frame in 1 2 3 4 5 6; do
-  case "$frame" in
-    1) radii=(7 4 3) ;; 2) radii=(6 6 3) ;; 3) radii=(4 7 4) ;;
-    4) radii=(3 6 6) ;; 5) radii=(3 4 7) ;; 6) radii=(5 3 6) ;;
-  esac
-  sed -e "s/FRAME_A/${radii[0]}/" -e "s/FRAME_B/${radii[1]}/" -e "s/FRAME_C/${radii[2]}/" \
-    "$BROWSER/branding/dock-chat.svg" > "$ICON_STAGE/frame.svg"
-  sips -s format png "$ICON_STAGE/frame.svg" --out "$R/lima/ui/marks/dock-chat-$frame.png" >/dev/null
+# Dock "working" badge: twelve frames of a dot wave, plus a "done" check,
+# in light and dark palettes (LimaDockBadge picks one by appearance).
+for theme in light dark; do
+  if [[ "$theme" == light ]]; then palette=(-e "s/BUBBLE/#3a3a3a/" -e "s/EDGE/#ffffff/" -e "s/DOT/#ffffff/")
+  else palette=(-e "s/BUBBLE/#ececec/" -e "s/EDGE/#1c1c1d/" -e "s/DOT/#1c1c1d/"); fi
+  for frame in $(seq 0 11); do
+    read -r ya ra yb rb yc rc < <(awk -v f="$frame" 'BEGIN {
+      for (i = 0; i < 3; i++) { w = sin(6.2832 * f / 12 - i * 0.95); if (w < 0) w = 0
+        printf "%.1f %.1f ", 46 - 6 * w, 4.6 + 2.4 * w }; print "" }')
+    sed "${palette[@]}" -e "s/YA/$ya/" -e "s/RA/$ra/" -e "s/YB/$yb/" -e "s/RB/$rb/" -e "s/YC/$yc/" -e "s/RC/$rc/" \
+      "$BROWSER/branding/dock-chat.svg" > "$ICON_STAGE/frame.svg"
+    sips -s format png "$ICON_STAGE/frame.svg" --out "$R/lima/ui/marks/dock-$theme-$frame.png" >/dev/null
+  done
+  sed "${palette[@]}" "$BROWSER/branding/dock-done.svg" > "$ICON_STAGE/done.svg"
+  sips -s format png "$ICON_STAGE/done.svg" --out "$R/lima/ui/marks/dock-$theme-done.png" >/dev/null
 done
 rm -rf "$ICON_STAGE"
 trap - EXIT

@@ -29,24 +29,45 @@ func openRuntime() async throws -> (Runtime, URL) {
     #expect(!runtime.capabilities.definitions.contains { ["open.home", "open.workspaces", "open.agents"].contains($0.id) })
 }
 
-// H2: identical policy regardless of origin; UI gesture = confirmation, agents need approval.
-@Test func capabilityAuthorizationIsUniformAcrossOrigins() async throws {
+// H2: identical policy regardless of origin; a UI gesture is the
+// confirmation, and agents and outside tools get an approval card in Lima
+// instead of a refusal.
+@Test(.timeLimit(.minutes(1))) func capabilityAuthorizationIsUniformAcrossOrigins() async throws {
     let (runtime, dir) = try await openRuntime()
     defer { try? FileManager.default.removeItem(at: dir) }
     let registry = runtime.capabilities
     let capture = registry.definition("screenshot.region")!
-    #expect(throws: Never.self) { try registry.authorize(capture, input: "", context: CallContext(client: nil, origin: .browser), approvalDigest: nil) }
-    #expect(throws: BridgeError.self) { try registry.authorize(capture, input: "", context: CallContext(client: nil, origin: .chat), approvalDigest: nil) }
+    let authorize: @Sendable (CapabilityDefinition, ActionOrigin, String?) async -> BridgeResponse = { definition, origin, digest in
+        do {
+            try await registry.authorize(definition, input: "", runtime: runtime, context: CallContext(client: nil, origin: origin), approvalDigest: digest)
+            return .success(id: "a", .null)
+        } catch let error as BridgeError { return .failure(id: "a", error) }
+        catch { return .failure(id: "a", BridgeError(.internalError, "\(error)")) }
+    }
+    #expect(await authorize(capture, .browser, nil).ok)
+    // An agent asks; declined, it fails; allowed, it runs.
+    let (declined, card) = try await answeringApproval(runtime, approve: false) { await authorize(capture, .chat, nil) }
+    #expect(card?["question"]?.stringValue == "\(capture.title)?")
+    #expect(declined.error?.code == .notAuthorized)
+    #expect(try await answeringApproval(runtime, approve: true) { await authorize(capture, .chat, nil) }.0.ok)
+    // An outside tool without the scope asks once for the scope.
     MCPGrants.shared.scopes = []
-    #expect(throws: BridgeError.self) { try registry.authorize(capture, input: "", context: CallContext(client: nil, origin: .mcp), approvalDigest: nil) }
+    let (scoped, scopeCard) = try await answeringApproval(runtime, approve: true) { await authorize(capture, .mcp, nil) }
+    #expect(scoped.ok)
+    #expect(scopeCard?["question"]?.stringValue?.hasPrefix("Let outside AI tool use") == true)
+    // With the scope granted, the risky capability still asks.
     MCPGrants.shared.scopes = ["screen:capture"]
-    // Granted scope still doesn't bypass the confirm-level policy for agents.
-    #expect(throws: BridgeError.self) { try registry.authorize(capture, input: "", context: CallContext(client: nil, origin: .mcp), approvalDigest: nil) }
+    let (risky, riskyCard) = try await answeringApproval(runtime, approve: false) { await authorize(capture, .mcp, nil) }
+    #expect(riskyCard != nil)
+    #expect(risky.error?.code == .notAuthorized)
+    // A recorded approval digest still works without a card.
     let operation = ActionOperation(kind: capture.risk, origin: .mcp, targets: [capture.id], arguments: [""])
     let digest = try ApprovalLedger.shared.approve(operation)
-    #expect(throws: Never.self) { try registry.authorize(capture, input: "", context: CallContext(client: nil, origin: .mcp), approvalDigest: digest) }
-    // Not exposed to agents at all:
-    #expect(throws: BridgeError.self) { try registry.authorize(registry.definition("password.generate")!, input: "", context: CallContext(client: nil, origin: .mcp), approvalDigest: nil) }
+    #expect(await authorize(capture, .mcp, digest).ok)
+    // Not exposed to outside tools by default: it asks rather than refusing.
+    let (hidden, hiddenCard) = try await answeringApproval(runtime, approve: false) { await authorize(registry.definition("password.generate")!, .mcp, nil) }
+    #expect(hiddenCard != nil)
+    #expect(hidden.error?.code == .notAuthorized)
     MCPGrants.shared.scopes = ["notes:read", "search:read", "context:read"]
 }
 

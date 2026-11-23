@@ -409,6 +409,9 @@ public final class AgentRun: @unchecked Sendable {
             }
             DispatchQueue.global(qos: .utility).async {
                 defer { try? stdin.fileHandleForWriting.close() }
+                // A CLI that exits (or is cancelled) before reading its prompt
+                // must not take this process down with SIGPIPE.
+                _ = fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
                 try? stdin.fileHandleForWriting.write(contentsOf: Data(request.prompt.utf8))
             }
         } catch {

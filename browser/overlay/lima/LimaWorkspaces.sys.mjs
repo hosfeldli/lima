@@ -851,8 +851,9 @@ class Workspaces {
     if (new URL(global.documentURI.spec).origin !== origin) {
       throw new Error(`The page is now on ${new URL(global.documentURI.spec).origin}. Open that site as a workspace tab and request a separate plan if it is within the task.`);
     }
-    if (request.paths && !request.paths.includes(new URL(browser.currentURI.spec).pathname)) {
-      throw new Error("This path is outside the approved plan. Inspect the current page and request approval if the new path is needed.");
+    const current = new URL(browser.currentURI.spec).pathname;
+    if (request.paths && !request.paths.includes(current) && !request.confirmed) {
+      return { needsApproval: { kind: "path", path: current, risk: "routine", reason: "The page moved to a path the plan didn't list." } };
     }
     if (request.action === "screenshot") {
       const width = Math.max(1, browser.clientWidth), height = Math.max(1, browser.clientHeight);
@@ -864,7 +865,8 @@ class Workspaces {
       image.close();
       return { jpeg: canvas.toDataURL("image/jpeg", 0.76).split(",")[1] };
     }
-    const data = { origin, paths: request.paths, action: request.action, options: request.options };
+    // `confirmed` comes only from the runtime, after the user approved this step.
+    const data = { origin, paths: request.paths, action: request.action, options: request.options, confirmed: request.confirmed === true };
     let result;
     try {
       result = await global.getActor("LimaPage").sendQuery("action", data);

@@ -96,7 +96,24 @@ actor WorkspacePrompts {
     }
 
     private var requests: [String: Request] = [:]
-    private var sessions: [String: (workspace: String, url: String, paths: Set<String>, actions: Set<String>, expires: Date)] = [:]
+    /// An approved browser session. It belongs to a workspace family (a lead
+    /// agent and its helpers), so what the user approved for one agent covers
+    /// the agents working with it. `trusted` means the user chose "Allow for
+    /// this task": sensitive controls inside it no longer ask each time.
+    struct Session {
+        var family: String
+        var origin: String
+        var paths: Set<String>
+        var actions: Set<String>
+        var expires: Date
+        var trusted: Bool
+        var limit: Date
+    }
+    private var sessions: [String: Session] = [:]
+    /// Idle time a session survives; each permitted action renews it, up to its limit.
+    static let sessionIdle: TimeInterval = 300
+    static let onceLimit: TimeInterval = 1800
+    static let taskLimit: TimeInterval = 4 * 3600
     static let browserActions: Set<String> = ["click", "type", "scroll"]
 
     enum BrowserReview {
@@ -130,25 +147,42 @@ actor WorkspacePrompts {
         try await store.put(value, collection: "browserPermissions", id: key)
     }
 
-    func ask(_ runtime: Runtime, workspace: Workspace, question: String, detail: String?, approval: Bool, fields: [WorkspaceQuestionField] = [], actionLabel: String? = nil) async throws -> JSONValue {
+    /// One labelled fact shown on an approval card (Site, Control, Paths…).
+    struct Fact { let label: String; let value: String }
+
+    func ask(_ runtime: Runtime, workspace: Workspace, question: String, detail: String?, approval: Bool, fields: [WorkspaceQuestionField] = [], actionLabel: String? = nil,
+             facts: [Fact] = [], risk: String? = nil, allowTask: Bool = false) async throws -> JSONValue {
+        try await ask(runtime, ownerID: workspace.id, ownerName: workspace.name, parentID: workspace.parentID, question: question, detail: detail,
+                      approval: approval, fields: fields, actionLabel: actionLabel, facts: facts, risk: risk, allowTask: allowTask)
+    }
+
+    /// A request from something other than a workspace agent (an outside AI
+    /// tool over MCP). It shows in the Companion like any other request.
+    func ask(_ runtime: Runtime, ownerID: String, ownerName: String, parentID: String? = nil, question: String, detail: String?, approval: Bool,
+             fields: [WorkspaceQuestionField] = [], actionLabel: String? = nil,
+             facts: [Fact] = [], risk: String? = nil, allowTask: Bool = false) async throws -> JSONValue {
         guard question.count <= 1200, !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw BridgeError(.badRequest, "Provide a question of 1–1,200 characters.")
         }
-        guard !requests.values.contains(where: { $0.workspace == workspace.id }) else {
-            throw BridgeError(.badRequest, "This workspace already has a pending question.")
+        guard !requests.values.contains(where: { $0.workspace == ownerID }) else {
+            throw BridgeError(.badRequest, "This workspace already has a pending question. Wait for the user to answer it, then try again.")
         }
         let id = UUID().uuidString
         let form = try JSONValue.from(fields)
         return try await withCheckedThrowingContinuation { continuation in
             let data: JSONValue = .object([
-                "id": .string(id), "workspaceId": .string(workspace.id),
-                "workspaceName": .string(workspace.name), "question": .string(question),
+                "id": .string(id), "workspaceId": .string(ownerID),
+                "workspaceName": .string(ownerName), "question": .string(question),
                 // A helper's request also shows in its parent workspace, where the user is.
-                "parentWorkspaceId": workspace.parentID.map(JSONValue.string) ?? .null,
+                "parentWorkspaceId": parentID.map(JSONValue.string) ?? .null,
                 "detail": detail.map(JSONValue.string) ?? .null, "approval": .bool(approval),
                 "fields": form, "actionLabel": actionLabel.map(JSONValue.string) ?? .null,
+                "facts": .array(facts.map { .object(["label": .string($0.label), "value": .string(String($0.value.prefix(400)))]) }),
+                "risk": risk.map(JSONValue.string) ?? .null,
+                // "Allow for this task" alongside "Allow once".
+                "allowTask": .bool(allowTask),
             ])
-            requests[id] = Request(workspace: workspace.id, fields: fields, data: data, continuation: continuation)
+            requests[id] = Request(workspace: ownerID, fields: fields, data: data, continuation: continuation)
             runtime.broadcast("prompt.opened", data)
             Task {
                 try? await Task.sleep(for: .seconds(540))
@@ -159,7 +193,7 @@ actor WorkspacePrompts {
 
     func list() -> JSONValue { .array(requests.values.map(\.data)) }
 
-    func answer(_ runtime: Runtime, id: String, approved: Bool, text: String?, values: JSONValue? = nil) throws {
+    func answer(_ runtime: Runtime, id: String, approved: Bool, text: String?, values: JSONValue? = nil, scope: String? = nil) throws {
         guard let pending = requests[id] else { throw BridgeError(.badRequest, "This request has already closed.") }
         let answer = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if approved, !pending.fields.isEmpty {
@@ -171,12 +205,15 @@ actor WorkspacePrompts {
         if approved, pending.data["approval"]?.boolValue != true, answer.isEmpty {
             throw BridgeError(.badRequest, "Enter a response or dismiss the question.")
         }
-        finish(runtime, id: id, result: .success(.object(["approved": .bool(approved), "answer": .string(String(answer.prefix(8000)))])))
+        let task = approved && scope == "task" && pending.data["allowTask"]?.boolValue == true
+        finish(runtime, id: id, result: .success(.object(["approved": .bool(approved), "answer": .string(String(answer.prefix(8000))),
+                                                          "scope": .string(task ? "task" : "once")])))
     }
 
     func clear(_ runtime: Runtime, workspace: String) {
         for id in requests.keys.filter({ requests[$0]?.workspace == workspace }) { expire(runtime, id: id) }
-        sessions = sessions.filter { $0.value.workspace != workspace }
+        // A lead workspace closing ends its family's sessions; a helper's doesn't.
+        sessions = sessions.filter { $0.value.family != workspace }
     }
 
     private func expire(_ runtime: Runtime, id: String) {
@@ -202,17 +239,51 @@ actor WorkspacePrompts {
         return Set(paths + [initial.isEmpty ? "/" : initial])
     }
 
-    func authorize(workspace: String, url: String, paths: Set<String>, actions: Set<String>) -> String {
-        let now = Date()
+    static func origin(of url: String) -> String? {
+        guard let parts = URLComponents(string: url), let scheme = parts.scheme, let host = parts.host else { return nil }
+        return "\(scheme)://\(host)\(parts.port.map { ":\($0)" } ?? "")"
+    }
+
+    func authorize(family: String, url: String, paths: Set<String>, actions: Set<String>, trusted: Bool = false, now: Date = Date()) -> String {
         sessions = sessions.filter { $0.value.expires > now }
         let token = UUID().uuidString
-        sessions[token] = (workspace, url, paths, actions, now.addingTimeInterval(300))
+        sessions[token] = Session(family: family, origin: Self.origin(of: url) ?? url, paths: paths, actions: actions,
+                                  expires: now.addingTimeInterval(Self.sessionIdle), trusted: trusted,
+                                  limit: now.addingTimeInterval(trusted ? Self.taskLimit : Self.onceLimit))
         return token
     }
 
-    func permittedPaths(_ token: String?, workspace: String, url: String, action: String) -> Set<String>? {
-        guard let token, let session = sessions[token], session.workspace == workspace, session.url == url,
-              session.actions.contains(action), session.expires > Date() else { return nil }
+    /// An active session in the same family that already covers this site,
+    /// these paths and actions: approved for one agent, usable by the others.
+    func covering(family: String, url: String, paths: Set<String>, actions: Set<String>, highRisk: Bool, now: Date = Date()) -> String? {
+        let origin = Self.origin(of: url)
+        return sessions.first { _, session in
+            session.family == family && session.origin == origin && session.expires > now &&
+                paths.isSubset(of: session.paths) && actions.isSubset(of: session.actions) && (!highRisk || session.trusted)
+        }?.key
+    }
+
+    func permittedPaths(_ token: String?, family: String, url: String, action: String, now: Date = Date()) -> Set<String>? {
+        guard let token, var session = sessions[token], session.family == family, session.origin == Self.origin(of: url),
+              session.actions.contains(action), session.expires > now else { return nil }
+        session.expires = min(session.limit, max(session.expires, now.addingTimeInterval(Self.sessionIdle)))
+        sessions[token] = session
+        return session.paths
+    }
+
+    func isTrusted(_ token: String?) -> Bool { token.flatMap { sessions[$0]?.trusted } ?? false }
+
+    /// After the user approves a sensitive step: optionally trust the session
+    /// for the rest of the task, and add a path they allowed it to visit.
+    func grant(_ token: String?, trust: Bool, path: String? = nil, now: Date = Date()) -> Set<String>? {
+        guard let token, var session = sessions[token] else { return nil }
+        if trust && !session.trusted {
+            session.trusted = true
+            session.limit = now.addingTimeInterval(Self.taskLimit)
+        }
+        if let path { session.paths.insert(path) }
+        session.expires = min(session.limit, max(session.expires, now.addingTimeInterval(Self.sessionIdle)))
+        sessions[token] = session
         return session.paths
     }
 }

@@ -29,8 +29,17 @@ import Testing
 
     let created = await runtime.handle(BridgeRequest(id: "1", method: "notes.create", params: .object(["title": .string("Quarterly zebra plan")])), context: browser)
     #expect(created.ok)
-    let denied = await runtime.handle(BridgeRequest(id: "2", method: "notes.create", params: .object(["title": .string("x")])), context: mcp)
-    #expect(denied.error?.code == .confirmationRequired)
+    // An ungranted scope asks the user instead of failing outright.
+    let (denied, card) = try await answeringApproval(runtime, approve: false) {
+        await runtime.handle(BridgeRequest(id: "2", method: "notes.create", params: .object(["title": .string("x")])), context: mcp)
+    }
+    #expect(card?["question"]?.stringValue == "Let outside AI tool change your notes?")
+    #expect(card?["risk"]?.stringValue == "access")
+    #expect(denied.error?.code == .notAuthorized)
+    let (allowed, _) = try await answeringApproval(runtime, approve: true) {
+        await runtime.handle(BridgeRequest(id: "2b", method: "notes.create", params: .object(["title": .string("x")])), context: mcp)
+    }
+    #expect(allowed.ok)
     let grant = await runtime.handle(BridgeRequest(id: "3", method: "terminal.lease.grant", params: .object(["id": .string("t"), "agentId": .string("a")])), context: mcp)
     #expect(grant.error?.code == .notAuthorized)
     let search = await runtime.handle(BridgeRequest(id: "4", method: "search.query", params: .object(["query": .string("zebra")])), context: mcp)

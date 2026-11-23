@@ -1,4 +1,14 @@
-import { call, el, errorText, onEvent } from "./lib.js";
+import { call, el, errorText, icon, onEvent } from "./lib.js";
+
+// What an approval puts at stake, in a few words.
+const RISK = {
+  money: ["warning", "Can spend money"],
+  account: ["key", "Acts on your account"],
+  // Something Lima's safety policy would otherwise stop.
+  system: ["warning", "Affects your Mac"],
+  // New reach: an ungranted scope, a folder outside the workspace.
+  access: ["key", "Needs new access"],
+};
 
 export function workspacePrompts({ workspace = () => null, signal } = {}) {
   const tray = el("section", { class: "workspace-prompts", hidden: true, "aria-label": "Requests awaiting your response" });
@@ -25,8 +35,12 @@ export function workspacePrompts({ workspace = () => null, signal } = {}) {
     });
     const input = !prompt.approval && !fields.length ? el("textarea", { required: true, "aria-label": "Answer", rows: 2 }) : null;
     const status = el("div", { class: "prompt-status", role: "status" });
-    const send = el("button", { class: "primary", type: "submit" }, prompt.approval ? prompt.actionLabel || "Approve session" : "Send answer");
+    const send = el("button", { class: "primary", type: "submit" }, prompt.approval ? prompt.actionLabel || "Allow" : "Send answer");
     const cancel = el("button", { class: "ghost", type: "button", onclick: () => reply(false) }, prompt.approval ? "Deny" : "Dismiss");
+    // "For this task" also covers the helpers working with this agent.
+    const task = prompt.allowTask ? el("button", { type: "button", class: "ghost",
+      title: "Don't ask again for this site while this task runs, including its helper agents",
+      onclick: () => reply(true, "task") }, "Allow for this task") : null;
     const form = el("form", { onsubmit: event => { event.preventDefault(); reply(true); } },
       input && el("label", { class: "prompt-answer" }, el("span", { text: "Your answer" }), input),
       fields.length ? el("div", { class: "workspace-question-fields" }, controls.map(({ field, control }) => {
@@ -35,23 +49,35 @@ export function workspacePrompts({ workspace = () => null, signal } = {}) {
         return el("label", { "data-field-type": field.type },
           ...(field.type === "checkbox" ? [control, caption] : [caption, control]));
       })) : null,
-      status, el("div", { class: "prompt-actions" }, cancel, send));
-    const card = el("article", { "data-workspace": prompt.workspaceId, "data-parent": prompt.parentWorkspaceId ?? undefined },
-      el("header", {}, el("div", { class: "prompt-workspace", text: prompt.workspaceName }),
+      status, el("div", { class: "prompt-actions" }, cancel, task, send));
+    const [riskIcon, riskText] = RISK[prompt.risk] ?? [];
+    const facts = (prompt.facts ?? []).filter(fact => fact.value);
+    // Long plans fold away; the question and facts carry the decision.
+    const detail = !prompt.detail ? null : prompt.detail.length > 160 || prompt.detail.includes("\n")
+      ? el("details", { class: "prompt-detail" }, el("summary", { text: prompt.approval ? "What it will do" : "Details" }), el("p", { text: prompt.detail }))
+      : el("p", { class: "prompt-detail", text: prompt.detail });
+    const card = el("article", { class: prompt.approval ? "prompt-approval" : "prompt-question", "data-risk": prompt.risk ?? undefined,
+      "data-workspace": prompt.workspaceId, "data-parent": prompt.parentWorkspaceId ?? undefined },
+      el("header", {},
+        el("div", { class: "prompt-workspace" }, el("span", { text: prompt.workspaceName }),
+          riskText ? el("span", { class: "prompt-risk" }, icon(riskIcon), riskText) : null),
         el("h3", { text: prompt.question })),
-      prompt.detail ? el("p", { class: "prompt-detail", text: prompt.detail }) : null, form);
+      facts.length ? el("dl", { class: "prompt-facts" }, facts.flatMap(fact => [el("dt", { text: fact.label }), el("dd", { text: fact.value })])) : null,
+      detail, form);
     rows.set(prompt.id, card);
     tray.append(card);
     draw();
-    async function reply(approved) {
+    async function reply(approved, scope = "once") {
+      if (approved && !form.reportValidity()) return;
       send.disabled = cancel.disabled = true;
+      if (task) task.disabled = true;
       form.setAttribute("aria-busy", "true");
       status.textContent = "Sending…";
       const values = approved && fields.length ? Object.fromEntries(controls.map(({ field, control }) => [
         field.id, field.type === "checkbox" ? control.checked : field.type === "number" && control.value ? control.valueAsNumber : control.value,
       ])) : undefined;
-      try { await call("workspace.promptReply", { id: prompt.id, approved, text: input?.value, values }); }
-      catch (error) { status.textContent = errorText(error); send.disabled = cancel.disabled = false; }
+      try { await call("workspace.promptReply", { id: prompt.id, approved, text: input?.value, values, scope }); }
+      catch (error) { status.textContent = errorText(error); send.disabled = cancel.disabled = false; if (task) task.disabled = false; }
       finally { form.removeAttribute("aria-busy"); }
     }
   }

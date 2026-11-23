@@ -35,6 +35,7 @@ export const LimaStartup = {
     if (initialized) return;
     initialized = true;
     step("sidebar routing", () => lazy.disableSpaceRouting());
+    step("blocked sites", () => ChromeUtils.importESModule("resource://lima/LimaBlockedSites.sys.mjs").LimaBlockedSites.start());
     log("bootstrap loaded");
 
     step("ui substitution", () => {

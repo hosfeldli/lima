@@ -6,6 +6,25 @@ const pointFor = node => {
   return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) };
 };
 
+/** Why a click needs the user's OK, or null for an ordinary control. */
+function sensitivity(doc, control, label) {
+  const context = `${doc.title} ${control.closest("form, [role=form]")?.innerText ?? ""}`;
+  if (/\b(play|roll|start|spin|deal)\b/i.test(label) && /\b(casino|wager|stake cash|sportsbook|blackjack|dice|limbo|plinko|slots?)\b/i.test(context) ||
+      /\b(place bet|bet|wager|cash out|deposit|withdraw|purchase|buy now|checkout|place order|pay now|pay|transfer)\b/i.test(label)) {
+    return { risk: "money", reason: "This can spend or move money." };
+  }
+  if (/\b(delete|remove account|send|publish|unsubscribe|log\s?in|sign\s?in)\b/i.test(label)) {
+    return { risk: "account", reason: "This changes your account or sends something on your behalf." };
+  }
+  if (control.matches("iframe, input[type=file], input[type=password], [download]")) {
+    return { risk: "account", reason: "This opens a file, a download or embedded content." };
+  }
+  if (control.type === "submit" && control.form && control.form.method.toLowerCase() !== "get") {
+    return { risk: "account", reason: "This submits a form." };
+  }
+  return null;
+}
+
 /* Parent-initiated, visible-page interactions for a workspace's authorized tab. */
 export class LimaPageChild extends JSWindowActorChild {
   receiveMessage({ name, data }) {
@@ -14,7 +33,12 @@ export class LimaPageChild extends JSWindowActorChild {
     const doc = this.document;
     const win = this.contentWindow;
     const { action, options } = data;
-    if (data.paths && !data.paths.includes(doc.location.pathname)) throw new Error("The page navigated outside the approved paths.");
+    // Sensitive steps are never refused: they come back as needsApproval and
+    // the runtime asks the user, then repeats the step with `confirmed`.
+    if (data.paths && !data.paths.includes(doc.location.pathname) && !data.confirmed) {
+      return { needsApproval: { kind: "path", path: doc.location.pathname, risk: "routine",
+        reason: "The page moved to a path the plan didn't list." } };
+    }
     const viewport = { width: win.innerWidth, height: win.innerHeight };
     if (action === "inspect") {
       const elements = [];
@@ -66,17 +90,16 @@ export class LimaPageChild extends JSWindowActorChild {
       }
       if (!control) throw new Error("Choose a visible control from a fresh inspection.");
       const label = [control.innerText, control.value, control.getAttribute("aria-label"), control.getAttribute("href")].join(" ");
-      const wager = /\b(play|roll|start)\b/i.test(label) &&
-        /\b(casino|wager|stake cash|sportsbook)\b/i.test(`${doc.title} ${control.closest("form, [role=form]")?.innerText ?? ""}`);
-      if (wager || control.matches("iframe, input[type=file], input[type=password], [download]") ||
-          (control.type === "submit" && control.form && control.form.method.toLowerCase() !== "get") ||
-          /\b(delete|remove account|purchase|buy now|checkout|place order|pay now|send|transfer|publish|place bet|bet|wager|cash out|deposit|withdraw|log\s?in|sign\s?in|unsubscribe)\b/i.test(label)) {
-        throw new Error("This control requires direct user interaction.");
-      }
+      const sensitive = data.confirmed ? null : sensitivity(doc, control, label);
+      if (sensitive) return { needsApproval: { kind: "click", control: labelFor(control), ...sensitive } };
       if (control.localName === "a") {
         const destination = new URL(control.href);
-        if (destination.origin !== data.origin || control.target === "_blank" || !data.paths?.includes(destination.pathname)) {
-          throw new Error("This link leaves the approved paths. Request it explicitly before following it.");
+        if (destination.origin !== data.origin || control.target === "_blank") {
+          throw new Error("This link opens another site or window. Open it as a workspace tab and request a plan for it.");
+        }
+        if (!data.paths?.includes(destination.pathname) && !data.confirmed) {
+          return { needsApproval: { kind: "navigate", control: labelFor(control), path: destination.pathname, risk: "routine",
+            reason: "This link goes to a page the plan didn't list." } };
         }
       }
       const pointer = {
@@ -93,9 +116,10 @@ export class LimaPageChild extends JSWindowActorChild {
           field.disabled || field.readOnly || !field.getBoundingClientRect().width) {
         throw new Error("Focus a visible text field before typing.");
       }
-      if (/password|one-time-code|credit card|cc-|social security|private key|secret/i.test(
-        [field.name, field.autocomplete, field.placeholder, field.getAttribute("aria-label")].join(" "))) {
-        throw new Error("Sensitive fields require direct user interaction.");
+      if (!data.confirmed && (field.type === "password" || /password|one-time-code|credit card|cc-|social security|private key|secret/i.test(
+        [field.name, field.autocomplete, field.placeholder, field.getAttribute("aria-label")].join(" ")))) {
+        return { needsApproval: { kind: "type", control: labelFor(field), secret: true, risk: "account",
+          reason: "This is a sensitive field (password, code or payment detail)." } };
       }
       const pointer = pointFor(field);
       const prototype = field.localName === "input" ? win.HTMLInputElement.prototype : win.HTMLTextAreaElement.prototype;

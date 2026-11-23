@@ -21,7 +21,11 @@ import LimaAuthorization
     let status = await call(runtime, "agents.status", [:], origin: .chat, workspace: parentID)
     #expect(status.result?.arrayValue?.first?["name"]?.stringValue == "pricing-scout")
     #expect(status.result?.arrayValue?.first?["state"]?.stringValue == "starting")
-    let nested = await call(runtime, "agent.spawn", ["name": .string("x"), "task": .string("y")], origin: .chat, workspace: helper.id)
+    // A helper starting another agent asks; declined, nothing starts.
+    let (nested, card) = try await answeringApproval(runtime, approve: false) {
+        await call(runtime, "agent.spawn", ["name": .string("x"), "task": .string("y")], origin: .chat, workspace: helper.id)
+    }
+    #expect(card?["question"]?.stringValue == "Let pricing-scout start another agent?")
     #expect(nested.error?.code == .notAuthorized)
 
     // Its preamble says it's a helper with a task.
@@ -107,9 +111,9 @@ import LimaAuthorization
     let fromUser = await call(runtime, "workspace.promptReply", ["id": .string(request), "approved": .bool(true)])
     #expect(fromUser.ok)
     let token = try #require(await waiting.value.result?["session"]?.stringValue)
-    #expect(await runtime.workspacePrompts.permittedPaths(token, workspace: id, url: "http://localhost:3000/", action: "click") == Set(["/", "/details", "/search"]))
-    #expect(await runtime.workspacePrompts.permittedPaths(token, workspace: id, url: "http://localhost:3000/", action: "type") == nil)
-    #expect(await runtime.workspacePrompts.permittedPaths(token, workspace: "another", url: "http://localhost:3000/", action: "click") == nil)
+    #expect(await runtime.workspacePrompts.permittedPaths(token, family: id, url: "http://localhost:3000/", action: "click") == Set(["/", "/details", "/search"]))
+    #expect(await runtime.workspacePrompts.permittedPaths(token, family: id, url: "http://localhost:3000/", action: "type") == nil)
+    #expect(await runtime.workspacePrompts.permittedPaths(token, family: "another", url: "http://localhost:3000/", action: "click") == nil)
     await runtime.terminals.closeAll()
 }
 
@@ -248,12 +252,62 @@ import LimaAuthorization
         }
         let request = try #require(prompt?["id"]?.stringValue)
         #expect(prompt?["approval"]?.boolValue == true)
-        #expect(prompt?["question"]?.stringValue == "Approve: Open a conversation")
+        #expect(prompt?["question"]?.stringValue == "Open a conversation")
         #expect(prompt?["detail"]?.stringValue?.contains("Place a bet of 0.30 SC.") == true)
-        #expect(prompt?["detail"]?.stringValue?.contains("spend money") == true)
+        #expect(prompt?["risk"]?.stringValue == "money")
         _ = await call(runtime, "workspace.promptReply", ["id": .string(request), "approved": .bool(answer)])
         let result = await wager.value
         #expect(result.result?["approved"]?.boolValue == answer)
     }
     await runtime.terminals.closeAll()
+}
+
+private func pendingPrompt(_ runtime: Runtime) async throws -> JSONValue {
+    for _ in 0..<80 {
+        if let prompt = await runtime.workspacePrompts.list().arrayValue?.first { return prompt }
+        try await Task.sleep(for: .milliseconds(15))
+    }
+    throw BridgeError(.deadlineExceeded, "no prompt")
+}
+
+@Test(.timeLimit(.minutes(1))) func moneyPlansAskWithOnceOrTaskAndTaskApprovalCoversHelpers() async throws {
+    let (runtime, dir) = try await workspaceRuntime()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let leadID = try #require(await call(runtime, "workspace.create", ["name": .string("Challenge")]).result?["id"]?.stringValue)
+    let helper = try await runtime.spawnAgent(parent: try await runtime.workspaces.get(leadID), name: "dealer", task: "Play", provider: nil, startTask: false)
+    let url = JSONValue.string("https://stake.example/casino/games/blackjack")
+    let plan: [String: JSONValue] = ["url": url, "goal": .string("Place a bet of 0.15 Stake Cash per hand"),
+                                     "plan": .string("Set the bet and click Play."), "actions": .string("click,type")]
+
+    let lead = Task { await call(runtime, "workspace.browserPlan", plan, origin: .chat, workspace: leadID) }
+    let prompt = try await pendingPrompt(runtime)
+    #expect(prompt["risk"]?.stringValue == "money")
+    #expect(prompt["allowTask"]?.boolValue == true)
+    #expect(prompt["facts"]?.arrayValue?.first?["value"]?.stringValue == "stake.example")
+    #expect(await call(runtime, "workspace.promptReply", ["id": prompt["id"]!, "approved": .bool(true), "scope": .string("task")]).ok)
+    let token = try #require(await lead.value.result?["session"]?.stringValue)
+    #expect(await runtime.workspacePrompts.isTrusted(token))
+
+    // The helper's identical plan is covered by the lead's approval: no prompt.
+    let shared = await call(runtime, "workspace.browserPlan", plan, origin: .chat, workspace: helper.id)
+    #expect(shared.result?["session"]?.stringValue == token)
+    #expect(await runtime.workspacePrompts.permittedPaths(token, family: leadID, url: "https://stake.example/casino/games/blackjack", action: "click") != nil)
+    await runtime.terminals.closeAll()
+}
+
+@Test func onceApprovalsDontCoverMoneyStepsButTaskApprovalsDo() async {
+    let prompts = WorkspacePrompts()
+    let now = Date()
+    let token = await prompts.authorize(family: "lead", url: "https://stake.example/play", paths: ["/play"], actions: ["click"], now: now)
+    #expect(await !prompts.isTrusted(token))
+    #expect(await prompts.covering(family: "lead", url: "https://stake.example/x", paths: ["/play"], actions: ["click"], highRisk: true, now: now) == nil)
+    #expect(await prompts.covering(family: "lead", url: "https://stake.example/x", paths: ["/play"], actions: ["click"], highRisk: false, now: now) == token)
+    #expect(await prompts.covering(family: "other", url: "https://stake.example/x", paths: ["/play"], actions: ["click"], highRisk: false, now: now) == nil)
+    let paths = await prompts.grant(token, trust: true, path: "/cashier", now: now)
+    #expect(paths == ["/play", "/cashier"])
+    #expect(await prompts.isTrusted(token))
+    // Each use renews an idle session, but never past its limit.
+    #expect(await prompts.permittedPaths(token, family: "lead", url: "https://stake.example/play", action: "click", now: now.addingTimeInterval(240)) != nil)
+    #expect(await prompts.permittedPaths(token, family: "lead", url: "https://stake.example/play", action: "click", now: now.addingTimeInterval(500)) != nil)
+    #expect(await prompts.permittedPaths(token, family: "lead", url: "https://stake.example/play", action: "click", now: now.addingTimeInterval(900)) == nil)
 }

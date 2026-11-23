@@ -68,10 +68,16 @@ public enum Daemon {
                 }
                 Task {
                     let (origin, workspaceID) = origins.binding(client)
-                    if origin == .mcp, request.method == "terminal.agentRun", !MCPGrants.shared.allows(scope: "terminal:control") {
-                        let denied = BridgeResponse.failure(id: request.id, BridgeError(.confirmationRequired, "Allow terminal:control for MCP clients in Lima → Integrations first"))
-                        if let data = try? JSONEncoder().encode(denied) { client.send(data) }
-                        return
+                    if origin == .mcp, request.method == "terminal.agentRun" {
+                        // Asks the user when terminal control hasn't been granted.
+                        do {
+                            try await runtime.requireMCPScope("terminal:control", context: CallContext(client: client, origin: origin, workspaceID: workspaceID),
+                                                              action: "type commands into your terminal")
+                        } catch {
+                            let denied = BridgeResponse.failure(id: request.id, (error as? BridgeError) ?? BridgeError(.internalError, String(describing: error)))
+                            if let data = try? JSONEncoder().encode(denied) { client.send(data) }
+                            return
+                        }
                     }
                     let response = await runtime.handle(request, context: CallContext(client: client, origin: origin, workspaceID: workspaceID))
                     if let data = try? JSONEncoder().encode(response) { client.send(data) }
@@ -114,7 +120,8 @@ public enum Daemon {
         leaseTimer.setEventHandler { Task { await runtime.terminals.expireIdleLeases(timeout: 300) } }
         leaseTimer.resume()
 
-        defer { withExtendedLifetime((server, timer, leaseTimer)) {} }
+        let appearance = runtime.watchAppearance()
+        defer { withExtendedLifetime((server, timer, leaseTimer, appearance)) {} }
         FileHandle.standardError.write(Data("lima-host: runtime \(limaRuntimeVersion) listening on \(paths.socket)\n".utf8))
         // The async entry point already runs the main dispatch loop. Keep
         // the server alive without driving that loop from a worker thread.

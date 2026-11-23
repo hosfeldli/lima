@@ -11,6 +11,22 @@ func workspaceRuntime() async throws -> (Runtime, URL) {
     return (runtime, dir)
 }
 
+/// Runs a call that should stop at an approval card, answers the card, and
+/// returns the call's result with the card that was shown.
+func answeringApproval(_ runtime: Runtime, approve: Bool, scope: String? = nil,
+                       _ body: @escaping @Sendable () async -> BridgeResponse) async throws -> (BridgeResponse, JSONValue?) {
+    let task = Task { await body() }
+    var card: JSONValue?
+    for _ in 0..<200 {
+        if let first = await runtime.workspacePrompts.list().arrayValue?.first { card = first; break }
+        try await Task.sleep(for: .milliseconds(20))
+    }
+    if let id = card?["id"]?.stringValue {
+        try await runtime.workspacePrompts.answer(runtime, id: id, approved: approve, text: nil, scope: scope)
+    }
+    return (await task.value, card)
+}
+
 func call(_ runtime: Runtime, _ method: String, _ params: [String: JSONValue] = [:], origin: ActionOrigin = .browser, workspace: String? = nil) async -> BridgeResponse {
     await runtime.handle(BridgeRequest(id: "t", method: method, params: .object(params)), context: CallContext(client: nil, origin: origin, workspaceID: workspace))
 }
@@ -185,8 +201,11 @@ func call(_ runtime: Runtime, _ method: String, _ params: [String: JSONValue] = 
     #expect(helper.terminalID == nil)
     #expect(helper.directory != parent.directory)
     #expect(helper.tabs.map(\.url) == [scope])
+    // Reaching beyond its tab asks the user; declined, the call fails.
     for method in ["workspace.run", "workspace.files", "workspace.readTab", "workspace.openTab", "terminal.list", "notes.list", "capabilities.list"] {
-        #expect(await call(runtime, method, origin: .chat, workspace: helper.id).error?.code == .notAuthorized)
+        let (result, card) = try await answeringApproval(runtime, approve: false) { await call(runtime, method, origin: .chat, workspace: helper.id) }
+        #expect(card?["question"]?.stringValue == "Let Tester go beyond its browser tab?")
+        #expect(result.error?.code == .notAuthorized)
     }
     let conversation = try await runtime.conversations.get(helper.conversationID!)
     let config = await runtime.workspaceAgentConfiguration(conversation)

@@ -1,4 +1,4 @@
-import { activityStatus, bridge, call, el, errorText, filesPrivacyButton, icon, markdown, onEvent, prefs, setPage } from "./lib.js";
+import { activityStatus, bridge, call, el, errorText, filesPrivacyButton, icon, markdown, onEvent, prefs, relativeTime, setPage } from "./lib.js";
 import { agentControls } from "./composer.js";
 import { companion, cueCompanion, setCompanionState, watchVisualActivity } from "./companion.js";
 import { workspacePrompts } from "./workspace-prompts.js";
@@ -9,7 +9,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
   setPage(home ? "Lima" : "Lima Companion", "lima");
   const workspaces = new Map();
   const generationLifetime = new AbortController();
-  const input = el("textarea", { rows: home ? 3 : 2, placeholder: "What would you like Lima to do?", "aria-label": "Question or task" });
+  const input = el("textarea", { rows: home ? 3 : 2, placeholder: "What would you like Lima to do? Each request becomes its own chat.", "aria-label": "Question or task" });
   const character = companion(home ? "home" : "status");
   const send = el("button", { class: "primary", onclick: delegate, disabled: true }, icon("send"), "Send");
   const activity = activityStatus();
@@ -19,7 +19,12 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
   const status = el("div", { class: "handoff" }, el("div", { class: "grow" }, target, activity.node, recovery), openAgent);
   const recent = el("div", { class: "handoff-recent" });
   const prompts = workspacePrompts();
-  const taskChat = el("section", { class: "companion-task-chat", role: "log", "aria-label": "Companion requests", hidden: true });
+  // Each request is an entry; opening one shows its small chat in place.
+  const requestList = el("section", { class: "companion-requests", "aria-label": "Chats", hidden: true });
+  const threadView = el("section", { class: "companion-thread", hidden: true });
+  const listView = el("div", { class: "companion-list-view" });
+  const threads = new Map(); // conversation ID → thread
+  let openThread = null;
   const tasks = [];
   const agent = agentControls();
   const providerHelp = el("details", { class: "assistant-providers", hidden: true });
@@ -39,12 +44,13 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     ? el("header", { class: "handoff-head" }, character, el("h1", { text: "What are we working on?" }))
     : el("header", { class: "assistant-head" }, character, el("strong", { text: "Lima Companion" }), el("span", { class: "spacer" }),
       el("button", { class: "ghost icon-only", title: "Close Companion", "aria-label": "Close Companion", onclick: close }, icon("close")));
+  listView.append(
+    el("div", { class: "handoff-composer composer-box" }, input,
+      el("div", { class: "composer-row handoff-controls" }, agent.provider, agent.model,
+        el("span", { class: "spacer" }), send)),
+    status, prompts.node, requestList, recent, home ? null : providerHelp);
   app.replaceChildren(el("div", { class: home ? "assistant-page handoff-home" : "assistant-page" },
-    head, el("div", { class: "handoff-body" },
-      el("div", { class: "handoff-composer composer-box" }, input,
-        el("div", { class: "composer-row handoff-controls" }, agent.provider, agent.model,
-          el("span", { class: "spacer" }), send)),
-      taskChat, status, prompts.node, recent, home ? null : providerHelp)));
+    head, el("div", { class: "handoff-body" }, listView, threadView)));
 
   input.addEventListener("focus", () => { if (character.dataset.state === "idle") cueCompanion(character, "listen"); });
   input.addEventListener("input", () => prefs.set(draftKey, input.value));
@@ -52,7 +58,11 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); delegate(); }
   });
   if (!home) {
-    document.addEventListener("keydown", event => { if (event.key === "Escape") close(); });
+    // Escape leaves an open thread first, then closes the Companion.
+    document.addEventListener("keydown", event => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (openThread) showList(); else close();
+    });
     loadProviderHelp();
   }
 
@@ -135,6 +145,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     task.reply.dataset.state = phase;
     task.reply.replaceChildren(...content);
     if (!home) bridge.browser("assistantAttention", { pending: tasks.some(item => item.phase === "approval") }).catch(() => {});
+    if (task.thread) paintEntry(task.thread);
     paintActivity();
   }
 
@@ -145,7 +156,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
       plan.pages.length ? el("p", { class: "muted", text: "Relevant tab content will be shared with these agents." }) : null,
       el("div", { class: "row" },
         el("button", { class: "primary", onclick: () => submit(task, plan) }, "Approve handoff"),
-        el("button", { class: "ghost", onclick: () => paintTask(task, "complete", "Handoff canceled.") }, "Cancel")));
+        el("button", { class: "ghost", onclick: () => { paintTask(task, "complete"); remember(task.thread, "Handoff canceled."); } }, "Cancel")));
   }
 
   async function generateArtwork(task, action, agentSettings) {
@@ -198,24 +209,26 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     const agentSettings = agent.settings();
     if (!text || !ready || !agentSettings.provider) return;
     const reply = el("div", { class: "companion-task-reply" });
-    const row = el("article", { class: "companion-task" },
-      el("p", { class: "companion-task-request", text }), reply);
-    const task = { row, reply, requestId: crypto.randomUUID(), taskIds: [] };
+    const task = { reply, requestId: crypto.randomUUID(), taskIds: [] };
     tasks.push(task);
-    const settled = tasks.filter(item => ["complete", "failed"].includes(item.phase)
-      || (item.phase === "tracked" && item.taskIds.every(id => TERMINAL.has(orchestrated.get(id)?.task.state))));
-    if (settled.length > 15) {
-      const oldest = settled[0];
-      oldest.row.remove();
-      tasks.splice(tasks.indexOf(oldest), 1);
-    }
-    taskChat.hidden = false;
-    taskChat.prepend(row);
     input.value = "";
     prefs.set(draftKey, "");
     requestError = undefined;
     cueCompanion(character, "receive");
+    // The request becomes a Companion thread: a conversation that keeps the
+    // exchange so follow-ups have context. If it can't be stored, the request
+    // still runs; it just can't be continued.
+    let conversation;
+    try {
+      conversation = await call("chat.create", { ...agentSettings, companion: true });
+      conversation = await call("chat.record", { id: conversation.id, role: "user", text });
+    } catch { conversation = { id: `local-${task.requestId}`, title: text, messages: [{ id: "u", role: "user", text, status: "complete" }], local: true }; }
+    const thread = addThread(conversation, { prepend: true });
+    thread.task = task;
+    task.thread = thread;
     paintTask(task, "working", "Understanding the request…");
+    // The request opens as its chat right away; ← goes back to all chats.
+    showThread(thread);
     try {
       const [tabs, folders] = await Promise.all([
         bridge.browser("assistantTabs", {}),
@@ -246,18 +259,26 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
             else await bridge.browser("assistantRevealGroup", { id: result.id });
           } catch (error) { paintTask(task, "failed", errorText(error)); }
         } }, icon(note ? "note" : "folder"), note ? "Open note" : "Show folder");
-        paintTask(task, "complete", el("p", { text: note ? `I'll handle that directly. Created “${result.title}”.`
-          : `Created “${result.title}” with ${result.count} ${result.count === 1 ? "tab" : "tabs"}.` }), open);
+        const summary = note ? `Created the note “${result.title}”.` : `Created “${result.title}” with ${result.count} ${result.count === 1 ? "tab" : "tabs"}.`;
+        paintTask(task, "complete", open);
+        await remember(thread, summary);
         return;
       }
-      if (plan.answer) { paintTask(task, "complete", el("p", { class: "muted", text: "Here's the answer." }), markdown(plan.answer)); return; }
+      if (plan.answer) {
+        paintTask(task, "complete");
+        await remember(thread, plan.answer);
+        return;
+      }
       if (plan.workspaceIds.some(id => !workspaces.has(id))) throw new Error("A workspace changed during planning. Send the request again.");
       plan.pages = pages.filter(Boolean);
       plan.text = text;
       plan.agent = agentSettings;
       if (plan.workspaceIds.length) showApproval(task, plan);
       else await submit(task, plan);
-    } catch (error) { paintTask(task, "failed", errorText(error)); }
+    } catch (error) {
+      paintTask(task, "failed", errorText(error));
+      remember(thread, `I couldn't finish this: ${errorText(error)}`);
+    }
   }
 
   async function submit(task, plan) {
@@ -280,8 +301,12 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
       }
       task.phase = "tracked";
       paintTracked(task);
-      if (!home && !input.value && !tasks.some(item => ["working", "approval"].includes(item.phase))) close().catch(() => {});
-    } catch (error) { paintTask(task, "failed", errorText(error)); }
+      // The thread stays here; its status keeps updating in the entry.
+      await remember(task.thread, `Handed off to ${destinations.map(workspace => workspace.name).join(", ")}. I'll track it here.`, task.taskIds);
+    } catch (error) {
+      paintTask(task, "failed", errorText(error));
+      remember(task.thread, `I couldn't hand this off: ${errorText(error)}`);
+    }
     finally { draw(); }
   }
 
@@ -334,6 +359,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     const records = task.taskIds.map(id => orchestrated.get(id)).filter(Boolean);
     task.reply.dataset.state = records.every(record => TERMINAL.has(record.task.state)) ? "complete" : "working";
     task.reply.replaceChildren(...records.map(taskView));
+    if (task.thread) paintEntry(task.thread);
   }
 
   let refreshing = new Map();
@@ -348,22 +374,243 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     }, 120));
   }
 
-  /** Reopening the Companion shows the tasks still in progress and recent results. */
-  async function restoreTasks() {
-    const records = await call("task.list", { limit: 6 }).catch(() => []);
-    for (const record of records.reverse()) {
-      if (tracked.has(record.task.id)) continue;
-      if (TERMINAL.has(record.task.state) && Date.now() - (record.task.finishedAt ?? 0) > 6 * 3600_000) continue;
-      const reply = el("div", { class: "companion-task-reply" });
-      const row = el("article", { class: "companion-task" }, el("p", { class: "companion-task-request", text: record.task.request }), reply);
-      const task = { row, reply, phase: "tracked", taskIds: [record.task.id] };
-      tasks.push(task);
-      tracked.set(record.task.id, task);
-      orchestrated.set(record.task.id, record);
-      taskChat.hidden = false;
-      taskChat.prepend(row);
-      paintTracked(task);
+  // MARK: Request threads
+
+  const THREAD_LIMIT = 30;
+
+  function addThread(conversation, { prepend = false } = {}) {
+    const thread = { id: conversation.id, conversation, task: null, entry: null };
+    const title = el("span", { class: "companion-entry-title" });
+    const state = el("span", { class: "companion-entry-state" });
+    const preview = el("span", { class: "companion-entry-preview" });
+    const when = el("time", { class: "companion-entry-time" });
+    // A chat row: what was asked, where it stands, the latest reply, and a
+    // chevron saying it opens.
+    thread.entry = el("button", { type: "button", class: "companion-entry", title: "Open this chat", onclick: () => showThread(thread) },
+      el("span", { class: "companion-entry-icon", "aria-hidden": "true" }, icon("chat"), el("span", { class: "companion-entry-dot" })),
+      el("span", { class: "companion-entry-main" },
+        el("span", { class: "companion-entry-line" }, title, when),
+        el("span", { class: "companion-entry-line" }, state, preview)),
+      icon("chevron", "icon companion-entry-open"));
+    thread.parts = { title, state, preview, when };
+    threads.set(thread.id, thread);
+    requestList.hidden = false;
+    if (!requestList.firstChild) {
+      requestList.append(el("header", { class: "companion-requests-head" },
+        el("h2", { text: "Chats" }), el("span", { text: "Click one to follow up" })));
     }
+    if (prepend) requestList.firstChild.after(thread.entry);
+    else requestList.append(thread.entry);
+    const extra = [...threads.values()].slice(THREAD_LIMIT);
+    for (const old of extra) { old.entry.remove(); threads.delete(old.id); }
+    paintEntry(thread);
+    return thread;
+  }
+
+  /** One line per request: what it is, where it stands, when. */
+  function threadState(thread) {
+    const { task, conversation } = thread;
+    const last = conversation.messages?.at(-1);
+    if (task?.phase === "approval") return ["blocked", "Needs you"];
+    if (last?.role === "assistant" && last.status === "streaming") return ["working", "Replying…"];
+    if (task?.phase === "working") return ["working", "Working…"];
+    const records = (task?.taskIds ?? []).map(id => orchestrated.get(id)?.task).filter(Boolean);
+    const live = records.find(record => !TERMINAL.has(record.state));
+    if (live) return [live.state === "blocked" ? "blocked" : "working", STATES[live.state] ?? "Working"];
+    if (records.some(record => record.state === "failed")) return ["failed", "Failed"];
+    if (last?.status === "failed" || task?.phase === "failed") return ["failed", "Didn't finish"];
+    if (records.length) return ["complete", records.some(record => record.state === "completed_with_warnings") ? "Done, with notes" : "Done"];
+    return ["complete", conversation.messages?.length > 2 ? "Chat" : "Answered"];
+  }
+
+  function paintEntry(thread) {
+    const [state, label] = threadState(thread);
+    thread.entry.dataset.state = state;
+    thread.parts.title.textContent = thread.conversation.title || thread.conversation.messages?.[0]?.text || "Request";
+    thread.parts.state.textContent = label;
+    const messages = (thread.conversation.messages ?? []).filter(message => message.text);
+    const replies = messages.filter(message => message.role === "assistant");
+    const latest = replies.at(-1)?.text?.replace(/\s+/g, " ").trim() || thread.conversation.preview || "";
+    thread.parts.preview.textContent = latest ? `· ${latest}` : messages.length > 1 ? `· ${messages.length} messages` : "";
+    const at = thread.conversation.updatedAt ?? thread.conversation.createdAt;
+    thread.parts.when.textContent = at ? relativeTime(at) : "";
+    if (openThread === thread) paintThread();
+  }
+
+  /** Records what Lima did, so the thread can continue with context. */
+  async function remember(thread, text, taskIds = []) {
+    if (!thread) return;
+    if (thread.conversation.local) {
+      thread.conversation.messages.push({ id: crypto.randomUUID(), role: "assistant", text, status: "complete" });
+      paintEntry(thread);
+      return;
+    }
+    try { thread.conversation = await call("chat.record", { id: thread.id, role: "assistant", text, taskIds }); }
+    catch {}
+    paintEntry(thread);
+  }
+
+  function showList() {
+    openThread = null;
+    view = null;
+    threadView.hidden = true;
+    threadView.replaceChildren();
+    listView.hidden = false;
+    input.focus();
+  }
+
+  async function showThread(thread) {
+    openThread = thread;
+    listView.hidden = true;
+    threadView.hidden = false;
+    if (!thread.conversation.local && (!thread.conversation.messages || thread.conversation.placeholder)) {
+      try { thread.conversation = await call("chat.get", { id: thread.id }); } catch {}
+    }
+    if (openThread !== thread) return;
+    paintThread(true);
+  }
+
+  function messageView(message) {
+    if (message.role === "user") return el("div", { class: "companion-msg user" }, el("div", { class: "bubble", text: message.text }));
+    const node = el("div", { class: "companion-msg assistant", "data-status": message.status });
+    if (message.notice) node.append(el("p", { class: "msg-notice" }, icon("redo"), el("span", { text: message.notice })));
+    const body = message.text ? markdown(message.text) : el("p", { class: "muted", text: message.status === "streaming" ? "Thinking…" : "" });
+    if (message.status === "streaming") body.classList.add("typing");
+    node.append(body);
+    if (message.status === "failed" && message.error) {
+      node.append(el("div", { class: "failure" }, el("span", { class: "grow", text: message.error.message }),
+        el("button", { class: "ghost", onclick: async event => {
+          event.currentTarget.disabled = true;
+          try { openThread.conversation = await call("chat.retry", { id: openThread.id, messageId: message.id }); paintThread(); }
+          catch (error) { threadNotice(errorText(error)); }
+        } }, "Retry")));
+    }
+    return node;
+  }
+
+  // The open thread's view is built once; repaints update its parts so the
+  // reply box keeps focus and text while answers stream in.
+  let view = null;
+  function threadNotice(text) { if (view) view.status.textContent = text; }
+
+  function buildThread(thread) {
+    const field = el("textarea", { rows: 2, placeholder: "Reply…", "aria-label": "Follow-up" });
+    const reply = el("button", { class: "primary companion-thread-send", type: "submit", title: "Send", "aria-label": "Send" }, icon("send"));
+    // Provider and model for this chat, switchable at any time: a reply in
+    // progress restarts on the new choice.
+    const controls = agentControls({
+      onChange: async choice => {
+        if (thread.conversation.local) return;
+        thread.conversation = await call("chat.configure", { id: thread.id, ...choice });
+        paintEntry(thread);
+      },
+      onError: error => threadNotice(errorText(error)),
+    });
+    if (!thread.conversation.local && thread.conversation.provider) controls.show(thread.conversation, false);
+    const form = el("form", { class: "companion-thread-composer composer-box", onsubmit: event => { event.preventDefault(); followUp(thread, field); } },
+      field, el("div", { class: "composer-row" }, controls.provider, controls.model, el("span", { class: "spacer" }), reply));
+    field.addEventListener("keydown", event => {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); form.requestSubmit(); }
+    });
+    const title = el("strong", { class: "grow" });
+    const state = el("span", { class: "companion-entry-state" });
+    const log = el("div", { class: "companion-thread-log", role: "log", "aria-live": "polite" });
+    const status = el("p", { class: "companion-thread-status", role: "status" });
+    threadView.replaceChildren(
+      el("header", { class: "companion-thread-head" },
+        el("button", { type: "button", class: "ghost icon-only", title: "All requests", "aria-label": "All requests", onclick: showList }, icon("arrow", "icon companion-back")),
+        title, state),
+      log, status, form);
+    view = { thread, field, reply, title, state, log, status, controls };
+  }
+
+  function paintThread(focus = false) {
+    const thread = openThread;
+    if (!thread) return;
+    if (view?.thread !== thread) buildThread(thread);
+    const { conversation, task } = thread;
+    const [state, label] = threadState(thread);
+    view.title.textContent = conversation.title || "Request";
+    view.state.dataset.state = state;
+    view.state.textContent = label;
+    const atBottom = view.log.scrollHeight - view.log.scrollTop - view.log.clientHeight < 40;
+    view.log.replaceChildren(...(conversation.messages ?? []).map(messageView),
+      task?.reply?.childElementCount ? el("div", { class: "companion-thread-live" }, task.reply) : null);
+    if (atBottom || focus) view.log.scrollTop = view.log.scrollHeight;
+    const streaming = conversation.messages?.at(-1)?.status === "streaming";
+    view.reply.disabled = streaming || !!conversation.local;
+    view.controls.provider.disabled ||= !!conversation.local;
+    view.controls.model.disabled ||= !!conversation.local;
+    view.field.placeholder = conversation.local ? "This request couldn't be saved, so it can't be continued." : streaming ? "Lima is replying…" : "Reply…";
+    if (focus) view.field.focus();
+  }
+
+  /** A follow-up continues the same thread, with the whole exchange (and the
+   * latest status of any handed-off work) as context. Provider usage limits
+   * fail over on the runtime; the reply notes the switch. */
+  async function followUp(thread, field) {
+    const text = field.value.trim();
+    if (!text || thread.conversation.local) return;
+    field.value = "";
+    try {
+      const records = (thread.task?.taskIds ?? []).map(id => orchestrated.get(id)?.task).filter(Boolean);
+      const status = records.map(record => `${workspaces.get(record.workspaceID)?.name ?? record.title}: ${STATES[record.state] ?? record.state}` +
+        (record.outcome ? ` — ${record.outcome}` : record.events?.at(-1)?.message ? ` — ${record.events.at(-1).message}` : "")).join("\n");
+      if (status && status !== thread.lastStatus) {
+        thread.conversation = await call("chat.record", { id: thread.id, role: "assistant", text: `Status of the handed-off work:\n${status}` });
+        thread.lastStatus = status;
+      }
+      thread.conversation = await call("chat.send", { id: thread.id, text });
+      paintEntry(thread);
+    } catch (error) {
+      field.value = text;
+      threadNotice(errorText(error));
+    }
+  }
+
+  /** Reopening the Companion lists recent requests with their status. */
+  async function restoreThreads() {
+    const summaries = await call("chat.list", { companion: true }).catch(() => []);
+    summaries.sort((a, b) => (b.createdAt ?? b.updatedAt) - (a.createdAt ?? a.updatedAt));
+    for (const summary of summaries.slice(0, THREAD_LIMIT)) {
+      if (threads.has(summary.id)) continue;
+      const conversation = { ...summary, messages: undefined };
+      const thread = addThread(conversation);
+      // Status for the summary line before the thread is opened.
+      if (summary.running) conversation.messages = [{ role: "assistant", status: "streaming" }];
+      else if (summary.lastStatus === "failed") conversation.messages = [{ role: "assistant", status: "failed" }];
+      if (summary.taskIDs?.length) {
+        const task = { reply: el("div", { class: "companion-task-reply" }), phase: "tracked", taskIds: summary.taskIDs, thread };
+        thread.task = task;
+        tasks.push(task);
+        for (const id of summary.taskIDs) {
+          tracked.set(id, task);
+          const record = await call("task.get", { id }).catch(() => null);
+          if (record) orchestrated.set(id, record);
+        }
+        paintTracked(task);
+      }
+      // Status summaries above aren't real messages; load them on open.
+      if (!summary.running && summary.lastStatus !== "failed") conversation.messages = undefined;
+      else conversation.placeholder = true;
+      paintEntry(thread);
+    }
+  }
+
+  function chatEvent(event, data) {
+    if (event === "chat.updated" && threads.has(data?.id)) {
+      const thread = threads.get(data.id);
+      thread.conversation = data;
+      paintEntry(thread);
+      return true;
+    }
+    if (event === "chat.delta" && threads.has(data?.conversationId)) {
+      const thread = threads.get(data.conversationId);
+      const message = thread.conversation.messages?.find(item => item.id === data.messageId);
+      if (message) { message.text = (message.text ?? "") + data.text; if (openThread === thread) paintThread(); }
+      return true;
+    }
+    return false;
   }
 
   const queued = [];
@@ -375,6 +622,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     else workspaces.set(data.id, data);
   }
   const unsubscribe = onEvent(({ event, data }) => {
+    if (chatEvent(event, data)) return;
     if (event === "task.updated" && data) {
       const root = data.parentID ?? data.id;
       if (tracked.has(root)) {
@@ -422,7 +670,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     } catch (error) { reportError(error); }
   }
   await load();
-  await restoreTasks();
+  await restoreThreads();
   await agent.ready;
   draw();
 }

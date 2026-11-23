@@ -12,10 +12,14 @@ public final class GrammarShortcut: NSObject {
     private var handler: EventHandlerRef?
     private var panel: NSPanel?
     private let message = NSTextField(wrappingLabelWithString: "")
-    private lazy var apply = NSButton(title: "Replace", target: self, action: #selector(replace))
+    // After an automatic fix, the one button undoes it.
+    private lazy var apply = NSButton(title: "Undo", target: self, action: #selector(undo))
     private var selection: Selection?
     private var replacement: String?
+    /// The text a fix replaced and where it now sits, for Undo.
+    private var undoState: (element: AXUIElement, original: String, location: Int, length: Int)?
     private var generation = 0
+    private static var lock: Int32 = -1
 
     private struct Selection {
         let element: AXUIElement
@@ -33,6 +37,11 @@ public final class GrammarShortcut: NSObject {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         let parent = getppid()
+        // One ⌘G helper per user: several Lima runtimes (an installed copy and
+        // a development build) would otherwise each pop up their own panel.
+        let path = NSTemporaryDirectory() + "lima-grammar-\(getuid()).lock"
+        lock = Darwin.open(path, O_CREAT | O_RDWR, 0o600)
+        guard lock >= 0, flock(lock, LOCK_EX | LOCK_NB) == 0 else { exit(0) }
         guard shared.register() else { exit(2) }
         Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
             if getppid() != parent { exit(0) }
@@ -91,6 +100,7 @@ public final class GrammarShortcut: NSObject {
         let current = Self.readSelection()
         selection = current
         replacement = nil
+        undoState = nil
         generation += 1
         let ticket = generation
         if panel == nil { buildPanel() }
@@ -119,10 +129,14 @@ public final class GrammarShortcut: NSObject {
             guard ticket == generation, panel?.isVisible == true else { return }
             switch corrected {
             case .success(let value):
+                guard value != text, !value.isEmpty else {
+                    message.stringValue = "Looks good."
+                    dismissAfter(.seconds(2))
+                    return
+                }
+                // Fix it in place right away; Undo puts the original back.
                 replacement = value
-                apply.isHidden = value == text || value.isEmpty
-                message.stringValue = apply.isHidden ? "Looks good." : String(value.prefix(150))
-                dismissAfter(apply.isHidden ? .seconds(2) : .seconds(20))
+                replace()
             case .failure(let error):
                 message.stringValue = error.message
                 dismissAfter(.seconds(5))
@@ -202,10 +216,11 @@ public final class GrammarShortcut: NSObject {
         generation += 1
         selection = nil
         replacement = nil
+        undoState = nil
         panel?.orderOut(nil)
     }
 
-    @objc private func replace() {
+    private func replace() {
         guard let prior = selection, let replacement, let current = Self.readSelection(),
               CFEqual(prior.element, current.element), Self.sameRange(prior.range, current.range), prior.text == current.text else {
             message.stringValue = "The selection changed. Press ⌘G again."
@@ -214,12 +229,32 @@ public final class GrammarShortcut: NSObject {
             return
         }
         let result = AXUIElementSetAttributeValue(prior.element, kAXSelectedTextAttribute as CFString, replacement as CFString)
-        if result == .success { dismiss() }
-        else {
-            message.stringValue = "This app doesn’t support replacing the selection."
+        guard result == .success else {
+            message.stringValue = "This app doesn’t let Lima replace the selection."
             apply.isHidden = true
             dismissAfter(.seconds(4))
+            return
         }
+        var range = CFRange()
+        if let value = prior.range, CFGetTypeID(value) == AXValueGetTypeID(), AXValueGetValue(value as! AXValue, .cfRange, &range) {
+            undoState = (prior.element, prior.text, range.location, (replacement as NSString).length)
+        }
+        message.stringValue = "Fixed: " + String(replacement.prefix(140))
+        apply.isHidden = undoState == nil
+        dismissAfter(.seconds(6))
+    }
+
+    @objc private func undo() {
+        guard let state = undoState else { return }
+        undoState = nil
+        var range = CFRange(location: state.location, length: state.length)
+        let restored = AXValueCreate(.cfRange, &range).map {
+            AXUIElementSetAttributeValue(state.element, kAXSelectedTextRangeAttribute as CFString, $0) == .success &&
+                AXUIElementSetAttributeValue(state.element, kAXSelectedTextAttribute as CFString, state.original as CFString) == .success
+        } ?? false
+        apply.isHidden = true
+        message.stringValue = restored ? "Restored your original text." : "Couldn’t undo here. Press ⌘Z in the app."
+        dismissAfter(.seconds(restored ? 2 : 4))
     }
 }
 

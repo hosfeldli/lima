@@ -6,7 +6,6 @@ import { bridge, el, setPage } from "./lib.js";
 import { renderActivity, renderRun } from "./home.js";
 import { renderIndex, renderNote } from "./notes.js";
 import { renderTerminal } from "./terminal.js";
-import { renderQuickTerminal } from "./quick-terminal.js";
 import { renderAssistant } from "./assistant.js";
 import { renderWorkspace } from "./workspace.js";
 import { renderChat } from "./chat.js";
@@ -38,7 +37,6 @@ const routes = [
   [() => params.has("note"), () => renderNote(app, params.get("note"))],
   [() => params.get("view") === "notes", () => renderIndex(app)],
   [() => params.has("terminal") || params.get("view") === "terminal", () => renderTerminal(app, params.get("terminal"))],
-  [() => params.get("view") === "quick-terminal", () => renderQuickTerminal(app, params.get("workspaceId"))],
   [() => params.has("chat") || params.get("view") === "chat", () => renderChat(app, params.get("chat") ?? "new", params.get("prompt"))],
   [() => params.has("ask"), () => renderAsk(app, params.get("ask"))],
   [() => params.has("run"), () => renderRun(app, params.get("run"), params.get("input"), params.get("execution"))],

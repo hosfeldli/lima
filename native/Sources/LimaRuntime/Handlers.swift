@@ -117,7 +117,7 @@ extension Runtime {
             let handle = try params.decode("handle", as: InputLeaseHandle.self)
             let command = try params.string("command")
             let info = try await self.terminals.info(id)
-            try await Self.authorizeTerminalCommand(command, cwd: info.cwd, context: context, approvalDigest: params.optionalString("approvalDigest"))
+            try await self.authorizeTerminalCommand(command, cwd: info.cwd, context: context, approvalDigest: params.optionalString("approvalDigest"))
             let result = try await self.terminals.agentRunCommand(id, command: command, handle: handle, timeout: params.double("timeout", default: 120))
             return Self.terminalCommandResult(result)
         }
@@ -131,21 +131,6 @@ extension Runtime {
 
     // MARK: Chat
 
-    static func authorizeTerminalCommand(_ command: String, cwd: String, context: CallContext, approvalDigest: String?) async throws {
-        let words = ShellWords.split(command)
-        let operation = ActionOperation(kind: .runBuildOrTest, origin: context.origin, targets: [cwd],
-                                        executable: words.first, arguments: Array(words.dropFirst()))
-        let broker = AuthorizationBroker(projectRoots: [URL(fileURLWithPath: cwd)])
-        let verdict = await broker.evaluate(operation)
-        if verdict.decision != .allow {
-            let approved = approvalDigest == (try? ApprovalLedger.shared.digest(operation))
-            guard approved, ApprovalLedger.shared.consume(operation) else {
-                throw BridgeError(verdict.decision == .block ? .notAuthorized : .confirmationRequired,
-                                  "\(verdict.effectiveKind.rawValue): \(verdict.reasons.joined(separator: "; "))")
-            }
-        }
-    }
-
     static func terminalCommandResult(_ result: (timedOut: Bool, exitStatus: Int?, output: Data)) -> JSONValue {
         .object([
             "timedOut": .bool(result.timedOut),
@@ -155,7 +140,21 @@ extension Runtime {
     }
 
     func registerChat() {
-        register("chat.list") { [unowned self] _, _ in try JSONValue.from(await self.visibleConversations()) }
+        register("chat.list") { [unowned self] params, _ in
+            // Companion threads stay in the Companion window: listed only when asked for.
+            if params?["companion"]?.boolValue == true {
+                return try JSONValue.from(await self.conversations.list().filter { $0.companion == true })
+            }
+            return try JSONValue.from(await self.visibleConversations())
+        }
+        register("chat.record") { [unowned self] params, context in
+            try Self.requireLocalSettings(context)
+            let id = try params.string("id")
+            guard try await self.conversations.get(id).companion == true else { throw BridgeError(.badRequest, "Only Companion threads record messages.") }
+            guard let role = ChatMessage.Role(rawValue: try params.string("role")) else { throw BridgeError(.badRequest, "Use role user or assistant.") }
+            let tasks = (params?["taskIds"]?.arrayValue ?? []).compactMap(\.stringValue).prefix(8)
+            return try JSONValue.from(try await self.conversations.record(id, role: role, text: params.optionalString("text") ?? "", taskIDs: Array(tasks)))
+        }
         register("chat.get") { [unowned self] params, _ in try JSONValue.from(try await self.conversations.get(try params.string("id"))) }
         register("chat.mascot") { [unowned self] params, context in
             guard context.origin == .browser, let mascot = ChatMascot(rawValue: try params.string("mascot")) else {
@@ -165,7 +164,8 @@ extension Runtime {
         }
         register("chat.create") { [unowned self] params, _ in
             let provider = CLIProvider(rawValue: params.optionalString("provider") ?? "claude") ?? .claude
-            return try JSONValue.from(try await self.conversations.create(provider: provider, model: params.optionalString("model"), workingDirectory: params.optionalString("cwd")))
+            return try JSONValue.from(try await self.conversations.create(provider: provider, model: params.optionalString("model"), workingDirectory: params.optionalString("cwd"),
+                                                                          companion: params?["companion"]?.boolValue == true))
         }
         register("chat.configure") { [unowned self] params, _ in
             let provider = CLIProvider(rawValue: try params.string("provider")) ?? .claude
@@ -221,18 +221,18 @@ extension Runtime {
         }
         register("notes.get") { [unowned self] params, _ in try JSONValue.from(try await self.notes.get(try params.string("id"))) }
         register("notes.create") { [unowned self] params, context in
-            try self.requireNotesWrite(context)
+            try await self.requireNotesWrite(context)
             let kind = Note.Kind(rawValue: params.optionalString("kind") ?? "classic") ?? .classic
             let note = try await self.notes.create(title: params.optionalString("title") ?? "", kind: kind, markdown: params.optionalString("markdown") ?? "")
             self.recordActivity(ActivityEvent(kind: .note, title: note.title, detail: "created"))
             return try JSONValue.from(note)
         }
         register("notes.trash") { [unowned self] params, context in
-            try self.requireNotesWrite(context)
+            try await self.requireNotesWrite(context)
             try await self.notes.trash(try params.string("id")); return .null
         }
         register("notes.restore") { [unowned self] params, context in
-            try self.requireNotesWrite(context)
+            try await self.requireNotesWrite(context)
             return try JSONValue.from(try await self.notes.restore(try params.string("id")))
         }
         register("notes.purge") { [unowned self] params, context in
@@ -243,7 +243,7 @@ extension Runtime {
             try await self.notes.delete(id); return .null
         }
         register("notes.apply") { [unowned self] params, context in
-            try self.requireNotesWrite(context)
+            try await self.requireNotesWrite(context)
             let edits = try params.decode("edits", as: [NoteEdit].self)
             let author = EditAuthor(label: params.optionalString("author") ?? (context.origin == .browser ? "user" : "agent:\(context.origin.rawValue)"))
             let base = params?["baseRevision"]?.intValue
@@ -284,13 +284,10 @@ extension Runtime {
         }
     }
 
-    /// MCP clients need an explicit notes-write grant from the user
-    /// (Integrations panel) before they can mutate notes.
-    func requireNotesWrite(_ context: CallContext) throws {
-        guard context.origin == .mcp else { return }
-        guard MCPGrants.shared.allows(scope: "notes:write") else {
-            throw BridgeError(.confirmationRequired, "Allow notes:write for MCP clients in Lima → Integrations first")
-        }
+    /// MCP clients changing notes need the notes-write grant, or the user's
+    /// approval in Lima at the time.
+    func requireNotesWrite(_ context: CallContext) async throws {
+        try await requireMCPScope("notes:write", context: context, action: "change your notes")
     }
 
     // MARK: Search & tools
@@ -498,6 +495,7 @@ final class MCPGrants: @unchecked Sendable {
         set { lock.lock(); _scopes = newValue; lock.unlock() }
     }
     func allows(scope: String) -> Bool { scopes.contains(scope) }
+    func grant(_ scope: String) { lock.lock(); _scopes.insert(scope); lock.unlock() }
 }
 
 enum LegacyAudit {

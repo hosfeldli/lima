@@ -181,12 +181,17 @@ export async function renderIntegrations(app, section) {
   } }, ["Full", "Subtle", "Off"].map(label => el("option", { value: label.toLowerCase(), text: label })));
   personality.value = prefs.get("personality", "full");
   bridge.browser("agentPreferences", {}).then(data => { if (data?.personality) personality.value = data.personality; }).catch(() => {});
+  const theme = el("select", { "aria-label": "Theme", onchange: event =>
+    bridge.browser("themeChanged", { value: event.target.value }).catch(() => {}) },
+    [["system", "Match macOS"], ["light", "Light"], ["dark", "Dark"]].map(([value, text]) => el("option", { value, text })));
+  bridge.browser("agentPreferences", {}).then(data => { if (data?.themeSetting) theme.value = data.themeSetting; }).catch(() => {});
   const overlay = el("input", { type: "checkbox", onchange: event =>
     bridge.browser("browserActionOverlayChanged", { value: event.target.checked }).catch(() => {}) });
   bridge.browser("agentPreferences", {}).then(data => { overlay.checked = data?.browserActionOverlay === true; }).catch(() => {});
   const groups = [
-    ["general", "General", "appearance animation search index preferences", [
-      card("Appearance", el("label", { class: "row" }, "Companion Animations", personality),
+    ["general", "General", "appearance theme dark light mode animation search index preferences", [
+      card("Appearance", el("label", { class: "row" }, "Theme", theme),
+        el("label", { class: "row" }, "Companion Animations", personality),
         el("p", { class: "muted", text: "Off keeps the mascot still. Lima also respects macOS Reduce Motion." }),
         el("label", { class: "row appearance-checkbox" }, overlay, "Show agent click and typing markers on webpages")),
       card("Search", el("button", { onclick: async () => { await call("search.resetLearning"); alert("Learned ranking reset."); } }, "Reset learned ranking"),
@@ -598,7 +603,7 @@ function grammarSettings() {
     } catch (error) { status.textContent = errorText(error); control.checked = !enabled; }
     finally { control.disabled = false; }
   });
-  node.append(el("p", { class: "muted", text: "Select text and press ⌘G to check it with your default AI. Lima sends only the selection when you use the shortcut. Choose Replace to apply the suggestion." }),
+  node.append(el("p", { class: "muted", text: "Select text and press ⌘G to check it with your default AI. Lima sends only the selection when you use the shortcut. Lima fixes it in place, and Undo in the popup puts your original back." }),
     el("label", { class: "toggle" }, control, "Enable ⌘G"),
     el("button", { class: "ghost", onclick: () => permissionSheet("accessibility", { onGranted: () => call("integrations.grammar.status").then(draw).catch(() => {}) }) }, "Allow Accessibility…"),
     el("p", { class: "muted", text: "Allow Lima’s grammar helper in macOS Accessibility to read and replace your selection." }), status);

@@ -4,6 +4,15 @@ const pauseCompanions = () => document.documentElement.toggleAttribute("lima-hid
 document.addEventListener("visibilitychange", pauseCompanions);
 pauseCompanions();
 
+// Light or dark, as the browser resolves it (macOS appearance unless
+// Settings pins one). The last value is cached so pages open without a flash.
+function applyTheme(value) {
+  if (value !== "light" && value !== "dark") return;
+  document.documentElement.setAttribute("lima-theme", value);
+  prefs.set("theme", value);
+}
+applyTheme(prefs.get("theme", "light"));
+
 let personality = prefs.get("personality", "full");
 document.documentElement.dataset.limaPersonality = personality;
 let visualSnapshot;
@@ -40,9 +49,13 @@ function applyPersonality(value) {
   document.documentElement.dataset.limaPersonality = value;
   for (const character of document.querySelectorAll(".companion")) character.dataset.personality = value;
 }
-bridge?.browser("agentPreferences", {}).then(data => { if (data?.personality) applyPersonality(data.personality); }).catch(() => {});
+bridge?.browser("agentPreferences", {}).then(data => {
+  if (data?.personality) applyPersonality(data.personality);
+  applyTheme(data?.theme);
+}).catch(() => {});
 onEvent(({ event, data }) => {
   if (event === "ui.personality") applyPersonality(data);
+  if (event === "ui.theme") applyTheme(data);
   if (event === "ui.visualActivity") { visualGeneration++; receiveVisualState(data); }
   if (event === "ui.companionVisible") document.documentElement.toggleAttribute("lima-panel-hidden", !data);
 });

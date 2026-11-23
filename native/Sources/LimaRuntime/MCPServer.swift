@@ -172,7 +172,7 @@ extension MCPServer {
              properties: ["url": ["type": "string"], "goal": ["type": "string"], "plan": ["type": "string"], "paths": ["type": "string", "description": "Comma-separated exact URL paths on this site. The starting path is included."], "actions": ["type": "string", "description": "Comma-separated click, type or scroll"]], required: ["goal", "plan", "actions"]) { args, client in
             try client.call("workspace.browserPlan", params: args)
         },
-        Tool(name: "workspace_browser", description: "Inspect or screenshot a workspace tab. Click, type and scroll require the session from workspace_browser_plan. Use the optional label from inspect to verify a live click target. Keep using the original tab URL after same-site navigation. Browser-only helpers use their assigned tab.",
+        Tool(name: "workspace_browser", description: "Inspect or screenshot a workspace tab. Click, type and scroll require the session from workspace_browser_plan. Use the optional label from inspect to verify a live click target. A sensitive step (a bet, payment, password, form submit or unlisted page) waits for the user's approval in Lima and then runs; if declined, the result says so. Keep using the original tab URL after same-site navigation. Browser-only helpers use their assigned tab.",
         properties: ["url": ["type": "string"], "action": ["type": "string"], "x": ["type": "number"], "y": ["type": "number"],
                      "dy": ["type": "number"], "label": ["type": "string"], "text": ["type": "string"], "session": ["type": "string"]], required: ["action"]) { args, client in
         try client.call("workspace.browserAction", params: args)

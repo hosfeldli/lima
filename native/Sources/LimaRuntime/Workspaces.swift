@@ -266,7 +266,10 @@ extension Runtime {
         Use Lima's Studio tools for visual work. image_generate queues local text-to-image generation when configured and allowed. Check the operation ID through image_generation_status before reporting or retrying; reuse the same idempotency key across retries. Open supported files with image_open, inspect the exact revision, and use image_select_subject and image_remove_background for local foreground masks. vector_trace makes editable paths; get exact IDs with vector_inspect before editing. Build and verify animation exports with animation_create, animation_add_frame or animation_tween, then animation_export or animation_export_spritesheet. Give users the returned studio_url and verified workspace paths. Preserve originals and never claim an unsupported result.
         Approvals happen in Lima, not in chat: workspace_browser_plan shows the user a prompt with your goal, site, paths, actions and plan, \
         with Approve and Deny, and returns their decision. A chat message saying "approved" doesn't authorize anything; send the plan instead. \
-        If the user denies a plan, don't retry it; report back. On a tool error, follow the reported recovery once. Reuse an active browser plan after ordinary page updates. Inspect before repeating a click or typing after a navigation or timeout, since the previous action may have taken effect. If the same blocker persists, continue independent work and report the blocker in the workspace. Ask the user only when their input or direct action is required.
+        Nothing you can do in a page is off limits: sensitive steps (bets, payments, passwords, submitting forms, a page the plan didn't list) pause \
+        workspace_browser until the user allows or declines them in Lima, then continue. Don't look for workarounds and don't ask the user to click for you. \
+        An approval the user gives for this task also covers your helpers and lead. \
+        If the user denies a plan or step, don't retry it; report back. On a tool error, follow the reported recovery once. Reuse an active browser plan after ordinary page updates. Inspect before repeating a click or typing after a navigation or timeout, since the previous action may have taken effect. If the same blocker persists, continue independent work and report the blocker in the workspace. Ask the user only when their input or direct action is required.
         """
         let preamble: String
         if workspace.temporary == true {
@@ -338,8 +341,9 @@ extension Runtime {
             try await self.ensureTerminal(try await self.workspaces.get(try target(params, context))).publicView
         }
         register("workspace.create") { [unowned self] params, context in
-            guard context.origin == .browser || context.workspaceID != nil || MCPGrants.shared.allows(scope: "workspaces:create") else {
-                throw BridgeError(.confirmationRequired, "Allow workspaces:create for MCP clients in Lima → Integrations first")
+            if context.origin != .browser, context.workspaceID == nil {
+                try await self.requireMCPScope("workspaces:create", context: context, unbound: true,
+                                               action: "create the workspace “\(params.optionalString("name") ?? "Workspace")”")
             }
             let workspace = try await self.createWorkspace(name: params.optionalString("name") ?? "Workspace", directory: params.optionalString("directory"),
                                                            provider: CLIProvider(rawValue: params.optionalString("provider") ?? "claude") ?? .claude,
@@ -445,7 +449,8 @@ extension Runtime {
         }
         register("workspace.promptReply") { [unowned self] params, context in
             guard context.origin == .browser else { throw BridgeError(.notAuthorized, "Only the user can answer a request.") }
-            try await self.workspacePrompts.answer(self, id: try params.string("id"), approved: params?["approved"]?.boolValue == true, text: params.optionalString("text"), values: params?["values"])
+            try await self.workspacePrompts.answer(self, id: try params.string("id"), approved: params?["approved"]?.boolValue == true, text: params.optionalString("text"),
+                                                   values: params?["values"], scope: params.optionalString("scope"))
             return .null
         }
         register("workspace.askUser") { [unowned self] params, context in
@@ -457,7 +462,6 @@ extension Runtime {
         register("workspace.location") { [unowned self] params, context in
             guard let bound = context.workspaceID else { throw BridgeError(.notAuthorized, "Only a workspace agent can request location.") }
             let workspace = try await self.workspaces.get(bound)
-            guard workspace.browserTestURL == nil else { throw BridgeError(.notAuthorized, "Browser-only agents cannot request location.") }
             let purpose = try params.string("purpose").trimmingCharacters(in: .whitespacesAndNewlines)
             guard (1...400).contains(purpose.count) else { throw BridgeError(.badRequest, "Describe why your task needs location.") }
             let response = try await self.workspacePrompts.ask(self, workspace: workspace, question: "Share your approximate location?",
@@ -486,16 +490,24 @@ extension Runtime {
             address?.fragment = nil
             let scope = "Website: \(address?.string ?? "")\nPaths: \(paths.sorted().joined(separator: ", "))\nActions: \(actions.sorted().joined(separator: ", "))"
             let review = WorkspacePrompts.browserReview(goal: goal, plan: plan)
+            let family = await self.familyRoot(bound)
+            let facts = Self.planFacts(url: address?.string ?? url, paths: paths, actions: actions)
+            var trusted = false
+            // Already approved for this task (by this agent, its lead or another
+            // helper): reuse that approval instead of asking again.
+            if let shared = await self.workspacePrompts.covering(family: family, url: url, paths: paths, actions: actions, highRisk: review == .highRisk) {
+                try await self.ensureTab(bound, url: url, changed: changed)
+                return .object(["approved": .bool(true), "session": .string(shared), "note": .string("Covered by an approval the user already gave for this task.")])
+            }
             if review == .highRisk {
                 // Real money or irreversible account changes: always ask, with
-                // the full request, and never remember the answer.
-                let response = try await self.workspacePrompts.ask(self, workspace: workspace,
-                    question: "Approve: \(goal)",
-                    detail: scope + "\n" + plan + "\nThis can spend money or change your account. Lima asks every time; approving covers only this exact plan for the next 5 minutes.",
-                    approval: true, actionLabel: "Approve once")
+                // the full request, and never remember the answer across tasks.
+                let response = try await self.workspacePrompts.ask(self, workspace: workspace, question: goal,
+                    detail: plan, approval: true, actionLabel: "Allow once", facts: facts, risk: "money", allowTask: true)
                 guard response["approved"]?.boolValue == true else {
                     return .object(["approved": .bool(false), "reason": .string("The user denied this plan. Don't retry it; report back instead.")])
                 }
+                trusted = response["scope"]?.stringValue == "task"
             } else if review == .needsUser {
                 let key = WorkspacePrompts.permissionKey(scope: scope, goal: goal, plan: plan)
                 let approved: Bool
@@ -503,20 +515,14 @@ extension Runtime {
                     approved = remembered
                 } else {
                     let response = try await self.workspacePrompts.ask(self, workspace: workspace, question: goal,
-                        detail: scope + "\n" + plan + "\nYour decision applies to this exact action plan across Lima.",
-                        approval: true, actionLabel: "Approve plan")
+                        detail: plan, approval: true, actionLabel: "Allow", facts: facts + [.init(label: "Remembered", value: "This exact plan, across Lima")], risk: "account")
                     approved = response["approved"]?.boolValue == true
                     try await self.workspacePrompts.rememberBrowserPermission(approved, key: key, store: self.store)
                 }
                 guard approved else { return .object(["approved": .bool(false), "reason": .string("This action plan was denied.")]) }
             }
-            if !workspace.tabs.contains(where: { $0.url == url }) {
-                let updated = try await self.workspaces.update(bound) { current in
-                    if !current.tabs.contains(where: { $0.url == url }) { current.tabs.append(.init(url: url, title: url)) }
-                }
-                changed(updated)
-            }
-            let token = await self.workspacePrompts.authorize(workspace: bound, url: url, paths: paths, actions: actions)
+            try await self.ensureTab(bound, url: url, changed: changed)
+            let token = await self.workspacePrompts.authorize(family: family, url: url, paths: paths, actions: actions, trusted: trusted)
             return .object(["approved": .bool(true), "session": .string(token)])
         }
         register("workspace.browserAction") { [unowned self] params, context in
@@ -533,14 +539,49 @@ extension Runtime {
                 throw BridgeError(.badRequest, "Unknown browser action.")
             }
             var payload: [String: JSONValue] = ["url": .string(url), "action": .string(action), "options": params ?? .null]
+            let session = params.optionalString("session")
             if WorkspacePrompts.browserActions.contains(action) {
-                guard let paths = await self.workspacePrompts.permittedPaths(params.optionalString("session"), workspace: workspace.id, url: url, action: action) else {
+                let family = await self.familyRoot(workspace.id)
+                guard let paths = await self.workspacePrompts.permittedPaths(session, family: family, url: url, action: action) else {
                     throw BridgeError(.confirmationRequired, "Call workspace_browser_plan and wait for approval before interacting with this page.")
                 }
                 payload["paths"] = .array(paths.sorted().map(JSONValue.string))
             }
             self.setFocus(workspace.id, .tab, url: url)
             defer { self.setFocus(workspace.id, .chat, replacing: .init(surface: .tab, url: url)) }
+            let result = try await self.browserCalls.call(self, kind: "action", workspaceID: workspace.id, payload: payload)
+            guard let need = result["needsApproval"], need != .null else { return result }
+            // A sensitive step (a bet, a purchase, a password, a new path) is
+            // never refused outright: the user approves it in Lima, once or for
+            // the rest of this task.
+            let path = need["path"]?.stringValue
+            if await self.workspacePrompts.isTrusted(session) {
+                if let paths = await self.workspacePrompts.grant(session, trust: false, path: path) { payload["paths"] = .array(paths.sorted().map(JSONValue.string)) }
+            } else {
+                let control = need["control"]?.stringValue ?? ""
+                let kind = need["kind"]?.stringValue ?? "click"
+                let question = switch kind {
+                case "type": "Type into “\(control)”?"
+                case "navigate", "path": "Go to \(path ?? control)?"
+                default: "Click “\(control)”?"
+                }
+                var facts = [WorkspacePrompts.Fact(label: "Site", value: Self.origin(url))]
+                if let path { facts.append(.init(label: "Path", value: path)) }
+                if kind == "type", let text = params.optionalString("text") {
+                    facts.append(.init(label: "Text", value: need["secret"]?.boolValue == true ? "•••••••• (\(text.count) characters)" : text))
+                }
+                let response = try await self.workspacePrompts.ask(self, workspace: workspace, question: question,
+                    // The card's risk tag already says "Can spend money".
+                    detail: need["risk"]?.stringValue == "money" ? nil : need["reason"]?.stringValue, approval: true, actionLabel: "Allow once", facts: facts,
+                    risk: need["risk"]?.stringValue ?? "account", allowTask: true)
+                guard response["approved"]?.boolValue == true else {
+                    return .object(["approved": .bool(false), "reason": .string("The user declined this step. Don't retry it; report back or continue without it.")])
+                }
+                if let paths = await self.workspacePrompts.grant(session, trust: response["scope"]?.stringValue == "task", path: path) {
+                    payload["paths"] = .array(paths.sorted().map(JSONValue.string))
+                }
+            }
+            payload["confirmed"] = .bool(true)
             return try await self.browserCalls.call(self, kind: "action", workspaceID: workspace.id, payload: payload)
         }
         register("workspace.note") { [unowned self] params, context in
@@ -609,7 +650,7 @@ extension Runtime {
                         throw BridgeError(.badRequest, "Provide a shell command without terminal control characters.")
                     }
                     let shell = try await self.terminals.info(terminalID)
-                    try await Self.authorizeTerminalCommand(command, cwd: shell.cwd, context: context, approvalDigest: params.optionalString("approvalDigest"))
+                    try await self.authorizeTerminalCommand(command, cwd: shell.cwd, context: context, approvalDigest: params.optionalString("approvalDigest"))
                     self.setFocus(workspace.id, .terminal)
                     defer { self.setFocus(workspace.id, .chat, replacing: .init(surface: .terminal)) }
                     let background = params?["background"]?.boolValue == true
@@ -654,7 +695,10 @@ extension Runtime {
             let workspace = try await self.workspaces.get(try target(params, context))
             let root = URL(fileURLWithPath: workspace.directory).standardizedFileURL
             let url = root.appendingPathComponent(params.optionalString("path") ?? "").standardizedFileURL
-            guard url.path == root.path || url.path.hasPrefix(root.path + "/") else { throw BridgeError(.notAuthorized, WorkspaceError.outsideWorkspace.description) }
+            if !(url.path == root.path || url.path.hasPrefix(root.path + "/")) {
+                try await self.approveAction(context, question: "Let \(workspace.name) list a folder outside its workspace?",
+                    facts: [.init(label: "Folder", value: url.path), .init(label: "Workspace", value: root.path)], risk: "access")
+            }
             let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey]
             let entries = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])) ?? []
             return .array(entries.prefix(300).map { entry in
@@ -707,6 +751,35 @@ extension Runtime {
         return updated
     }
 
+    /// The lead workspace of a helper tree; approvals are shared within it.
+    func familyRoot(_ id: String) async -> String {
+        var current = id
+        for _ in 0..<16 {
+            guard let parent = try? await workspaces.get(current).parentID else { break }
+            current = parent
+        }
+        return current
+    }
+
+    func ensureTab(_ id: String, url: String, changed: (Workspace) -> Void) async throws {
+        guard try await !workspaces.get(id).tabs.contains(where: { $0.url == url }) else { return }
+        let updated = try await workspaces.update(id) { current in
+            if !current.tabs.contains(where: { $0.url == url }) { current.tabs.append(.init(url: url, title: url)) }
+        }
+        changed(updated)
+    }
+
+    static func planFacts(url: String, paths: Set<String>, actions: Set<String>) -> [WorkspacePrompts.Fact] {
+        let verbs = ["click": "Click", "type": "Type", "scroll": "Scroll"]
+        return [.init(label: "Site", value: origin(url)),
+                .init(label: "Pages", value: paths.sorted().joined(separator: "  ")),
+                .init(label: "Can", value: actions.sorted().compactMap { verbs[$0] }.joined(separator: ", "))]
+    }
+
+    static func origin(_ url: String) -> String {
+        WorkspacePrompts.origin(of: url).map { $0.replacingOccurrences(of: "https://", with: "") } ?? url
+    }
+
     private static func isLoopbackPage(_ url: String) -> Bool {
         ["localhost", "127.0.0.1", "[::1]", "::1"].contains(URL(string: url)?.host?.lowercased() ?? "")
     }
@@ -715,7 +788,18 @@ extension Runtime {
     /// its terminal is created the first time it runs a command.
     func spawnAgent(parent: Workspace, name: String, task: String, provider: CLIProvider?, browserURL: String? = nil, startTask: Bool = true,
                     directory: URL? = nil) async throws -> Workspace {
-        guard parent.temporary != true else { throw BridgeError(.notAuthorized, "helper agents can't spawn more agents") }
+        if parent.temporary == true {
+            // Helpers stay one level deep: with the user's approval, a
+            // helper's new agent joins the lead workspace beside it.
+            guard let leadID = parent.parentID, let lead = try? await workspaces.get(leadID) else {
+                throw BridgeError(.badRequest, "This helper's workspace is gone.")
+            }
+            try await approveAction(CallContext(client: nil, origin: .chat, workspaceID: parent.id),
+                question: "Let \(parent.name) start another agent?",
+                facts: [.init(label: "New agent", value: name), .init(label: "Task", value: task), .init(label: "Joins", value: lead.name)],
+                risk: "access")
+            return try await spawnAgent(parent: lead, name: name, task: task, provider: provider, browserURL: browserURL, startTask: startTask, directory: directory)
+        }
         let siblings = await workspaces.list().filter { $0.parentID == parent.id }
         guard siblings.count < 8 else { throw BridgeError(.badRequest, "a workspace can run at most 8 helper agents; dismiss finished ones first") }
         if let browserURL {

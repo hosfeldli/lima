@@ -30,6 +30,10 @@ public struct Conversation: Codable, Equatable, Sendable {
     /// Set for a workspace's agent conversation.
     public var workspaceID: String?
     public var mascot: ChatMascot? = nil
+    /// A Companion request thread: lives in the Companion window only.
+    public var companion: Bool? = nil
+    /// Orchestrator tasks this Companion thread handed off.
+    public var taskIDs: [String]? = nil
 }
 
 public enum ChatMascot: String, Codable, Sendable {
@@ -60,6 +64,11 @@ public struct ConversationSummary: Codable, Equatable, Sendable {
     public var lastErrorKind: AgentFailureKind?
     public var lastProgress: AgentProgress?
     public var mascot: ChatMascot? = nil
+    public var companion: Bool? = nil
+    public var taskIDs: [String]? = nil
+    public var createdAt: Double? = nil
+    /// Companion threads: the latest reply, shortened, for the chat list.
+    public var preview: String? = nil
 }
 
 public enum ConversationEvent: Sendable {
@@ -130,8 +139,15 @@ public actor ConversationService {
             return ConversationSummary(id: conversation.id, title: conversation.title, provider: conversation.provider,
                 updatedAt: conversation.updatedAt, running: running[conversation.id] != nil, workspaceID: conversation.workspaceID,
                 lastStatus: reply?.status, lastMessageID: reply?.id, lastCreatedAt: reply?.createdAt,
-                lastErrorKind: reply?.error?.kind, lastProgress: reply?.progress, mascot: conversation.mascot)
+                lastErrorKind: reply?.error?.kind, lastProgress: reply?.progress, mascot: conversation.mascot,
+                companion: conversation.companion, taskIDs: conversation.taskIDs, createdAt: conversation.createdAt,
+                preview: conversation.companion == true ? reply.map { Self.preview($0.text) } : nil)
         }
+    }
+
+    static func preview(_ text: String) -> String {
+        let flat = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return flat.count > 120 ? String(flat.prefix(119)) + "…" : flat
     }
 
     public func get(_ id: String) throws -> Conversation {
@@ -139,12 +155,14 @@ public actor ConversationService {
         return conversation
     }
 
-    public func create(provider: CLIProvider, model: String?, workingDirectory: String?, workspaceID: String? = nil, title: String? = nil) async throws -> Conversation {
+    public func create(provider: CLIProvider, model: String?, workingDirectory: String?, workspaceID: String? = nil, title: String? = nil,
+                       companion: Bool = false) async throws -> Conversation {
         let now = Self.now()
-        let conversation = Conversation(
+        var conversation = Conversation(
             id: UUID().uuidString, title: title ?? "New conversation", provider: provider, model: model, cliSessionID: nil,
             workingDirectory: workingDirectory ?? NSHomeDirectory(), messages: [], createdAt: now, updatedAt: now, workspaceID: workspaceID
         )
+        if companion { conversation.companion = true }
         try await save(conversation)
         return conversation
     }
@@ -164,11 +182,27 @@ public actor ConversationService {
         return conversation
     }
 
+    /// Switches the provider or model, effective immediately: a reply that is
+    /// still streaming restarts on the new choice (with the transcript as
+    /// context) and says so; otherwise the next turn uses it.
     public func configure(_ id: String, provider: CLIProvider, model: String?) async throws -> Conversation {
         var conversation = try get(id)
-        if conversation.provider != provider || conversation.model != model { conversation.cliSessionID = nil }
+        let changed = conversation.provider != provider || conversation.model != model
+        if changed { conversation.cliSessionID = nil }
         conversation.provider = provider
         conversation.model = model
+        if changed, let run = running[id],
+           let replyIndex = conversation.messages.lastIndex(where: { $0.role == .assistant && $0.status == .streaming }),
+           let userID = conversation.messages[..<replyIndex].last(where: { $0.role == .user })?.id {
+            // The old run's late events find no reply to update and are dropped.
+            running[id] = nil
+            conversation.messages.remove(at: replyIndex)
+            try await save(conversation)
+            run.cancel()
+            let label = model.map { $0 == "default" ? "" : " (\($0))" } ?? ""
+            try await startTurn(id, userMessageID: userID, notice: "Restarted this reply on \(Self.providerName(provider))\(label).")
+            return try get(id)
+        }
         try await save(conversation)
         return conversation
     }
@@ -191,6 +225,25 @@ public actor ConversationService {
         try await save(conversation)
         if running[id] == nil { try await startTurn(id, userMessageID: message.id) } else { queues[id, default: []].append(message.id) }
         return try get(id)
+    }
+
+    /// Adds a finished message without running a turn: a Companion thread
+    /// records its request and what Lima did, so a later follow-up has the
+    /// whole exchange as context. Optionally links handed-off tasks.
+    public func record(_ id: String, role: ChatMessage.Role, text: String, taskIDs: [String] = []) async throws -> Conversation {
+        guard running[id] == nil else { throw ConversationError.notEditable("Wait for the reply to finish") }
+        var conversation = try get(id)
+        let trimmed = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(20_000))
+        if !trimmed.isEmpty {
+            conversation.messages.append(ChatMessage(id: UUID().uuidString, role: role, text: trimmed, createdAt: Self.now(),
+                                                     status: .complete, error: nil, tools: []))
+            if role == .user, conversation.title == "New conversation" { conversation.title = Self.title(from: trimmed) }
+        }
+        if !taskIDs.isEmpty { conversation.taskIDs = Array(Set((conversation.taskIDs ?? []) + taskIDs)).sorted() }
+        // The next CLI turn starts fresh with this transcript as context.
+        conversation.cliSessionID = nil
+        try await save(conversation)
+        return conversation
     }
 
     /// Retry the turn that produced a failed assistant message.
