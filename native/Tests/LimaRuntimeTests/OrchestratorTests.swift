@@ -334,3 +334,44 @@ func orchestrator(_ agents: MockAgents, tasks: [OrchestratedTask] = [], maxActiv
     #expect(task.state == .completedWithWarnings)
     #expect(task.attention?.needsUser == false)
 }
+
+@Test func usageLimitsWaitForTheResetAndWeeklyLimitsNeedTheUser() async throws {
+    let agents = MockAgents()
+    let (lima, _) = orchestrator(agents)
+    let task = try await lima.submit(requestID: nil, title: "Root", request: "Long work", workspaceID: "w")
+    let reset = Date().timeIntervalSince1970 + 3_600
+    agents.reply("conv-root-w", "", status: .failed, error: AgentFailure(.rateLimited, "You've hit your 5-hour limit", resetsAt: reset))
+    await lima.observe(conversationID: "conv-root-w")
+    // No immediate retry: paused until the reset, then continued.
+    let waiting = try await lima.get(task.id)
+    #expect(waiting.state == .paused)
+    #expect(waiting.retryAt == (reset + Orchestrator.limitGrace) * 1000)
+    #expect(waiting.attention?.needsUser == false)
+    #expect(agents.instructions("conv-root-w").count == 1)
+    await lima.limitReset(task.id, at: waiting.retryAt!)
+    #expect(try await lima.get(task.id).state == .running)
+    #expect(agents.instructions("conv-root-w").last?.contains("has reset") == true)
+
+    // A limit more than five hours out is weekly: the user decides.
+    agents.reply("conv-root-w", "", status: .failed,
+                 error: AgentFailure(.rateLimited, "Weekly limit reached", resetsAt: Date().timeIntervalSince1970 + 3 * 86_400))
+    await lima.observe(conversationID: "conv-root-w")
+    let weekly = try await lima.get(task.id)
+    #expect(weekly.state == .blocked)
+    #expect(weekly.retryAt == nil)
+    #expect(weekly.attention?.needsUser == true)
+    #expect(agents.instructions("conv-root-w").count == 2)
+}
+
+@Test func stoppingAWaitingTaskCancelsItsLimitRetry() async throws {
+    let agents = MockAgents()
+    let (lima, _) = orchestrator(agents)
+    let task = try await lima.submit(requestID: nil, title: "Root", request: "Long work", workspaceID: "w")
+    agents.reply("conv-root-w", "", status: .failed, error: AgentFailure(.rateLimited, "limit reached", resetsAt: Date().timeIntervalSince1970 + 600))
+    await lima.observe(conversationID: "conv-root-w")
+    let at = try #require(try await lima.get(task.id).retryAt)
+    try await lima.cancel(task.id)
+    await lima.limitReset(task.id, at: at)
+    #expect(try await lima.get(task.id).state == .canceled)
+    #expect(agents.instructions("conv-root-w").count == 1)
+}

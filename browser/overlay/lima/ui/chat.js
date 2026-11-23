@@ -217,6 +217,7 @@ async function initializeChat(app, chatId, compact, signal) {
         el("button", { class: "ghost edit", title: "Edit and resend", onclick: e => edit(message, e.currentTarget.parentElement) }, "Edit"));
     }
     const node = el("div", { class: "msg assistant" });
+    if (message.notice) node.append(el("p", { class: "msg-notice", role: "note" }, icon("redo"), el("span", { text: message.notice })));
     const shownTools = visibleTools(message.tools ?? []);
     if (shownTools.length) {
       const details = el("details", { class: "tools" }, el("summary", { text: `${shownTools.length} step${shownTools.length === 1 ? "" : "s"} · ${toolLabel(shownTools.at(-1))}` }),

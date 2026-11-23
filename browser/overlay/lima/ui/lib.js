@@ -135,8 +135,9 @@ export function activityStatus() {
 }
 
 export function filesPrivacyButton(onError) {
-  return el("button", { class: "ghost", onclick: () => bridge.browser("filesPrivacySettings", {}).catch(onError) },
-    "Open Files & Folders settings");
+  return el("button", { class: "ghost", onclick: () => {
+    try { permissionSheet("files"); } catch (error) { onError?.(error); }
+  } }, "Allow Files & Folders…");
 }
 
 /** Glass page header: icon chip, title, then actions. */
@@ -373,4 +374,76 @@ function inline(node, text, attachments) {
   }
   if (last < text.length) node.append(text.slice(last));
   return node;
+}
+
+/* A guided sheet for one macOS privacy permission. Lima opens the exact
+ * System Settings pane itself (no "open this link?" prompt), shows the three
+ * steps beside a small picture of the switch to turn on, and, where macOS
+ * lets Lima check, ticks itself off once access is granted. */
+const PERMISSIONS = {
+  accessibility: { title: "Accessibility", browser: "accessibilitySettings", checkable: true,
+    why: "Lets the ⌘G grammar helper read and replace the text you select in other apps." },
+  files: { title: "Files & Folders", browser: "filesPrivacySettings",
+    why: "Lets agents open the project folders you pick, like Documents or Desktop." },
+  location: { title: "Location Services", browser: "locationSettings",
+    why: "Lets Lima share your approximate location when an agent asks and you agree." },
+};
+
+export function permissionSheet(kind, { onGranted } = {}) {
+  const spec = PERMISSIONS[kind];
+  const status = el("p", { class: "permission-status", role: "status" });
+  const toggle = el("span", { class: "permission-switch", "aria-hidden": "true" }, el("i"));
+  const picture = el("div", { class: "permission-picture", "aria-hidden": "true" },
+    el("div", { class: "permission-window" },
+      el("div", { class: "permission-window-bar" }, el("i"), el("i"), el("i"), el("span", { text: "Privacy & Security" })),
+      el("div", { class: "permission-pane" },
+        el("strong", { text: spec.title }),
+        el("div", { class: "permission-app" }, el("span", { class: "permission-app-icon" }), el("span", { text: "Lima" }), toggle),
+        el("div", { class: "permission-app dim" }, el("span", { class: "permission-app-icon" }), el("span", { text: "Other app" }), el("span", { class: "permission-switch off" }, el("i"))))));
+  const steps = el("ol", { class: "permission-steps" },
+    el("li", { text: "Open System Settings. Lima takes you to the right page." }),
+    el("li", {}, "Turn on ", el("strong", { text: "Lima" }), spec.checkable ? "." : ". If Lima isn’t listed, use + to add it from Applications."),
+    el("li", { text: spec.checkable ? "Come back here. This updates on its own." : "Come back here when you’re done." }));
+  let timer;
+  const stop = () => clearInterval(timer);
+  const close = el("button", { type: "button", class: "ghost", onclick: () => { stop(); dialog.close(); } }, "Done");
+  const open = el("button", { type: "button", class: "primary", onclick: async () => {
+    status.textContent = "";
+    try {
+      await bridge.browser(spec.browser, {});
+      status.textContent = spec.checkable ? "Waiting for you to turn on Lima…" : "System Settings is open.";
+      if (spec.checkable) watch();
+    } catch (error) { status.textContent = errorText(error); }
+  } }, "Open System Settings");
+  const dialog = el("dialog", { class: "permission-sheet", "aria-labelledby": `permission-${kind}` },
+    el("div", { class: "permission-copy" },
+      el("h2", { id: `permission-${kind}`, text: `Allow ${spec.title}` }),
+      el("p", { class: "muted", text: spec.why }), steps, status,
+      el("div", { class: "row" }, open, close)),
+    picture);
+  const granted = () => {
+    stop();
+    dialog.classList.add("granted");
+    status.textContent = `${spec.title} is on. You’re all set.`;
+    open.hidden = true;
+    close.textContent = "Done";
+    onGranted?.();
+  };
+  async function check() {
+    if (!spec.checkable) return false;
+    try { return (await call("system.permissions"))?.[kind] === true; } catch { return false; }
+  }
+  function watch() {
+    stop();
+    let polls = 0;
+    timer = setInterval(async () => {
+      if (!dialog.open || ++polls > 150) return stop();
+      if (await check()) granted();
+    }, 2000);
+  }
+  dialog.addEventListener("close", () => { stop(); dialog.remove(); });
+  document.body.append(dialog);
+  dialog.showModal();
+  check().then(ok => { if (ok) granted(); });
+  return dialog;
 }

@@ -706,18 +706,6 @@ button.change-row:hover { background: var(--panel-2); }
 .messages-settings label { display: grid; gap: 3px; }
 .messages-settings button { justify-self: start; }
 
-.welcome-tour { width: min(100% - 32px, 510px); margin: clamp(24px, 8vh, 76px) auto; }
-.welcome-tour header { display: flex; flex-direction: column; align-items: center; margin-bottom: 24px; }
-.welcome-tour h1 { font-size: clamp(25px, 6vw, 36px); margin: 0; letter-spacing: -.035em; }
-.welcome-tour .companion.home { width: 132px; height: 122px; }
-.welcome-preview { display: grid; gap: 6px; margin: 10px 0; padding-block: 7px; border-block-start: 1px solid var(--line); }
-.welcome-preview > div { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.welcome-step { border: 1px solid var(--line); border-radius: var(--r-2); padding: clamp(16px, 4vw, 26px); }
-.welcome-step h2 { margin: 0 0 8px; font-size: 21px; letter-spacing: -.02em; }
-.welcome-position { margin: 0 0 8px; font-size: var(--t-xs); color: var(--ink-3); }
-.welcome-description { color: var(--ink-2); line-height: 1.55; margin: 0 0 16px; }
-.welcome-step [role="status"]:empty { display: none; }
-.welcome-navigation { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; margin-top: 12px; }
 .update-settings { display: grid; gap: 12px; }
 .update-summary { display: flex; align-items: center; gap: 12px; }
 .update-summary h2 { margin: 2px 0 3px; }
@@ -725,8 +713,6 @@ button.change-row:hover { background: var(--panel-2); }
 .update-outcome { color: var(--lima-error); overflow-wrap: anywhere; }
 .update-settings progress { width: 100%; block-size: 5px; accent-color: var(--action); }
 .update-actions { flex-wrap: wrap; justify-content: space-between; }
-.welcome-permission { border-block-start: 1px solid var(--line); padding-block: 12px; }
-.welcome-permission .welcome-description { margin-block: 4px 8px; }
 
 /* Run page: one execution, its status, then the result and its actions. */
 .run-status { min-height: 18px; margin-top: var(--s2); color: var(--ink-3); font-size: var(--t-sm); }
@@ -797,3 +783,319 @@ button.change-row:hover { background: var(--panel-2); }
 .chat-recovery { flex-wrap: wrap; gap: 6px; margin: 0 0 6px; }
 .task-attention { font-size: var(--t-sm); color: var(--ink-2); }
 .task-attention strong { color: var(--ink); font-weight: 650; }
+
+/* ── Lima Basics: full-viewport walkthrough ─────────────────────────── */
+/* Motion is decoration only. Reduce Motion and the Off personality keep the
+   same layout and controls, standing still. */
+:root.welcome-page, :root.welcome-page body { overflow: hidden; }
+.welcome {
+  --welcome-x: 0; --welcome-y: 0;
+  position: fixed; inset: 0; z-index: 1;
+  display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
+  background: var(--paper); color: var(--ink); overflow: hidden;
+}
+.welcome-backdrop {
+  position: absolute; inset: -8%; pointer-events: none;
+  transform: translate(calc(var(--welcome-x) * -28px), calc(var(--welcome-y) * -22px));
+  transition: transform 700ms var(--out);
+}
+.welcome-backdrop > i { position: absolute; border-radius: 50%; background: var(--panel-2); filter: blur(70px); opacity: .75; animation: welcome-drift 19s ease-in-out infinite alternate; }
+.welcome-backdrop > i:nth-child(1) { width: 46vmax; height: 46vmax; left: -8%; top: -14%; }
+.welcome-backdrop > i:nth-child(2) { width: 34vmax; height: 34vmax; right: -6%; bottom: -10%; animation-duration: 23s; animation-delay: -6s; }
+.welcome-backdrop > i:nth-child(3) { width: 22vmax; height: 22vmax; left: 44%; top: 38%; opacity: .45; animation-duration: 15s; animation-delay: -3s; }
+.welcome-grid {
+  position: absolute; inset: 0;
+  background-image: radial-gradient(var(--line) 1.1px, transparent 1.3px); background-size: 24px 24px;
+  mask-image: radial-gradient(ellipse 70% 60% at 62% 50%, #000 20%, transparent 75%);
+}
+@keyframes welcome-drift { to { transform: translate(6vmax, 4vmax) scale(1.12); } }
+
+.welcome-top, .welcome-stage, .welcome-navigation { position: relative; z-index: 1; }
+.welcome-top { display: flex; align-items: center; gap: 20px; padding: 18px clamp(16px, 4vw, 40px); }
+.welcome-brand { display: flex; align-items: center; gap: 8px; font: 650 var(--t-lg)/1 var(--font-display); letter-spacing: -.02em; min-width: 92px; }
+.welcome-brand-mark { width: 17px; height: 17px; background: var(--ink); mask: url("resource://lima-ui/marks/lima-mask.svg") center / contain no-repeat; }
+.welcome-top > button { min-width: 92px; justify-content: flex-end; }
+.welcome-progress { flex: 1; display: flex; gap: 6px; max-width: 440px; margin: 0 auto; padding: 0; list-style: none; }
+.welcome-progress li { flex: 1; }
+.welcome-dot { display: grid; align-items: center; width: 100%; height: 18px; padding: 0; border: 0; background: transparent; }
+.welcome-dot:hover { background: transparent; }
+.welcome-dot > span { position: relative; display: block; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; transition: height var(--fast) var(--out); }
+.welcome-dot:hover > span { height: 6px; }
+.welcome-dot > span::after { content: ""; position: absolute; inset: 0; background: var(--ink); transform: scaleX(0); transform-origin: left; transition: transform 520ms var(--out), opacity 300ms; }
+.welcome-progress li:is([data-state="done"], [data-state="current"]) .welcome-dot > span::after { transform: none; }
+.welcome-progress li[data-state="seen"] .welcome-dot > span::after { transform: none; opacity: .3; }
+.welcome-progress li[data-state="current"] .welcome-dot > span::after { animation: welcome-fill 900ms var(--out); }
+@keyframes welcome-fill { from { transform: scaleX(0); } }
+
+.welcome-stage {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.08fr); align-items: center;
+  gap: clamp(24px, 5vw, 80px); min-height: 0; padding: 0 clamp(20px, 6vw, 104px); overflow: auto;
+}
+.welcome-copy { max-width: 540px; }
+.welcome-eyebrow { margin: 0 0 14px; color: var(--ink-3); font-size: var(--t-xs); font-weight: 650; letter-spacing: .09em; text-transform: uppercase; }
+.welcome-title { margin: 0 0 22px; font: 720 clamp(36px, 5.6vw, 68px)/1.02 var(--font-display); letter-spacing: -.048em; outline: none; }
+.welcome-word { display: inline-block; }
+.welcome-description { max-width: 46ch; margin: 0 0 12px; color: var(--ink-2); font-size: var(--t-lg); line-height: 1.55; }
+.welcome-copy .row { margin-top: 24px; gap: 10px; }
+.welcome button.primary { height: 36px; padding: 0 16px; border-radius: 10px; font-size: var(--t-md); }
+.welcome-copy button.primary:hover { transform: translateY(-1px); }
+.welcome-status { min-height: 18px; margin: 12px 0 0; color: var(--ink-2); font-size: var(--t-sm); }
+.welcome-shortcut, .welcome-keys { display: inline-flex; align-items: center; gap: 4px; color: var(--ink-3); font-size: var(--t-xs); }
+.welcome kbd { display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 5px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px; background: var(--paper); color: var(--ink-2); font: 600 11px/1 var(--font); }
+.welcome-permission { margin-top: 20px; padding-block: 12px; border-block-start: 1px solid var(--line); }
+.welcome-permission summary { cursor: default; color: var(--ink-2); font-weight: 550; }
+.welcome-permission .welcome-description { margin-block: 8px; font-size: var(--t-md); }
+
+.welcome-visual { position: relative; display: grid; place-items: center; min-height: 360px; }
+.welcome-scene { position: relative; display: grid; place-items: center; width: min(100%, 540px); aspect-ratio: 1.12; container-type: inline-size; }
+.welcome-buddy {
+  position: absolute; right: 2%; bottom: 0; height: auto; padding: 0; border: 0; background: transparent;
+  transform: translate(calc(var(--welcome-x) * 14px), calc(var(--welcome-y) * 8px));
+  transition: transform 500ms var(--out), right 600ms var(--out), bottom 600ms var(--out), scale 600ms var(--out);
+}
+.welcome-buddy:hover { background: transparent; }
+.welcome-buddy:active { transform: translate(calc(var(--welcome-x) * 14px), calc(var(--welcome-y) * 8px)) scale(.95); }
+.welcome-buddy .companion.home { width: 132px; height: 122px; }
+.welcome:is([data-step="meet"], [data-step="ready"], [data-step="farewell"]) .welcome-buddy { right: calc(50% - 66px); bottom: calc(50% - 61px); scale: 1.44; }
+.welcome-bubble {
+  position: absolute; left: -46px; top: -6px; padding: 6px 11px; border: 1px solid var(--line); border-radius: 14px 14px 4px 14px;
+  background: var(--paper); color: var(--ink); font-size: var(--t-sm); font-weight: 600; white-space: nowrap; opacity: 0; pointer-events: none;
+  box-shadow: var(--shadow-2);
+}
+.welcome-bubble.show { animation: welcome-say 2.2s var(--out) forwards; }
+@keyframes welcome-say { 0% { opacity: 0; transform: translateY(6px) scale(.8); } 12%, 80% { opacity: 1; transform: none; } 100% { opacity: 0; transform: translateY(-4px); } }
+
+.welcome-navigation { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px clamp(16px, 4vw, 40px) 24px; }
+.welcome-next { min-width: 132px; justify-content: center; }
+
+@media (max-width: 820px) {
+  .welcome-stage { grid-template-columns: 1fr; align-content: start; gap: 8px; padding-top: 8px; }
+  .welcome-visual { order: -1; min-height: 0; }
+  .welcome-scene { width: min(100%, 400px); }
+  .welcome-buddy .companion.home { width: 92px; height: 85px; }
+  .welcome:is([data-step="meet"], [data-step="ready"], [data-step="farewell"]) .welcome-buddy { right: calc(50% - 46px); bottom: calc(50% - 42px); scale: 1.2; }
+  .welcome-keys { display: none; }
+}
+@media (max-height: 620px) { .welcome-title { font-size: clamp(30px, 4.2vw, 48px); margin-bottom: 14px; } .welcome-visual { min-height: 260px; } }
+
+/* Shared scene parts */
+.scene { position: relative; width: 100%; height: 100%; display: grid; place-items: center; }
+.scene .icon { width: 16px; height: 16px; }
+.scene-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--paper); color: var(--ink); font-size: var(--t-sm); font-weight: 550; box-shadow: 0 4px 14px rgb(0 0 0 / .06);
+}
+.scene-window { width: 41%; aspect-ratio: .86; border: 1px solid var(--line); border-radius: 14px; background: var(--paper); box-shadow: 0 18px 40px rgb(0 0 0 / .07); overflow: hidden; }
+.scene-window-bar { display: flex; align-items: center; gap: 5px; height: 30px; padding: 0 10px; border-bottom: 1px solid var(--line); background: var(--panel); color: var(--ink-3); font-size: 10.5px; }
+.scene-window-bar > i { width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+.scene-window-bar > span { margin-inline-start: 6px; }
+
+/* Meet: Lima's surfaces orbit the character. */
+.scene-ring { position: absolute; width: 82%; aspect-ratio: 1; border: 1.5px dashed var(--line); border-radius: 50%; animation: welcome-spin 60s linear infinite; }
+.scene-ring.small { width: 52%; animation-direction: reverse; animation-duration: 45s; opacity: .7; }
+.scene-orbit { position: absolute; width: 82%; aspect-ratio: 1; animation: welcome-spin 40s linear infinite; }
+.scene-planet {
+  position: absolute; left: 50%; top: 50%; display: grid; place-items: center; width: 46px; height: 46px; margin: -23px;
+  border: 1px solid var(--line); border-radius: 14px; background: var(--paper); color: var(--ink); box-shadow: 0 8px 22px rgb(0 0 0 / .08);
+  transform: rotate(var(--angle)) translateY(-41cqw) rotate(calc(var(--angle) * -1));
+}
+.scene-planet > .icon { width: 20px; height: 20px; animation: welcome-spin 40s linear infinite reverse; }
+@keyframes welcome-spin { to { rotate: 360deg; } }
+
+/* Import: data hops from the old browser into Lima. */
+.scene-import { grid-template-columns: 1fr 1fr; justify-items: center; }
+.scene-import > .scene-window { width: 78%; }
+.scene-lines, .scene-shelf { display: grid; gap: 9px; padding: 16px; }
+.scene-lines > i, .scene-shelf > i { height: 9px; border-radius: 5px; background: var(--panel-2); }
+.scene-lines > i:nth-child(2) { width: 70%; } .scene-lines > i:nth-child(3) { width: 45%; }
+.scene-shelf > i { transform-origin: left; animation: welcome-shelf 3.3s var(--out) infinite; }
+.scene-shelf > i:nth-child(2) { animation-delay: .55s; width: 80%; } .scene-shelf > i:nth-child(3) { animation-delay: 1.1s; width: 60%; } .scene-shelf > i:nth-child(4) { animation-delay: 1.65s; width: 72%; }
+@keyframes welcome-shelf { 0%, 40% { transform: scaleX(.15); background: var(--panel-2); } 60%, 100% { transform: none; background: var(--line); } }
+.scene-flight { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
+.scene-flight > .scene-chip { grid-area: 1 / 1; opacity: 0; animation: welcome-fly 3.3s cubic-bezier(.45, 0, .3, 1) var(--delay) infinite; }
+@keyframes welcome-fly {
+  0% { opacity: 0; transform: translate(-150px, 30px) scale(.7) rotate(-8deg); }
+  14% { opacity: 1; }
+  50% { transform: translate(0, -78px) scale(1.04) rotate(3deg); }
+  86% { opacity: 1; }
+  100% { opacity: 0; transform: translate(150px, 30px) scale(.7) rotate(8deg); }
+}
+
+/* Default: links from other apps land in Lima. */
+.scene-default { grid-template-columns: 1fr 1fr; }
+.scene-apps { display: grid; grid-template-columns: repeat(2, 64px); gap: 14px; }
+.scene-app { display: grid; place-items: center; gap: 4px; width: 64px; height: 64px; border: 1px solid var(--line); border-radius: 16px; background: var(--paper); color: var(--ink); box-shadow: 0 8px 18px rgb(0 0 0 / .06); animation: welcome-nudge 2.8s ease-in-out var(--delay) infinite; }
+.scene-app > .icon { width: 22px; height: 22px; }
+.scene-app > small { color: var(--ink-3); font-size: 9.5px; }
+@keyframes welcome-nudge { 0%, 70%, 100% { transform: none; } 78% { transform: translateY(-5px) scale(1.06); } 86% { transform: translateY(1px); } }
+.scene-links { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
+.scene-links > .scene-chip { grid-area: 1 / 1; padding: 6px; opacity: 0; animation: welcome-link 2.8s cubic-bezier(.5, 0, .3, 1) calc(var(--delay) + .6s) infinite; }
+@keyframes welcome-link { 0% { opacity: 0; transform: translate(-110px, 0) scale(.6); } 15% { opacity: 1; } 55% { transform: translate(10px, -64px) scale(1); } 80% { opacity: 1; } 100% { opacity: 0; transform: translate(120px, 0) scale(.5); } }
+.scene-target { position: relative; display: grid; place-items: center; width: 132px; height: 132px; border: 1px solid var(--line); border-radius: 34px; background: var(--paper); box-shadow: 0 20px 44px rgb(0 0 0 / .09); animation: welcome-catch 2.8s ease-in-out 2s infinite; }
+.scene-target-mark { width: 56px; height: 56px; background: var(--ink); mask: url("resource://lima-ui/marks/lima-mask.svg") center / contain no-repeat; }
+.scene-target-check { position: absolute; right: -10px; top: -10px; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: var(--action); color: var(--action-contrast); transform: scale(0); transition: transform 420ms cubic-bezier(.3, 1.6, .5, 1); }
+.welcome-scene.is-default .scene-target-check { transform: scale(1); }
+@keyframes welcome-catch { 0%, 30%, 100% { transform: none; } 38% { transform: scale(1.06); } 46% { transform: scale(.98); } }
+
+/* AI: provider cards flip in; found ones get a check. */
+.scene-ai { align-content: center; gap: 14px; }
+.scene-provider {
+  display: flex; align-items: center; gap: 12px; width: min(84%, 330px); padding: 14px 16px; border: 1px solid var(--line); border-radius: 14px;
+  background: var(--paper); box-shadow: 0 10px 26px rgb(0 0 0 / .06); animation: welcome-flip 700ms cubic-bezier(.2, .9, .3, 1.15) var(--delay) backwards;
+  transition: border-color 300ms, transform 300ms var(--out);
+}
+.scene-provider strong { flex: 1; font-size: var(--t-lg); }
+.scene-provider-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: var(--panel); }
+.scene-provider-state { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; border: 1.5px dashed var(--line); color: transparent; transition: all 300ms var(--out); }
+.scene-provider[data-found="installed"] .scene-provider-state { border-style: solid; border-color: var(--ink-3); }
+.scene-provider[data-found="ready"] { border-color: var(--ink); transform: scale(1.03); }
+.scene-provider[data-found="ready"] .scene-provider-state { border: 0; background: var(--action); color: var(--action-contrast); animation: welcome-pop 500ms cubic-bezier(.3, 1.6, .5, 1); }
+.scene-provider-state .icon { width: 13px; height: 13px; }
+.scene-scan { position: absolute; left: 12%; right: 12%; height: 2px; border-radius: 1px; background: linear-gradient(90deg, transparent, var(--ink-3), transparent); opacity: .5; animation: welcome-scan 2.4s ease-in-out infinite; }
+@keyframes welcome-flip { from { opacity: 0; transform: perspective(600px) rotateX(-70deg) translateY(-14px); } }
+@keyframes welcome-scan { 0%, 100% { top: 22%; } 50% { top: 76%; } }
+@keyframes welcome-pop { 0% { transform: scale(0); } }
+
+/* Search: ⌘T, then the panel types and answers. */
+.scene-searching { align-content: center; gap: 18px; }
+.scene-keys { display: flex; gap: 6px; }
+.scene-keys kbd { min-width: 40px; height: 40px; font-size: 16px; border-radius: 10px; animation: welcome-press 3.6s ease-in-out infinite; }
+.scene-keys kbd + kbd { animation-delay: .08s; }
+@keyframes welcome-press { 0%, 8%, 100% { transform: none; border-bottom-width: 2px; } 4% { transform: translateY(2px); border-bottom-width: 1px; } }
+.scene-search { width: min(92%, 400px); border: 1px solid var(--line); border-radius: 14px; background: var(--paper); box-shadow: 0 22px 50px rgb(0 0 0 / .1); overflow: hidden; }
+.scene-search-field { display: flex; align-items: center; gap: 9px; height: 44px; padding: 0 14px; border-bottom: 1px solid var(--line); font-size: 15px; }
+.scene-search-mark { width: 14px; height: 14px; background: var(--ink-2); mask: url("resource://lima-ui/marks/lima-mask.svg") center / contain no-repeat; }
+.scene-caret { width: 1.5px; height: 18px; margin-inline-start: -7px; background: var(--ink); animation: welcome-blink 1s steps(1) infinite; }
+@keyframes welcome-blink { 50% { opacity: 0; } }
+.scene-results { min-height: 110px; padding: 4px 0 6px; }
+.scene-row { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 14px; font-size: var(--t-md); animation: welcome-row 360ms var(--out) var(--delay) backwards; }
+.scene-row > span { flex: 1; }
+.scene-row.selected { background: var(--select); }
+.scene-row small { color: var(--ink-2); font-size: var(--t-xs); }
+.scene-row .icon { width: 15px; height: 15px; color: var(--ink-2); }
+@keyframes welcome-row { from { opacity: 0; transform: translateY(-6px); } }
+
+/* Workspace: a folder unfolds and the lead agent hands off to a helper. */
+.scene-workspace { align-content: center; gap: 22px; }
+.scene-sidebar { width: min(80%, 300px); padding: 10px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); box-shadow: 0 16px 36px rgb(0 0 0 / .07); }
+.scene-folder-row { display: flex; align-items: center; gap: 8px; height: 30px; padding-inline-start: calc(8px + var(--depth) * 18px); border-radius: 7px; font-size: var(--t-md); animation: welcome-unfold 520ms var(--out) var(--delay) backwards; }
+.scene-folder-row.lead { font-weight: 650; background: var(--paper); }
+.scene-folder-row.helper { color: var(--ink-2); }
+.scene-folder-row .icon { width: 15px; height: 15px; color: var(--ink-2); }
+@keyframes welcome-unfold { from { opacity: 0; transform: translateX(-12px); } }
+.scene-handoff { position: relative; display: flex; align-items: center; gap: 70px; }
+.scene-handoff .companion.agent-avatar { width: 52px; height: 48px; }
+.scene-baton { position: absolute; left: 50%; top: 10px; display: grid; place-items: center; width: 26px; height: 26px; margin-left: -13px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); animation: welcome-baton 2.4s ease-in-out infinite; }
+.scene-baton .icon { width: 14px; height: 14px; }
+@keyframes welcome-baton { 0%, 100% { transform: translate(-50px, 4px) rotate(-10deg); } 50% { transform: translate(50px, -18px) rotate(10deg); } }
+
+/* Ready and farewell: pencil-stroke rays and a confetti burst. */
+.scene-rays { position: absolute; width: 74%; aspect-ratio: 1; animation: welcome-spin 30s linear infinite; }
+.scene-rays > i { position: absolute; left: 50%; top: 50%; width: 3px; height: 20%; margin-left: -1.5px; border-radius: 2px; background: var(--ink); transform-origin: 50% 0; rotate: var(--angle); transform: translateY(150%); opacity: .7; animation: welcome-ray 1.8s ease-in-out infinite alternate; }
+.scene-rays > i:nth-child(even) { height: 12%; transform: translateY(250%); opacity: .4; animation-delay: -.9s; }
+@keyframes welcome-ray { from { scale: 1 .55; } }
+.scene-confetti { position: absolute; left: 50%; top: 50%; width: 0; height: 0; }
+.scene-confetti > i { position: absolute; width: 8px; height: 14px; margin: -7px -4px; border-radius: 2px; background: hsl(0 0% var(--shade)); opacity: 0; animation: welcome-burst 1.6s cubic-bezier(.15, .7, .3, 1) var(--delay) forwards; }
+.scene-confetti > i[data-shape="dot"] { width: 9px; height: 9px; border-radius: 50%; }
+.scene-confetti > i[data-shape="tri"] { width: 10px; height: 10px; border-radius: 0; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+@keyframes welcome-burst {
+  0% { opacity: 1; transform: translate(0, 0) scale(.4); }
+  55% { opacity: 1; transform: translate(var(--dx), var(--dy)) rotate(var(--spin)); }
+  100% { opacity: 0; transform: translate(var(--dx), calc(var(--dy) + 160px)) rotate(calc(var(--spin) * 1.6)); }
+}
+
+:root[lima-hidden] .welcome * { animation-play-state: paused !important; }
+:root[data-lima-personality="subtle"] .welcome :is(.welcome-backdrop > i, .scene-orbit, .scene-ring, .scene-rays) { animation: none; }
+:root[data-lima-personality="off"] .welcome :is(.welcome-buddy, .scene-confetti) { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .welcome *, .welcome *::before, .welcome *::after { animation: none !important; transition: none !important; }
+  .welcome :is(.scene-flight, .scene-links, .scene-confetti, .scene-scan) { display: none; }
+  .welcome-backdrop, .welcome-buddy { transform: none; }
+}
+:root[data-lima-personality="off"] .welcome *, :root[data-lima-personality="off"] .welcome *::after { animation: none !important; }
+:root[data-lima-personality="off"] .welcome :is(.scene-flight, .scene-links, .scene-scan) { display: none; }
+
+/* Provider failover: a quiet line above the reply that continued elsewhere. */
+.msg-notice { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; color: var(--lima-secondary); font-size: var(--t-sm); }
+.msg-notice svg { width: 13px; height: 13px; flex: none; }
+
+/* Permission sheet: copy and steps beside a picture of the switch to turn on. */
+.permission-sheet { display: none; width: min(640px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--lima-border); border-radius: 16px;
+  background: var(--lima-bg); color: var(--lima-fg); box-shadow: 0 24px 60px rgb(0 0 0 / .18); overflow: hidden; }
+.permission-sheet[open] { display: grid; grid-template-columns: 1.1fr 1fr; animation: permission-in .22s cubic-bezier(.2,.8,.2,1); }
+.permission-sheet::backdrop { background: rgb(22 24 27 / .22); backdrop-filter: blur(2px); }
+.permission-copy { display: grid; align-content: start; gap: 10px; padding: 24px; }
+.permission-copy h2 { margin: 0; font-size: 18px; }
+.permission-copy > p { margin: 0; }
+.permission-steps { margin: 4px 0; padding-inline-start: 20px; display: grid; gap: 6px; line-height: 1.4; }
+.permission-status { min-height: 1.3em; margin: 0; color: var(--lima-secondary); font-size: 13px; }
+.permission-picture { display: grid; place-items: center; padding: 20px; background: var(--lima-surface); border-inline-start: 1px solid var(--lima-border); }
+.permission-window { width: 100%; max-width: 240px; border: 1px solid var(--lima-border); border-radius: 10px; background: var(--lima-bg); box-shadow: 0 8px 24px rgb(0 0 0 / .08); overflow: hidden; }
+.permission-window-bar { display: flex; align-items: center; gap: 4px; padding: 7px 9px; border-bottom: 1px solid var(--lima-border); font-size: 11px; color: var(--lima-muted); }
+.permission-window-bar i { width: 7px; height: 7px; border-radius: 50%; background: var(--lima-elevated); }
+.permission-window-bar span { margin-inline-start: 6px; }
+.permission-pane { display: grid; gap: 8px; padding: 12px; font-size: 12px; }
+.permission-app { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 8px; background: var(--lima-surface); }
+.permission-app > span:nth-child(2) { flex: 1; }
+.permission-app.dim { opacity: .5; }
+.permission-app-icon { width: 18px; height: 18px; border-radius: 5px; background: var(--lima-accent); }
+.permission-app.dim .permission-app-icon { background: var(--lima-elevated); }
+.permission-switch { position: relative; width: 28px; height: 16px; border-radius: 8px; background: var(--lima-elevated); transition: background .25s; }
+.permission-switch i { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgb(0 0 0 / .25); transition: transform .25s cubic-bezier(.3,1.4,.5,1); }
+.permission-app:not(.dim) .permission-switch { animation: permission-hint 2.4s ease-in-out infinite; }
+.permission-sheet.granted .permission-app:not(.dim) .permission-switch { animation: none; background: var(--lima-accent); }
+.permission-sheet.granted .permission-app:not(.dim) .permission-switch i { transform: translateX(12px); }
+.permission-sheet.granted .permission-status { color: var(--lima-fg); font-weight: 600; }
+@keyframes permission-in { from { opacity: 0; transform: translateY(8px) scale(.98); } }
+@keyframes permission-hint { 0%, 60%, 100% { box-shadow: 0 0 0 0 transparent; } 30% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--lima-accent) 25%, transparent); } }
+@media (max-width: 560px) { .permission-sheet[open] { grid-template-columns: 1fr; } .permission-picture { border-inline-start: 0; border-top: 1px solid var(--lima-border); } }
+@media (prefers-reduced-motion: reduce) { .permission-sheet[open], .permission-switch, .permission-switch i { animation: none; transition: none; } }
+
+/* Walkthrough: finished tasks, the optional About step and the AI picker. */
+.welcome-celebrate { position: fixed; inset: 0; z-index: 4; pointer-events: none; }
+.welcome-celebrate .scene-confetti { top: 45%; }
+.welcome-progress li[data-complete] .welcome-dot > span { height: 6px; }
+.welcome-progress li[data-complete] .welcome-dot > span::after { transform: none; opacity: 1; animation: welcome-glow 700ms var(--out); }
+@keyframes welcome-glow { 0% { filter: brightness(2); } }
+
+.welcome-form { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; max-width: 520px; margin-top: 4px; }
+.welcome-field { display: grid; gap: 4px; min-width: 0; color: var(--ink-2); font-size: var(--t-sm); font-weight: 550; }
+.welcome-field :is(input, textarea) { width: 100%; min-width: 0; font-weight: normal; font-size: var(--t-md); }
+.welcome-field textarea { resize: vertical; }
+.welcome-form .wide { grid-column: 1 / -1; }
+.welcome-check { display: flex; align-items: flex-start; gap: 8px; color: var(--ink-2); line-height: 1.4; }
+.welcome-check > input { flex: none; width: 15px; height: 15px; margin: 2px 0 0; accent-color: var(--action); }
+@media (max-width: 560px) { .welcome-form { grid-template-columns: 1fr; } }
+
+.welcome-choices { display: grid; gap: 8px; max-width: 420px; margin: 4px 0 14px; }
+.welcome .welcome-choice { height: auto; min-height: 0; white-space: normal; justify-content: stretch; font-weight: normal; display: grid; grid-template-columns: 24px 1fr; grid-template-rows: auto auto; column-gap: 12px; align-items: center; padding: 12px 14px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--paper); color: var(--ink); text-align: start;
+  transition: border-color var(--fast), transform 220ms var(--out), box-shadow var(--fast); }
+.welcome-choice strong { grid-column: 2; font-size: var(--t-lg); }
+.welcome-choice small { grid-column: 2; color: var(--ink-3); }
+.welcome-choice-mark { grid-row: 1 / 3; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--line); color: transparent; }
+.welcome-choice-mark .icon { width: 13px; height: 13px; }
+button.welcome-choice:hover { border-color: var(--ink-3); background: var(--paper); transform: translateY(-1px); }
+.welcome-choice[aria-checked="true"] { border-color: var(--ink); box-shadow: 0 6px 18px rgb(0 0 0 / .07); }
+.welcome-choice[aria-checked="true"] .welcome-choice-mark { border-color: var(--action); background: var(--action); color: var(--action-contrast); animation: welcome-pop 380ms cubic-bezier(.3, 1.6, .5, 1); }
+.welcome-choice[aria-disabled="true"] { opacity: .55; }
+.scene-provider[data-chosen] { transform: scale(1.07); box-shadow: 0 14px 34px rgb(0 0 0 / .12); }
+
+/* About: a name tag that fills in as you type, with drifting stickers. */
+.scene-about { place-items: center; }
+.scene-tag { width: min(70%, 260px); border-radius: 16px; background: var(--action); color: var(--action-contrast); box-shadow: 0 18px 40px rgb(0 0 0 / .14);
+  overflow: hidden; rotate: -4deg; animation: welcome-tag 900ms cubic-bezier(.2, .9, .3, 1.3) backwards, welcome-sway 6s ease-in-out 900ms infinite; }
+.scene-tag-head { display: grid; justify-items: center; padding: 14px 10px 8px; }
+.scene-tag-head strong { font-size: 30px; letter-spacing: .12em; }
+.scene-tag-head small { opacity: .8; }
+.scene-tag-body { display: grid; place-items: center; min-height: 86px; margin: 0 10px 12px; border-radius: 10px; background: var(--paper); color: var(--ink); }
+.scene-name { max-width: 90%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: "Bradley Hand", "Marker Felt", cursive; font-size: 34px; }
+.scene-floater { position: absolute; left: 50%; top: 50%; display: grid; place-items: center; width: 40px; height: 40px; margin: -20px; border: 1px solid var(--line);
+  border-radius: 12px; background: var(--paper); box-shadow: 0 8px 20px rgb(0 0 0 / .06); translate: var(--x) var(--y);
+  animation: welcome-pop 500ms cubic-bezier(.3, 1.6, .5, 1) var(--delay) backwards, welcome-drift 5s ease-in-out var(--delay) infinite; }
+@keyframes welcome-tag { from { opacity: 0; transform: translateY(30px) rotate(10deg) scale(.8); } }
+@keyframes welcome-sway { 50% { rotate: 2deg; } }
+@keyframes welcome-drift { 50% { transform: translateY(-8px) rotate(4deg); } }
+@media (prefers-reduced-motion: reduce) { .welcome :is(.scene-tag, .scene-floater, .welcome-choice-mark) { animation: none; } }
+:root[data-lima-personality="off"] .welcome :is(.scene-tag, .scene-floater) { animation: none; }
+:root[data-lima-personality="off"] .welcome-celebrate { display: none; }

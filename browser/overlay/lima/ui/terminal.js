@@ -8,8 +8,8 @@ import { companion, setCompanionState, watchVisualActivity } from "./companion.j
 
 const home = path => path.replace(/^\/Users\/[^/]+/, "~");
 
-export async function renderTerminal(app, sessionId) {
-  setPage("Terminal", "terminal");
+export async function renderTerminal(app, sessionId, { compact = false, signal, workspaceId, focus = true } = {}) {
+  if (!compact) setPage("Terminal", "terminal");
   const status = activityStatus();
   const actions = el("div", { class: "row" });
   app.replaceChildren(el("div", { class: "terminal-recovery" }, status.node, actions));
@@ -27,10 +27,17 @@ export async function renderTerminal(app, sessionId) {
       return;
     }
     const attached = await call("terminal.attach", { id: sessionId });
+    if (signal?.aborted) return;
     if (attached.info.state === "exited") throw new Error(`terminal ${sessionId} has exited`);
-    mountTerminal(app, attached, pending);
+    mountTerminal(app, attached, pending, { compact, signal, workspaceId, focus });
   } catch (error) {
+    if (signal?.aborted) return;
     if (!status.node.isConnected) app.replaceChildren(el("div", { class: "terminal-recovery" }, status.node, actions));
+    if (compact) {
+      status.update(failureActivity(error, "Terminal unavailable"));
+      actions.replaceChildren(el("button", { onclick: () => renderTerminal(app, sessionId, { compact, signal, workspaceId, focus }) }, "Retry"));
+      return;
+    }
     if (sessionId && terminalEnded(error)) {
       try {
         const workspaceId = await bridge.browser("workspaceOf", {});
@@ -77,7 +84,15 @@ async function restartTerminal(sessionId, context = null) {
   }
 }
 
-function mountTerminal(app, attached, pending) {
+function mountTerminal(app, attached, pending, { compact, signal, workspaceId, focus }) {
+  const cleanups = [];
+  const dispose = () => {
+    window.removeEventListener("pagehide", dispose);
+    signal?.removeEventListener("abort", dispose);
+    for (const cleanup of cleanups.splice(0)) cleanup();
+  };
+  window.addEventListener("pagehide", dispose, { once: true });
+  signal?.addEventListener("abort", dispose, { once: true });
   let { info } = attached;
   let offset = attached.offset ?? 0;
   let resyncing = false;
@@ -104,7 +119,8 @@ function mountTerminal(app, attached, pending) {
   // Inside a workspace folder the tab keeps the name "Terminal".
   let inWorkspace = false;
   let visual;
-  bridge.browser("workspaceOf", {}).then(id => {
+  (compact ? Promise.resolve(workspaceId) : bridge.browser("workspaceOf", {})).then(id => {
+    if (signal?.aborted) return;
     inWorkspace = !!id;
     if (id && !document.hidden) update(info);
     if (id) {
@@ -112,16 +128,16 @@ function mountTerminal(app, attached, pending) {
         visual = activity;
         paintStatus();
       });
-      window.addEventListener("pagehide", stop, { once: true });
+      cleanups.push(stop);
     }
   }).catch(() => {});
 
   app.replaceChildren(el("div", { class: "orca" },
     explorer,
     el("main", { class: "term-main" },
-      el("header", { class: "term-bar" }, mascot, el("span", { class: "tab" }, "Terminal"), toggleTree, path, el("span", { class: "spacer" }),
+      el("header", { class: "term-bar" }, mascot, compact ? null : el("span", { class: "tab" }, "Terminal"), compact ? null : toggleTree, path, el("span", { class: "spacer" }),
         el("button", { class: "ghost", onclick: toggleHistory }, "History"),
-        el("button", { class: "ghost danger", title: "End this shell", onclick: closeSession }, "End shell")),
+        compact ? null : el("button", { class: "ghost danger", title: "End this shell", onclick: closeSession }, "End shell")),
       status.node, notice, leaseBar, historyList,
       el("div", { class: "term-split" }, host, preview))));
 
@@ -130,7 +146,7 @@ function mountTerminal(app, attached, pending) {
     if (show) refreshTree();
     prefs.set("terminal.tree", show ? "1" : "0");
   }
-  explorer.hidden = prefs.get("terminal.tree", "1") !== "1";
+  explorer.hidden = compact || prefs.get("terminal.tree", "1") !== "1";
 
   const theme = getComputedStyle(document.documentElement);
   const color = key => theme.getPropertyValue("--lima-" + key).trim();
@@ -146,6 +162,7 @@ function mountTerminal(app, attached, pending) {
   if (attached.scrollback) term.write(b64.bytes(attached.scrollback));
   let reportedSize = `${attached.info.cols}x${attached.info.rows}`;
   const resize = () => {
+    if (!host.clientWidth || !host.clientHeight) return;
     try { fit.fit(); } catch { return; }
     const size = `${term.cols}x${term.rows}`;
     if (size === reportedSize || info.state === "exited") return;
@@ -156,9 +173,9 @@ function mountTerminal(app, attached, pending) {
   };
   const observer = new ResizeObserver(resize);
   observer.observe(host);
-  window.addEventListener("pagehide", () => observer.disconnect(), { once: true });
+  cleanups.push(() => { observer.disconnect(); term.dispose(); });
   resize();
-  term.focus();
+  if (focus && !document.hidden) term.focus();
 
   let writes = Promise.resolve();
   function sendInput(data) {
@@ -264,6 +281,7 @@ function mountTerminal(app, attached, pending) {
     const revision = stateRevision;
     try {
       const latest = await call("terminal.info", { id: info.id });
+      if (signal?.aborted) return;
       if (revision === stateRevision) {
         const recovered = !!connectionError;
         connectionError = undefined;
@@ -272,8 +290,8 @@ function mountTerminal(app, attached, pending) {
       }
       refreshTree();
     } catch (error) {
-      if (revision === stateRevision) {
-        if (terminalEnded(error) && !connectionError) showNotice(error, "Shell ended", restart);
+      if (!signal?.aborted && revision === stateRevision) {
+        if (terminalEnded(error) && !connectionError) showNotice(error, "Shell ended", compact ? undefined : restart);
         connectionError = error;
         paintStatus();
       }
@@ -369,8 +387,13 @@ function mountTerminal(app, attached, pending) {
   // Files change as commands run (and as the agent works): refresh after
   // each command and every few seconds while visible.
   const polling = setInterval(() => { if (!document.hidden) refreshInfo(); }, 2500);
-  window.addEventListener("pagehide", () => clearInterval(polling), { once: true });
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshInfo(); });
+  const visibility = () => { if (!document.hidden) refreshInfo(); };
+  document.addEventListener("visibilitychange", visibility);
+  cleanups.push(() => {
+    clearInterval(polling);
+    clearTimeout(returnedTimer);
+    document.removeEventListener("visibilitychange", visibility);
+  });
 
   // MARK: State
 
@@ -424,7 +447,7 @@ function mountTerminal(app, attached, pending) {
     else workingSince = undefined;
     const agent = info.owner.startsWith("agent:") ? info.owner.slice(6) : null;
     paintStatus();
-    if (info.state === "exited") showNotice(null, "Scrollback is still available", restart);
+    if (info.state === "exited") showNotice(null, "Scrollback is still available", compact ? undefined : restart);
     path.textContent = home(info.cwd);
     if (root !== info.cwd) {
       root = info.cwd;
@@ -432,7 +455,7 @@ function mountTerminal(app, attached, pending) {
       tree.scrollTop = 0;
       refreshTree();
     }
-    setPage(`${info.state === "running" ? "▶ " : ""}${inWorkspace ? "Terminal" : home(info.cwd).split("/").pop() || "Terminal"}`, "terminal");
+    if (!compact) setPage(`${info.state === "running" ? "▶ " : ""}${inWorkspace ? "Terminal" : home(info.cwd).split("/").pop() || "Terminal"}`, "terminal");
 
     // Ownership bar: visible only while a handoff is active, plus a brief
     // confirmation when control comes back to the user.
@@ -495,6 +518,7 @@ function mountTerminal(app, attached, pending) {
     resyncing = true;
     try {
       const snapshot = await call("terminal.attach", { id: info.id });
+      if (signal?.aborted) return;
       term.reset();
       term.write(b64.bytes(snapshot.scrollback));
       offset = snapshot.offset;
@@ -536,6 +560,6 @@ function mountTerminal(app, attached, pending) {
     }
   }
   const unsubscribe = onEvent(receive);
-  window.addEventListener("pagehide", unsubscribe, { once: true });
+  cleanups.push(unsubscribe);
   pending.forEach(receive);
 }

@@ -13,6 +13,8 @@ public struct ChatMessage: Codable, Equatable, Sendable {
     public var error: AgentFailure?
     public var tools: [String]
     public var progress: AgentProgress? = nil
+    /// A short note shown above the reply, e.g. that Lima switched providers.
+    public var notice: String? = nil
 }
 
 public struct Conversation: Codable, Equatable, Sendable {
@@ -97,8 +99,15 @@ public actor ConversationService {
     /// Supplies per-conversation CLI extras (workspace MCP config, preamble).
     public typealias RunConfigurator = @Sendable (Conversation) async -> (arguments: [String], environment: [String: String], preamble: String?)
     private var configurator: RunConfigurator?
+    /// Picks the provider to continue with when one hits its usage limit:
+    /// given the provider that failed and those already tried this turn,
+    /// returns a ready provider, or nil to surface the failure as usual.
+    public typealias Failover = @Sendable (_ failed: CLIProvider, _ tried: Set<CLIProvider>) async -> CLIProvider?
+    private var failover: Failover?
+    private var tried: [String: Set<CLIProvider>] = [:] // conversationID → providers that hit a limit this turn
 
     public func setRunConfigurator(_ configurator: @escaping RunConfigurator) { self.configurator = configurator }
+    public func setFailover(_ failover: Failover?) { self.failover = failover }
 
     public init(store: EncryptedStore, discovery: CLIDiscovery = CLIDiscovery(), emit: @escaping @Sendable (ConversationEvent) -> Void) async throws {
         self.store = store
@@ -221,6 +230,20 @@ public actor ConversationService {
 
     /// One-shot Quick Ask: no conversation, no tools, low effort.
     public func quickAsk(provider: CLIProvider, model: String?, prompt: String, onDelta: @escaping @Sendable (String) -> Void) async -> Result<String, AgentFailure> {
+        var provider = provider
+        var model = model
+        var tried: Set<CLIProvider> = []
+        while true {
+            let result = await quickAskOnce(provider: provider, model: model, prompt: prompt, onDelta: onDelta)
+            guard case .failure(let failure) = result, failure.kind == .rateLimited, let failover else { return result }
+            tried.insert(provider)
+            guard let next = await failover(provider, tried), !tried.contains(next) else { return result }
+            provider = next
+            model = nil
+        }
+    }
+
+    private func quickAskOnce(provider: CLIProvider, model: String?, prompt: String, onDelta: @escaping @Sendable (String) -> Void) async -> Result<String, AgentFailure> {
         guard let executable = await executable(for: provider) else {
             return .failure(AgentFailure(.missingExecutable, "\(provider.rawValue) CLI is not installed"))
         }
@@ -245,11 +268,13 @@ public actor ConversationService {
 
     // MARK: Turn execution
 
-    private func startTurn(_ id: String, userMessageID: String) async throws {
+    private func startTurn(_ id: String, userMessageID: String, notice: String? = nil) async throws {
+        if notice == nil { tried[id] = nil }
         var conversation = try get(id)
         guard let userIndex = conversation.messages.firstIndex(where: { $0.id == userMessageID }) else { return }
         conversation.messages[userIndex].status = .complete
-        let reply = ChatMessage(id: UUID().uuidString, role: .assistant, text: "", createdAt: Self.now(), status: .streaming, error: nil, tools: [])
+        var reply = ChatMessage(id: UUID().uuidString, role: .assistant, text: "", createdAt: Self.now(), status: .streaming, error: nil, tools: [])
+        reply.notice = notice
         conversation.messages.insert(reply, at: userIndex + 1)
         try await save(conversation)
 
@@ -324,6 +349,7 @@ public actor ConversationService {
             if !text.isEmpty { conversation.messages[index].text = text }
             conversation.messages[index].status = .complete
         case .failed(let failure):
+            if failure.kind == .rateLimited, try await switchProvider(&conversation, replyIndex: index, failure: failure) { return }
             conversation.messages[index].status = .failed
             conversation.messages[index].error = failure
             // A rejected resume shouldn't poison the next turn.
@@ -339,6 +365,40 @@ public actor ConversationService {
             let next = queue.removeFirst()
             queues[id] = queue
             try await startTurn(id, userMessageID: next)
+        }
+    }
+
+    /// A usage limit on one provider: continue the same turn on another ready
+    /// provider, with the transcript as context. The failed reply is replaced
+    /// and the new one carries a notice saying what happened.
+    private func switchProvider(_ conversation: inout Conversation, replyIndex index: Int, failure: AgentFailure) async throws -> Bool {
+        let id = conversation.id
+        let failed = conversation.provider
+        let replyID = conversation.messages[index].id
+        guard let failover, conversation.messages[index].text.isEmpty,
+              let userID = conversation.messages[..<index].last(where: { $0.role == .user })?.id else { return false }
+        var attempted = tried[id] ?? []
+        attempted.insert(failed)
+        guard let next = await failover(failed, attempted), !attempted.contains(next) else { return false }
+        tried[id] = attempted
+        conversation = conversations[id] ?? conversation
+        guard let current = conversation.messages.firstIndex(where: { $0.id == replyID }) else { return false }
+        conversation.messages.remove(at: current)
+        conversation.provider = next
+        conversation.model = nil
+        conversation.cliSessionID = nil
+        running[id] = nil
+        try await save(conversation)
+        try await startTurn(id, userMessageID: userID,
+                            notice: "\(Self.providerName(failed)) reached its usage limit, so Lima switched to \(Self.providerName(next)).")
+        return true
+    }
+
+    public static func providerName(_ provider: CLIProvider) -> String {
+        switch provider {
+        case .claude: "Claude Code"
+        case .codex: "Codex"
+        case .opencode: "OpenCode"
         }
     }
 

@@ -11,6 +11,7 @@ dashboards, card grids or Home page.
   ✦ Chat                     ← the workspace agent's conversation (one job: talk to the agent)
   ⌨ Terminal                 ← Orca-style: file tree of the workspace directory | shared terminal
   ▸ Tabs                     ← sub-folder: web pages the agent opened (and any you drop in)
+  ▸ Images                   ← sub-folder: workspace Image Studio documents
   ▸ Agents                   ← sub-folder, appears when the agent spawns helpers
     ✦ pricing-scout          ← temporary agent = sub-folder: its Chat, and (on demand) its Terminal + pages
 ▸ Notebook                   ← OneNote: sections are sub-folders, pages are note tabs
@@ -20,7 +21,7 @@ Creation is in one place, twice: Zen's bottom **＋** (`zenCreateNewPopup`) and 
 (empty area, a folder, or a tab): New Tab · New Note · New Terminal · New AI Workspace (· from Folder…).
 Right-clicking a folder creates the item inside that folder.
 
-New workspace, Tabs, and Agents folders start collapsed. Background additions preserve existing open and closed states and leave the selected tab in place. The workspace row opens Chat, and its chevron toggles the workspace contents. The Tabs and Agents folder glyphs follow the actual collapsed state.
+New workspace, Tabs, Images, and Agents folders start collapsed. Background additions preserve existing open and closed states and leave the selected tab in place. The workspace row opens Chat, and its chevron toggles the workspace contents. Folder glyphs follow the actual collapsed state.
 
 ## Where the AI is working
 
@@ -52,11 +53,19 @@ request, so a page can never call into Lima.
 
 ## Search (⌘T)
 
-⌘T, Zen's "New Tab" and ＋ → New Tab open **Lima Search**, a floating panel over the current page (the 4.x
-launcher's layout: Lima mark, 46 px field, 28 px result rows, accent "↩ Open" pill, key-hint footer).
-Sources, in parallel and never blocking each other: URL/navigation, Lima index (notes, chats, apps, commands,
-files), open tabs, **web suggestions from the default engine** (only when the browser's search-suggestion pref
-is on) and "Search the web". Clicking the Lima mark (or ⌘↵) opens an AI chat tab with the typed text.
+⌘T, Zen's "New Tab" and ＋ → New Tab open **Lima Universal Search**, a 560 px floating panel over the current
+page (`LimaSearchPanel.sys.mjs`; rules in `docs/spec/universal-search.md`). Row one is computed synchronously:
+an explicit URL, otherwise "Search with <engine>" using the window's default (or private-default) engine.
+Open tabs, Lima's index (notes, chats, apps, commands, files), workspaces and history/bookmarks run in
+parallel with their own deadlines and merge into one ranked, de-duplicated list (`ui/search-ranking.sys.mjs`);
+web suggestions arrive last, below it, and only when the browser's suggestion pref is on. Confident questions
+add Ask Lima (an inline Quick Ask answer) and confident multi-step tasks add Delegate Task (a Companion
+draft); neither ever runs by itself. ⌘↵ opens the query in AI Chat and ⌘⇧↵ sends it to the Companion. Link
+previews continue to use Zen's Glance behavior.
+
+Lima's first-run walkthrough is a full-viewport page (`ui/welcome.js`) with an animated scene per step. It offers browser data import and default-browser setup as optional steps. Import
+opens Gecko's native migration dialog when selected. The default-browser step checks the system setting and
+only requests a change when selected.
 
 ## Notes (OneNote)
 
@@ -84,5 +93,5 @@ note appears in the workspace folder and the Notebook.
 | S1 | Every workspace/agent object is reachable from the sidebar alone | Marionette: create workspace, spawn agent, verify folder tree; no `?workspace=`/`?view=workspaces` pages remain |
 | S2 | Indicator follows the agent | Runtime test: tool calls/deltas/turn-end produce tab→terminal→chat→idle; Marionette: attributes move between tabs |
 | S3 | Agents can operate on real tabs | Runtime test of browser round-trip; live run: agent reads a page in its Tabs folder |
-| S4 | ⌘T opens Lima Search, and web + Lima results both arrive | Marionette: synthesize ⌘T, type, inspect rows |
+| S4 | ⌘T opens Lima Search, URL and web search stay first, and late results never move the selection | `source_smoke.py` drives the panel (keys, ARIA, focus); `browser/tests/search-ranking.test.mjs` covers ordering |
 | S5 | Dictation matches 4.x | Whisper transcription test on a generated WAV; mic capture depends on macOS permission |

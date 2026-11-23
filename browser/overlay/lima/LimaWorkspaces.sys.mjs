@@ -61,6 +61,27 @@ export function imageWorkspaceForURL(url) {
   return params.get("view") === "image" ? params.get("imageWorkspace") : null;
 }
 
+export function approximateLocation(win) {
+  return new Promise((resolve, reject) => {
+    if (!Services.prefs.getBoolPref("lima.location.enabled", false)) {
+      reject(new Error("Allow location in Lima Settings → Personal Memory first."));
+      return;
+    }
+    const service = win.navigator.geolocation;
+    if (!service) { reject(new Error("Location Services are unavailable.")); return; }
+    service.getCurrentPosition(({ coords }) => {
+      if (!Services.prefs.getBoolPref("lima.location.enabled", false)) {
+        reject(new Error("Location access was turned off."));
+        return;
+      }
+      const round = value => Math.round(value * 100) / 100;
+      resolve({ latitude: round(coords.latitude), longitude: round(coords.longitude),
+        accuracyMeters: Math.max(1500, Math.ceil(coords.accuracy / 100) * 100) });
+    }, failure => reject(new Error(failure.code === 1 ? "Allow Lima under macOS Location Services, then try again." : "Lima couldn’t get a location estimate.")),
+    { enableHighAccuracy: false, maximumAge: 0, timeout: 16000 });
+  });
+}
+
 class Workspaces {
   #started = false;
   #queue = Promise.resolve();
@@ -531,25 +552,37 @@ class Workspaces {
     panel.setAttribute("noautohide", "true");
     panel.setAttribute("role", "dialog");
     panel.setAttribute("aria-label", workspace.parentID ? "Dismiss agent" : "Archive workspace");
+    panel.dataset.phase = "confirm";
     const element = (tag, className, text) => {
       const node = doc.createElementNS("http://www.w3.org/1999/xhtml", tag);
       node.className = className;
       if (text) node.textContent = text;
       return node;
     };
-    const heading = element("strong", "", workspace.parentID ? "Dismiss agent" : "Archive workspace");
+    const mark = element("span", "lima-archive-mark");
+    mark.setAttribute("aria-hidden", "true");
+    const heading = element("strong", "lima-archive-heading", workspace.parentID ? "Dismiss agent" : "Archive workspace");
+    const title = element("div", "lima-archive-title", workspace.name);
+    const summary = element("div", "lima-archive-summary");
+    summary.append(heading, title);
+    const header = element("header", "lima-archive-header");
+    header.append(mark, summary);
     const description = element("p", "lima-archive-description", workspace.parentID
-      ? `Close ${workspace.name} and its tabs?`
-      : `Close ${workspace.name} and verify a ZIP of its files. Linked or shared folders keep their originals.`);
-    const path = element("p", "lima-archive-path", workspace.parentID ? "" : workspace.directory);
+      ? "Close this agent and its tabs."
+      : "Close this workspace and save a verified ZIP. Linked or shared folders keep their originals.");
+    const path = element("code", "lima-archive-path", workspace.parentID ? "" : workspace.directory);
+    const source = element("div", "lima-archive-location");
+    const pathLabel = element("span", "", "Project folder");
+    source.append(pathLabel, path);
+    source.hidden = !path.textContent;
     const status = element("p", "lima-archive-status");
     status.setAttribute("role", "status");
     const cancel = element("button", "", "Cancel");
-    const action = element("button", "lima-archive-action", workspace.parentID ? "Dismiss" : "Archive");
+    const action = element("button", "lima-archive-action", workspace.parentID ? "Dismiss agent" : "Archive workspace");
     const controls = element("div", "lima-archive-actions");
     controls.append(cancel, action);
     const content = element("div", "lima-archive-content");
-    content.append(heading, description, path, status, controls);
+    content.append(header, description, source, status, controls);
     panel.append(content);
     (doc.getElementById("mainPopupSet") ?? doc.documentElement).append(panel);
     let busy = false;
@@ -564,16 +597,21 @@ class Workspaces {
     action.onclick = async () => {
       if (busy) return;
       busy = action.disabled = cancel.disabled = true;
+      panel.dataset.phase = "working";
       status.textContent = workspace.parentID ? "Dismissing agent…" : "Creating and verifying the ZIP…";
       try {
         const result = await perform();
+        panel.dataset.phase = "complete";
         heading.textContent = workspace.parentID ? "Agent dismissed" : "Workspace archived";
-        description.textContent = result?.recoveryPath ? `A recovery copy remains at ${result.recoveryPath}` : "";
+        description.textContent = result?.recoveryPath ? `A recovery copy remains at ${result.recoveryPath}` : "The sidebar has been updated.";
+        pathLabel.textContent = "Verified ZIP";
         path.textContent = result?.archivePath ?? "";
+        source.hidden = !path.textContent;
         status.textContent = result?.directoryKept && !workspace.parentID ? "The original folder is still available." : "";
         action.hidden = true;
         cancel.textContent = "Done";
       } catch (error) {
+        panel.dataset.phase = "failed";
         status.textContent = error.message;
         action.textContent = "Retry";
       } finally {
@@ -779,7 +817,7 @@ class Workspaces {
         }
         return reply({ kept: keep.length });
       }
-      if (request.kind === "location") return reply(await this.#approximateLocation(win));
+      if (request.kind === "location") return reply(await approximateLocation(win));
       if (request.kind === "listTabs") return reply(this.#pages(win, request.workspaceId).map(tab => ({ url: tabURL(tab), title: tab.label, selected: tab.selected })));
       if (request.kind === "action") return reply(await this.#act(win, request));
       if (request.kind === "readTab") return reply(await this.#read(win, request.workspaceId, request.url));
@@ -787,19 +825,6 @@ class Workspaces {
     } catch (error) {
       reply(null, String(error.message ?? error));
     }
-  }
-
-  #approximateLocation(win) {
-    return new Promise((resolve, reject) => {
-      const service = win.navigator.geolocation;
-      if (!service) { reject(new Error("Location Services are unavailable.")); return; }
-      service.getCurrentPosition(({ coords }) => {
-        const round = value => Math.round(value * 100) / 100;
-        resolve({ latitude: round(coords.latitude), longitude: round(coords.longitude),
-          accuracyMeters: Math.max(1500, Math.ceil(coords.accuracy / 100) * 100) });
-      }, failure => reject(new Error(failure.code === 1 ? "Location access is off for Lima." : "Lima couldn’t get a location estimate.")),
-      { enableHighAccuracy: false, maximumAge: 0, timeout: 16000 });
-    });
   }
 
   /** Web pages the agent may work in: its Tabs folder, or a helper's own folder. */

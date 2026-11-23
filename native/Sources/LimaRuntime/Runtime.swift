@@ -111,6 +111,8 @@ public final class Runtime: @unchecked Sendable {
         sink.runtime = self
 
         registerCore()
+        registerPersonalMemory()
+        registerCompanionMemory()
         registerTerminal()
         registerChat()
         registerChatResources()
@@ -133,7 +135,20 @@ public final class Runtime: @unchecked Sendable {
         registerOrchestrator()
         registerWorkspaceActivity()
         registerDictation()
+        registerSystemSettings()
         registerUpdates()
+        // A usage limit on one provider continues the turn on another ready
+        // one: the user's default first, then Lima's usual order.
+        await conversations.setFailover { [weak self] failed, tried in
+            guard let self else { return nil }
+            let enabled = (try? await self.store.get(Bool.self, collection: "settings", id: "agents.failover")) ?? true
+            guard enabled else { return nil }
+            let preferred = ((try? await self.store.get([String].self, collection: "settings", id: "grammar.provider")) ?? [])
+                .first.flatMap(CLIProvider.init(rawValue:))
+            let ready = await self.discovery.configuredProviders()
+            let order = ([preferred, .claude, .codex, .opencode].compactMap { $0 })
+            return order.first { $0 != failed && !tried.contains($0) && ready.contains($0) }
+        }
         await conversations.setRunConfigurator { [weak self] conversation in
             var configuration = await self?.workspaceAgentConfiguration(conversation) ?? (arguments: [], environment: [:], preamble: nil)
             let richContent = """

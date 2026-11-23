@@ -461,7 +461,7 @@ extension Runtime {
             let purpose = try params.string("purpose").trimmingCharacters(in: .whitespacesAndNewlines)
             guard (1...400).contains(purpose.count) else { throw BridgeError(.badRequest, "Describe why your task needs location.") }
             let response = try await self.workspacePrompts.ask(self, workspace: workspace, question: "Share your approximate location?",
-                detail: purpose + "\nLima will share a one-time estimate with this workspace agent.", approval: true, actionLabel: "Share once")
+                detail: purpose + "\nLocation access must be enabled in Settings → Personal Memory. Lima shares a one-time estimate.", approval: true, actionLabel: "Share once")
             guard response["approved"]?.boolValue == true else { return .object(["approved": .bool(false)]) }
             try await self.workspaces.requireActive(bound)
             let position = try await self.browserCalls.call(self, kind: "location", workspaceID: bound, payload: [:], timeout: 30)

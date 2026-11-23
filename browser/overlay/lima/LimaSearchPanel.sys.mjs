@@ -1,18 +1,23 @@
-/* Lima Search: ⌘T, Zen's New Tab, and ＋ → New Tab open this floating panel
- * over the current page instead of an empty tab. Layout follows the 4.x
- * launcher (Lima mark, 46 px field, 28 px rows, accent "↩ Open" pill, key
- * hints). Every source runs in parallel with its own deadline and paints as
- * it arrives; selection is kept by key so late results don't move it.
+/* Lima Universal Search (docs/spec/universal-search.md). ⌘T, Zen's New Tab
+ * and ＋ → New Tab open one floating panel over the current page: an input,
+ * a short list of results and a footer of key hints. The page underneath is
+ * never resized.
  *
- * Sources: navigation (URL-like input), Lima's index (notes, chats, apps,
- * commands), open tabs, history & bookmarks, web suggestions from the
- * default engine (only if the browser's suggestion pref is on), and "Search
- * the web". The Lima mark (or ⌘↩) starts an AI chat tab with the query.
+ * Best Match is decided synchronously from the query (open the URL, or search
+ * with the selected engine), so Enter is predictable. Tabs, bookmarks,
+ * history, Lima's index (notes, chats, apps, commands, files) and workspaces
+ * run in parallel, each with its own deadline, and merge into "Your Browser &
+ * Lima". Web suggestions arrive last, below everything. Selection is kept by
+ * key, and once the user moves it the visible rows are frozen (see
+ * ui/search-ranking.sys.mjs).
  *
- * Ask Lima answers in place (Quick Ask: no tools, no page or file access).
- * Delegate Task hands the query to the Companion. Commands run once per
- * invocation: the result tab reads the stored result by execution ID.
- * Failures stay in the panel with the query, so nothing fails silently. */
+ * AI is only ever offered: Ask Lima answers in place (Quick Ask: no tools, no
+ * page or file access unless the context chip says so), Delegate Task puts
+ * the query in the Companion's draft, ⌘↩ opens it in AI Chat. Commands run
+ * once per invocation: the result tab reads the stored result by execution
+ * ID. Failures stay in the panel with the query. */
+
+import { INITIAL_LIMIT, ResultSet, TARGETS, aiSuggestion, navigationURL, parseQuery, recentDestinations } from "resource://lima/ui/search-ranking.sys.mjs";
 
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
@@ -26,9 +31,15 @@ ChromeUtils.defineESModuleGetters(lazy, {
 
 const HTML = "http://www.w3.org/1999/xhtml";
 const ICON = name => `resource://lima-ui/icons/${name}.svg`;
-const SOURCE_ICONS = { note: "note", conversation: "chat", report: "context", terminal: "terminal", context: "activity", ai: "spark", app: "app", tool: "bolt", file: "file" };
-const GROUP_ORDER = ["Top", "Lima", "Tabs", "Web", "History"];
-const MAX_PER_GROUP = { Top: 2, Lima: 6, Tabs: 4, Web: 5, History: 4 };
+const SOURCE = {
+  note: { kind: "note", icon: "note" }, conversation: { kind: "chat", icon: "chat" }, report: { kind: "other", icon: "context" },
+  terminal: { kind: "other", icon: "terminal" }, context: { kind: "other", icon: "activity" }, ai: { kind: "other", icon: "spark" },
+  app: { kind: "app", icon: "app" }, tool: { kind: "command", icon: "bolt" }, file: { kind: "file", icon: "file" },
+};
+const TARGET_LABEL = { page: "This page", tabs: "Tabs", workspace: "Workspaces", notes: "Notes", files: "Files" };
+const EMPTY_HINT = "Search the web, open something, or ask Lima.";
+const MORE = "more";
+const ms = value => (value && value < 1e12 ? value * 1000 : value) || 0;
 
 function el(doc, tag, props = {}, ...children) {
   const node = doc.createElementNS(HTML, tag);
@@ -45,55 +56,108 @@ function el(doc, tag, props = {}, ...children) {
 
 function glyph(doc, name, className = "lima-s-glyph") {
   const node = el(doc, "span", { class: className });
-  node.style.maskImage = `url("${ICON(name)}")`;
+  node.style.maskImage = `url("${name.startsWith("resource:") ? name : ICON(name)}")`;
   return node;
 }
 
-function looksLikeURL(text) {
-  if (/\s/.test(text)) return false;
-  return /^[a-z][\w+.-]*:\/\//i.test(text) || /^(localhost|\d{1,3}(\.\d{1,3}){3})(:\d+)?(\/|$)/.test(text) || /^[\w-]+(\.[\w-]+)+(:\d+)?(\/.*)?$/.test(text);
+/** A site or engine icon in full colour; the monochrome glyph stays as the
+ * fallback when the image is missing or fails to load. */
+function picture(doc, src, fallback) {
+  const image = el(doc, "img", { class: "lima-s-favicon", src, alt: "", referrerpolicy: "no-referrer" });
+  image.addEventListener("error", () => image.replaceWith(glyph(doc, fallback)), { once: true });
+  return image;
+}
+
+/** A failure the user can act on: one sentence, never JSON or a stack. */
+function friendlyError(error) {
+  const raw = String(error?.message ?? error ?? "").trim();
+  if (!raw || /^[[{]/.test(raw)) return "Lima couldn't complete this action.";
+  const line = raw.split("\n").find(part => part.trim() && !/^\s*at\s|@\S+:\d+/.test(part)) ?? raw;
+  return line.length > 160 ? `${line.slice(0, 157)}…` : line;
 }
 
 class Panel {
   constructor(win) {
     this.win = win;
     this.doc = win.document;
+    this.private = lazy.PrivateBrowsingUtils.isWindowPrivate(win);
     this.items = [];
     this.selectedKey = null;
     this.generation = 0;
     this.suggester = null;
+    this.metrics = {};
     this.build();
   }
 
   build() {
     const doc = this.doc;
-    this.input = el(doc, "input", { id: "lima-search-input", type: "text", placeholder: "Search the web, find anything, or ask Lima…", "aria-label": "Lima Search",
+    this.input = el(doc, "input", { id: "lima-search-input", type: "text", role: "combobox", "aria-label": "Lima Search",
+      "aria-controls": "lima-search-results", "aria-expanded": "false", "aria-autocomplete": "list",
+      placeholder: this.private ? "Search the web or enter an address" : "Search, open, or ask Lima",
       autocomplete: "off", spellcheck: "false" });
-    this.mark = el(doc, "button", { id: "lima-search-mark", title: "Ask AI in a new chat (⌘↩)", "aria-label": "Ask AI", onclick: () => this.ask() });
-    this.spinner = el(doc, "span", { id: "lima-search-spinner", hidden: true });
+    this.mark = el(doc, "span", { id: "lima-search-mark", "aria-hidden": "true" }, glyph(doc, "resource://lima-ui/marks/lima-mask.svg"));
+    this.scope = el(doc, "span", { id: "lima-search-scope", hidden: true });
+    this.spinner = el(doc, "span", { id: "lima-search-spinner", hidden: true, "aria-hidden": "true" });
     // What a Quick Ask shares beyond the question (a page or a selection).
     this.contextChip = el(doc, "div", { id: "lima-search-context", hidden: true });
-    this.results = el(doc, "div", { id: "lima-search-results", role: "listbox" });
+    this.results = el(doc, "div", { id: "lima-search-results", role: "listbox", "aria-label": "Results" });
     this.status = el(doc, "div", { id: "lima-search-status", role: "status", hidden: true });
+    this.live = el(doc, "div", { id: "lima-search-live", class: "lima-s-visually-hidden", "aria-live": "polite" });
     const hint = (key, label) => el(doc, "span", {}, el(doc, "kbd", { text: key }), ` ${label}`);
     this.panel = el(doc, "div", { id: "lima-search", role: "dialog", "aria-label": "Lima Search" },
-      el(doc, "div", { id: "lima-search-field" }, this.mark, this.input, this.spinner,
-        el(doc, "button", { id: "lima-search-esc", title: "Close search (Esc)", "aria-label": "Close search", onclick: () => this.close() }, "×")),
-      this.contextChip, this.status, this.results,
-      el(doc, "div", { id: "lima-search-foot", "aria-hidden": "true" }, hint("↩", "Select"), hint("⌘↩", "AI Chat"), hint("esc", "Close")));
+      el(doc, "div", { id: "lima-search-field" }, this.mark, this.scope, this.input, this.spinner),
+      this.contextChip, this.status, this.results, this.live,
+      el(doc, "div", { id: "lima-search-foot", "aria-hidden": "true" },
+        hint("↑↓", "Select"), hint("↩", "Open"), this.private ? null : hint("⌘↩", "AI Chat"), hint("esc", "Close")));
     this.scrim = el(doc, "div", { id: "lima-search-scrim", hidden: true, onpointerdown: event => { if (event.target === this.scrim) this.close(); } }, this.panel);
     doc.documentElement.append(this.scrim);
 
-    this.input.addEventListener("input", () => { this.answering = null; this.clearStatus(); this.query(); });
-    this.input.addEventListener("keydown", event => this.onKey(event));
+    this.input.addEventListener("input", () => {
+      this.answering = null;
+      this.selectedKey = null;
+      this.clearStatus();
+      this.query();
+    });
+    this.panel.addEventListener("keydown", event => {
+      if (event.target === this.input || event.key === "Escape") this.onKey(event);
+    });
   }
 
   get isOpen() { return !this.scrim.hidden; }
 
+  async selectedEngine() {
+    const search = lazy.SearchService;
+    const engine = await (this.private ? search.getDefaultPrivate() : search.getDefault());
+    return engine ?? search.getEngineByName("Google");
+  }
+
+  applyTheme() {
+    const pref = Services.prefs.getStringPref("lima.theme", "light");
+    const dark = pref === "dark" || (pref === "system" && this.win.matchMedia("(prefers-color-scheme: dark)").matches);
+    this.scrim.setAttribute("lima-theme", dark ? "dark" : "light");
+  }
+
   /** `context` (optional): { kind: "page" | "selection", title, url, text }.
-   * The chip says exactly what Quick Ask will share. */
+   * The chip says exactly what Quick Ask will share. Opening again while
+   * open keeps the query and returns focus to the input. */
   open(initial = "", { context = null, ask = null } = {}) {
-    lazy.SearchService.getDefault().then(engine => { this.engineName = engine?.name; }).catch(() => {});
+    if (this.isOpen && !initial && !context && !ask) {
+      this.input.focus();
+      return;
+    }
+    const started = this.win.performance.now();
+    this.selectedEngine().then(async engine => {
+      this.engineName = engine?.name;
+      this.engineIcon = await Promise.resolve(engine?.getIconURL?.(16)).catch(() => null) || null;
+      const web = this.set?.best.find(item => item.key === "web");
+      if (web && this.isOpen && !this.answering) {
+        web.subtitle = `Search with ${this.engineName ?? "your search engine"}`;
+        web.image = this.engineIcon;
+        for (const item of this.set.web) item.image ??= this.engineIcon;
+        this.paint();
+      }
+    }).catch(() => {});
+    this.applyTheme();
     this.previousFocus = this.doc.activeElement;
     this.scrim.hidden = false;
     this.input.value = initial;
@@ -106,6 +170,14 @@ class Panel {
     this.input.select();
     if (ask) this.quickAsk(ask);
     else this.query();
+    this.metrics.open = this.win.performance.now() - started;
+  }
+
+  currentPage() {
+    const browser = this.win.gBrowser.selectedBrowser;
+    const url = browser?.currentURI?.spec ?? "";
+    if (!/^https?:/i.test(url)) return null;
+    return { kind: "page", title: browser.contentTitle || this.win.gBrowser.selectedTab.label, url };
   }
 
   setContext(context) {
@@ -113,9 +185,12 @@ class Panel {
     const doc = this.doc;
     this.contextChip.hidden = !context;
     if (!context) { this.contextChip.replaceChildren(); return; }
-    const what = context.kind === "selection" ? "the selected text, the page title and its URL" : "this page's title and URL";
-    this.contextChip.replaceChildren(el(doc, "span", { text: `Sharing ${what}: ` }), el(doc, "strong", { text: context.title || context.url }),
-      el(doc, "button", { class: "lima-s-chip-remove", title: "Don't share", "aria-label": "Don't share", onmousedown: event => event.preventDefault(),
+    const what = context.kind === "selection" ? "Selected text" : context.kind === "tabs" ? `${context.count} selected tabs` : "Current page";
+    const shares = context.kind === "selection" ? "Shares the selected text, page title and URL" : "Shares the page title and URL";
+    this.contextChip.replaceChildren(glyph(doc, context.kind === "selection" ? "paragraph" : "web"),
+      el(doc, "span", { text: what }), el(doc, "strong", { text: context.title || context.url, title: shares }),
+      el(doc, "button", { class: "lima-s-chip-remove", title: "Don't share", "aria-label": `Don't share ${what.toLowerCase()}`,
+        onmousedown: event => event.preventDefault(),
         onclick: () => { this.setContext(null); this.input.focus(); this.query(); } }, "×"));
   }
 
@@ -128,161 +203,247 @@ class Panel {
     return `${page}\n\n${text}`;
   }
 
-  close() {
+  close({ restoreFocus = true } = {}) {
     if (!this.isOpen) return;
     this.scrim.hidden = true;
     this.generation++;
     this.answering = null;
+    this.spinner.hidden = true;
+    this.input.setAttribute("aria-expanded", "false");
     this.setContext(null);
     this.suggester?.stop();
-    try { this.win.gBrowser.selectedBrowser.focus(); } catch {}
+    if (restoreFocus) try { this.win.gBrowser.selectedBrowser.focus(); } catch {}
   }
 
   // MARK: Sources
 
   query() {
-    const text = this.input.value.trim();
+    const { text, target } = parseQuery(this.input.value);
     const generation = ++this.generation;
-    this.groups = new Map();
+    const started = this.win.performance.now();
+    if (target === "page" && !this.context) this.setContext(this.currentPage());
+    this.scope.hidden = !target;
+    this.scope.textContent = target ? TARGET_LABEL[target] : "";
+    const suggest = !target && !this.private && Services.prefs.getBoolPref("browser.search.suggest.enabled", true);
+    this.set = new ResultSet(text, { webExpected: !!text && suggest });
     this.pending = 0;
-    const add = (group, rows) => {
+    const local = rows => {
       if (generation !== this.generation) return;
-      this.groups.set(group, [...(this.groups.get(group) ?? []), ...rows].slice(0, MAX_PER_GROUP[group]));
+      this.set.addLocal(rows);
+      this.metrics.local ??= this.win.performance.now() - started;
       this.paint();
     };
-    const run = (fn, timeout = 1500) => {
+    const run = (fn, timeout = 1500, onTimeout = null) => {
       this.pending++;
       this.spinner.hidden = false;
       const deadline = new Promise(resolve => this.win.setTimeout(resolve, timeout));
       Promise.race([Promise.resolve().then(fn), deadline]).catch(() => {}).finally(() => {
         if (generation !== this.generation) return;
+        onTimeout?.();
         if (--this.pending === 0) this.spinner.hidden = true;
       });
     };
 
     if (!text) {
-      this.recent(add);
-      this.paint();
+      this.empty(target, generation);
       return;
     }
-    add("Top", this.topRows(text));
-    run(() => this.limaRows(text).then(rows => add("Lima", rows)));
-    run(() => add("Tabs", this.tabRows(text)));
-    run(() => this.webRows(text).then(rows => add("Web", rows)), 2500);
-    run(() => this.historyRows(text).then(rows => add("History", rows)));
+    this.set.setBest(this.bestRows(text, target));
+    if (!target || target === "tabs") local(this.tabRows());
+    if (!target || target === "notes" || target === "files") run(() => this.limaRows(text, target).then(local));
+    if (!target || target === "workspace") run(() => this.workspaceRows().then(local));
+    if (!target) run(() => this.historyRows(text).then(local));
+    if (suggest) run(() => this.webRows(text).then(rows => {
+      if (generation !== this.generation) return;
+      this.set.setWeb(rows);
+      this.paint();
+    }), 2500, () => { if (this.set.webExpected) { this.set.webDone(); this.paint(); } });
+    this.paint();
   }
 
-  topRows(text) {
-    const rows = [];
-    if (looksLikeURL(text)) {
-      const url = /^https?:\/\//i.test(text) ? text : /^(localhost|127\.0\.0\.1)(?=[:/]|$)/i.test(text) ? `http://${text}` : `https://${text}`;
-      rows.push({ key: `nav:${url}`, icon: "external", title: text, subtitle: url, action: "Open Website", run: () => this.openURL(url) });
+  /** The icon Places saved for a page or its site, from the local favicon
+   * store only: typing an address never contacts the site. */
+  async pageIcon(url) {
+    if (this.private) return null;
+    const favicons = lazy.PlacesUtils.favicons;
+    for (const candidate of new Set([url, `${new URL(url).origin}/`])) {
+      try {
+        const uri = Services.io.newURI(candidate);
+        const found = await favicons.getFaviconForPage?.(uri, 32);
+        if (found) return found.dataURI?.spec ?? `page-icon:${candidate}`;
+      } catch {}
     }
-    rows.push({ key: "web", icon: "search", title: text, subtitle: `Search with ${this.engineName ?? "your search engine"}`, action: "Search Web", run: () => this.webSearch(text) });
-    if (this.context) return [{ key: "ask", icon: "star", title: text, subtitle: "Ask Lima about what you're sharing", action: "Ask Lima", inline: true, run: () => this.quickAsk(text) }, ...rows];
-    if (looksLikeURL(text) || lazy.PrivateBrowsingUtils.isWindowPrivate(this.win)) return rows;
-    const words = text.split(/\s+/).length;
-    const question = /\?$|^(what|who|why|how|when|where|which|is|are|can|could|does|do|did|should|would|explain|define|summarize|compare)\b/i.test(text);
-    const task = /^(fix|build|create|make|add|implement|refactor|research|plan|draft|write|update|organize|review|set up|debug|find and|clean up|migrate|prepare)\b/i.test(text);
-    const ask = { key: "ask", icon: "star", title: text, subtitle: "Quick answer, no page or file access", action: "Ask Lima", inline: true, run: () => this.quickAsk(text) };
-    const delegate = { key: "delegate", icon: "workspace", title: text, subtitle: "Hand off to an agent in a workspace", action: "Delegate Task", run: () => this.delegate(text) };
-    if (task) rows.splice(0, 0, delegate, ask);
-    else if (question) rows.splice(rows.length - 1, 0, ask, ...(words > 6 ? [delegate] : []));
-    else if (words > 3) rows.push(ask, delegate);
+    return null;
+  }
+
+  /** Synchronous, so row one never changes while sources load. */
+  bestRows(text, target) {
+    const rows = [];
+    const url = navigationURL(text);
+    if (url) {
+      const row = { key: `nav:${url}`, icon: "globe", title: text, subtitle: url, action: "Open Website", run: () => this.openURL(url) };
+      rows.push(row);
+      const generation = this.generation;
+      this.pageIcon(url).then(src => {
+        if (!src || generation !== this.generation || !this.isOpen) return;
+        row.image = src;
+        this.paint();
+      });
+    }
+    if (this.context && !this.private) rows.push({ key: "ask", icon: "spark", title: text, subtitle: `Ask Lima about ${this.context.kind === "selection" ? "the selected text" : "this page"}`,
+      action: "Ask Lima", inline: true, run: () => this.quickAsk(text) });
+    if (target === "page" && this.context) return rows;
+    rows.push({ key: "web", icon: "search", image: this.engineIcon, title: text, subtitle: `Search with ${this.engineName ?? "your search engine"}`, action: "Search", run: () => this.webSearch(text) });
+    if (this.private || this.context || url) return rows;
+    const suggestion = aiSuggestion(text);
+    if (suggestion === "ask") rows.push({ key: "ask", icon: "spark", title: text, subtitle: "Quick answer, no page or file access", action: "Ask Lima", inline: true, run: () => this.quickAsk(text) });
+    if (suggestion === "delegate") rows.push({ key: "delegate", icon: "workspace", title: text, subtitle: "Hand off to the Companion as a draft", action: "Delegate", run: () => this.delegate(text) });
     return rows;
   }
 
-  async limaRows(text) {
-    if (lazy.PrivateBrowsingUtils.isWindowPrivate(this.win)) return [];
-    const [response, workspaces] = await Promise.all([
-      lazy.LimaBridge.request("search.query", { query: text, limit: 18 }),
-      lazy.LimaBridge.request("workspace.list").catch(() => []),
-    ]);
-    const query = text.toLowerCase();
-    const projects = workspaces.filter(workspace => !workspace.parentID && workspace.conversationID && workspace.name.toLowerCase().includes(query))
-      .map(workspace => ({ key: `workspace:${workspace.id}`, icon: "workspace", title: workspace.name, subtitle: "Workspace",
-        action: "Open Workspace", run: () => lazy.LimaTabs.openOrFocus(this.win, `about:lima?chat=${encodeURIComponent(workspace.conversationID)}`) }));
-    return [...projects, ...response.results
-      .filter(r => !["web", "tab"].includes(r.source) && !["agentAsk", "quickAsk", "webSearch", "navigate", "switchTab"].includes(r.action.type))
-      .map(r => ({
-        key: `lima:${r.key}`, icon: r.action.type === "runCapability" ? "bolt" : SOURCE_ICONS[r.source] ?? "search",
-        title: r.title, subtitle: r.subtitle, action: r.action.type === "openApp" ? "Launch" : r.action.type === "runCapability" ? "Run Command" : "Open",
-        command: r.action.type === "runCapability", run: () => this.runLima(r),
-      }))];
+  tabRows() {
+    const active = this.win.gZenWorkspaces?.activeWorkspace;
+    return [...this.win.gBrowser.tabs]
+      .filter(tab => !tab.hasAttribute("zen-empty-tab") && !tab.selected && !tab.closing)
+      .map(tab => {
+        const url = tab.linkedBrowser?.currentURI?.spec ?? "";
+        const group = tab.group?.label;
+        const image = tab.image && /^(data|https?|page-icon|moz-remote-image|chrome|resource):/.test(tab.image) ? tab.image : null;
+        return { key: `tab:${tab.linkedPanel ?? url}`, kind: "tab", icon: "tab", image, title: tab.label, url, group,
+          subtitle: group ? `Tab in ${group}` : "Open tab", action: "Switch to Tab", lastUsed: tab.lastAccessed,
+          inCurrentWorkspace: !!active && tab.getAttribute("zen-workspace-id") === active,
+          run: () => { this.win.gBrowser.selectedTab = tab; } };
+      });
   }
 
-  tabRows(text) {
-    const lower = text.toLowerCase();
-    return [...this.win.gBrowser.tabs]
-      .filter(tab => !tab.hasAttribute("zen-empty-tab") && !tab.selected)
-      .filter(tab => tab.label.toLowerCase().includes(lower) || (tab.linkedBrowser?.currentURI?.spec ?? "").toLowerCase().includes(lower))
-      .map(tab => ({ key: `tab:${tab.linkedPanel ?? tab.label}`, icon: "tab", title: tab.label, subtitle: tab.group?.label ? `Tab in ${tab.group.label}` : "Open tab",
-        action: "Switch", run: () => { this.win.gBrowser.selectedTab = tab; } }));
+  async limaRows(text, target) {
+    if (this.private) return [];
+    const response = await lazy.LimaBridge.request("search.query", { query: text, limit: 18 });
+    const wanted = target === "notes" ? "note" : target === "files" ? "file" : null;
+    return response.results
+      .filter(r => !["web", "tab"].includes(r.source) && !["agentAsk", "quickAsk", "webSearch", "navigate", "switchTab"].includes(r.action.type))
+      .filter(r => !wanted || r.source === wanted)
+      .map(r => {
+        const command = r.action.type === "runCapability";
+        const source = SOURCE[r.source] ?? { kind: "other", icon: "search" };
+        return { key: `lima:${r.key}`, kind: command ? "command" : source.kind, icon: command ? "bolt" : source.icon, title: r.title,
+          subtitle: r.subtitle, score: r.score, command,
+          action: r.action.type === "openApp" ? "Launch" : command ? "Run" : r.action.type === "copyText" ? "Copy" : "Open",
+          run: () => this.runLima(r) };
+      });
+  }
+
+  async workspaceRows() {
+    if (this.private) return [];
+    const workspaces = await lazy.LimaBridge.request("workspace.list");
+    return workspaces.filter(workspace => !workspace.parentID && workspace.conversationID).map(workspace => ({
+      key: `workspace:${workspace.id}`, kind: "workspace", icon: "workspace", title: workspace.name, subtitle: "Workspace",
+      action: "Open Workspace", run: () => lazy.LimaTabs.openOrFocus(this.win, `about:lima?chat=${encodeURIComponent(workspace.conversationID)}`),
+    }));
   }
 
   async webRows(text) {
-    if (!Services.prefs.getBoolPref("browser.search.suggest.enabled", true)) return [];
-    const engine = await lazy.SearchService.getDefault();
-    this.engineName = engine?.name;
+    const engine = await this.selectedEngine();
     if (!engine?.supportsResponseType?.("application/x-suggestions+json")) return [];
     this.suggester?.stop();
     this.suggester = new lazy.SearchSuggestionController();
-    const result = await this.suggester.fetch({ searchString: text, inPrivateBrowsing: lazy.PrivateBrowsingUtils.isWindowPrivate(this.win), engine,
+    const result = await this.suggester.fetch({ searchString: text, inPrivateBrowsing: this.private, engine,
       maxLocalResults: 0, maxRemoteResults: 6 });
     return (result?.remote ?? []).filter(entry => entry.value && entry.value.toLowerCase() !== text.toLowerCase())
-      .map(entry => ({ key: `sugg:${entry.value}`, icon: "web", title: entry.value, subtitle: engine.name, action: "Search", run: () => this.webSearch(entry.value) }));
+      .map(entry => ({ key: `sugg:${entry.value}`, icon: "search", image: this.engineIcon, title: entry.value, subtitle: engine.name, action: "Search", run: () => this.webSearch(entry.value) }));
   }
 
   async historyRows(text) {
-    if (lazy.PrivateBrowsingUtils.isWindowPrivate(this.win)) return [];
+    if (this.private) return [];
     const db = await lazy.PlacesUtils.promiseDBConnection();
     const like = `%${text.replace(/[\\%_]/g, c => `\\${c}`)}%`;
     const rows = await db.executeCached(
-      `SELECT h.url, h.title, (SELECT 1 FROM moz_bookmarks b WHERE b.fk = h.id LIMIT 1) AS bookmarked
+      `SELECT h.url, h.title, h.frecency, h.last_visit_date, (SELECT 1 FROM moz_bookmarks b WHERE b.fk = h.id LIMIT 1) AS bookmarked
          FROM moz_places h
         WHERE h.hidden = 0 AND h.url NOT LIKE 'about:lima%' AND (h.title LIKE :like ESCAPE '\\' OR h.url LIKE :like ESCAPE '\\')
-        ORDER BY bookmarked DESC, h.frecency DESC LIMIT 6`, { like });
+        ORDER BY bookmarked DESC, h.frecency DESC LIMIT 12`, { like });
     return rows.map(row => {
       const url = row.getResultByName("url");
       const bookmarked = !!row.getResultByName("bookmarked");
-      return { key: `hist:${url}`, icon: bookmarked ? "bookmark" : "history", title: row.getResultByName("title") || url, subtitle: url,
-        action: "Open", run: () => this.openURL(url) };
+      return { key: `hist:${url}`, kind: bookmarked ? "bookmark" : "history", icon: bookmarked ? "bookmark" : "history",
+        title: row.getResultByName("title") || url, url, subtitle: url, action: "Open",
+        frecency: row.getResultByName("frecency"), lastUsed: (row.getResultByName("last_visit_date") ?? 0) / 1000,
+        run: () => this.openURL(url) };
     });
   }
 
-  /** Empty query: what you were last doing in Lima. */
-  recent(add) {
-    if (lazy.PrivateBrowsingUtils.isWindowPrivate(this.win)) return;
-    Promise.all([lazy.LimaBridge.request("notes.list"), lazy.LimaBridge.request("chat.list")]).then(([notes, chats]) => {
-      const rows = [
-        ...notes.filter(n => !n.trashed).map(n => ({ when: n.modifiedAt, key: `note:${n.id}`, icon: n.kind === "canvas" ? "canvas" : "note", title: n.title || "Untitled",
-          subtitle: "Note", url: `about:lima?note=${encodeURIComponent(n.id)}` })),
-        ...chats.map(c => ({ when: c.updatedAt, key: `chat:${c.id}`, icon: "chat", title: c.title, subtitle: c.running ? "AI chat · working" : "AI chat",
-          url: `about:lima?chat=${encodeURIComponent(c.id)}` })),
-      ].sort((a, b) => b.when - a.when).slice(0, 6);
-      add("Lima", rows.map(row => ({ ...row, action: "Open", run: () => lazy.LimaTabs.openOrFocus(this.win, row.url) })));
-    }).catch(() => {});
+  /** Empty query: up to four recent destinations, or one hint. With an
+   * @target and no text, that target's recent items. */
+  async empty(target, generation) {
+    this.set.loading = !this.private;
+    this.paint();
+    if (this.private) return;
+    const tabs = this.tabRows().filter(tab => /^(https?:|about:lima\?)/.test(tab.url)).map(tab => ({ ...tab, when: tab.lastUsed }));
+    let rows = [];
+    try {
+      if (target === "tabs") rows = tabs;
+      else {
+        const [notes, chats, workspaces] = await Promise.all([
+          lazy.LimaBridge.request("notes.list").catch(() => []),
+          lazy.LimaBridge.request("chat.list").catch(() => []),
+          lazy.LimaBridge.request("workspace.list").catch(() => []),
+        ]);
+        const chatsByID = new Map(chats.map(chat => [chat.id, chat]));
+        const open = url => () => lazy.LimaTabs.openOrFocus(this.win, url);
+        const workspaceRows = workspaces.filter(w => !w.parentID && w.conversationID).map(w => {
+          const chat = chatsByID.get(w.conversationID);
+          const url = `about:lima?chat=${encodeURIComponent(w.conversationID)}`;
+          return { key: `workspace:${w.id}`, kind: "workspace", icon: "workspace", title: w.name, url, when: ms(chat?.updatedAt ?? w.createdAt),
+            unfinished: !!chat?.running, subtitle: chat?.running ? "Workspace · agent working" : "Workspace", action: "Open Workspace", run: open(url) };
+        });
+        const inWorkspace = new Set(workspaces.map(w => w.conversationID));
+        const noteRows = notes.filter(n => !n.trashed).map(n => {
+          const url = `about:lima?note=${encodeURIComponent(n.id)}`;
+          return { key: `note:${n.id}`, kind: "note", icon: n.kind === "canvas" ? "canvas" : "note", title: n.title || "Untitled", url, when: ms(n.modifiedAt),
+            subtitle: "Note", action: "Open", run: open(url) };
+        });
+        const chatRows = chats.filter(c => !inWorkspace.has(c.id)).map(c => {
+          const url = `about:lima?chat=${encodeURIComponent(c.id)}`;
+          return { key: `chat:${c.id}`, kind: "chat", icon: "chat", title: c.title, url, when: ms(c.updatedAt), unfinished: !!c.running,
+            subtitle: c.running ? "AI chat · working" : "AI chat", action: "Open", run: open(url) };
+        });
+        rows = target === "notes" ? noteRows : target === "workspace" ? workspaceRows : [...workspaceRows, ...tabs, ...noteRows, ...chatRows];
+      }
+    } catch {}
+    if (generation !== this.generation || this.answering) return;
+    this.set.loading = false;
+    this.set.local = recentDestinations(rows, target ? INITIAL_LIMIT : undefined);
+    this.paint();
   }
 
   // MARK: Actions
 
-  openURL(url) {
-    if (!/^https?:\/\//i.test(url)) return;
+  openURL(url, postData = null) {
+    if (!/^https?:\/\//i.test(url)) throw new Error("Lima only opens web addresses from Search.");
     const gBrowser = this.win.gBrowser;
-    const tab = gBrowser.addTab(url, { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal() });
+    const tab = gBrowser.addTab(url, { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(), postData });
     gBrowser.selectedTab = tab;
   }
 
   async webSearch(text) {
-    const engine = await lazy.SearchService.getDefault();
-    const submission = engine.getSubmission(text);
-    this.openURL(submission.uri.spec);
+    const engine = await this.selectedEngine();
+    const submission = engine?.getSubmission(text);
+    if (!submission?.uri) throw new Error("Choose a default search engine in Settings.");
+    this.openURL(submission.uri.spec, submission.postData);
   }
 
-  ask(text = this.input.value.trim()) {
-    this.close();
-    const url = text ? `about:lima?chat=new&prompt=${encodeURIComponent(text)}` : "about:lima?chat=new";
-    lazy.LimaTabs.openOrFocus(this.win, url);
+  /** ⌘↩ and Continue in Chat: a new AI Chat tab with the query. */
+  ask(text = this.prompt(parseQuery(this.input.value).text)) {
+    if (this.private) return;
+    this.close({ restoreFocus: false });
+    lazy.LimaTabs.openOrFocus(this.win, text ? `about:lima?chat=new&prompt=${encodeURIComponent(text)}` : "about:lima?chat=new");
+  }
+
+  /** Delegate Task: the Companion receives the query as an unsent draft. */
+  delegate(text = parseQuery(this.input.value).text) {
+    if (this.private) return;
+    this.close({ restoreFocus: false });
+    this.win.dispatchEvent(new this.win.CustomEvent("LimaAssistantOpen", { detail: { draft: text } }));
   }
 
   async runLima(result) {
@@ -297,7 +458,7 @@ class Panel {
       case "openApp": return lazy.LimaBridge.request("system.openApp", { path: p.path });
       case "copyText": return Cc["@mozilla.org/widget/clipboardhelper;1"].getService(Ci.nsIClipboardHelper).copyString(p.text ?? result.title);
       case "runCapability": {
-        const input = this.input.value.trim().split(/\s+/).slice(1).join(" ");
+        const input = parseQuery(this.input.value).text.split(/\s+/).slice(1).join(" ");
         const capability = (await this.manifest()).find(item => item.id === p.id);
         // A command that needs input it wasn't given opens its form instead.
         if (capability?.input?.required && !input) return lazy.LimaTabs.openOrFocus(this.win, `about:lima?run=${q(p.id)}`);
@@ -317,27 +478,37 @@ class Panel {
   }
 
   /** One activation per gesture. Inline actions keep the panel; commands
-   * keep it until they finish so a failure can be shown where it started. */
-  async activate(item, { ask = false } = {}) {
-    if (ask) return this.ask();
+   * keep it until they finish so a failure can be shown where it started;
+   * everything else closes first and hands focus to the destination. */
+  async activate(item) {
+    if (item.key === MORE) return this.showMore();
     if (this.running) return;
     if (item.inline) return item.run();
     this.running = true;
     const generation = this.generation;
     if (item.command) this.setStatus("busy", "Running command…");
-    else this.close();
+    else this.close({ restoreFocus: false });
     try {
       await item.run();
-      if (item.command && generation === this.generation) this.close();
+      if (item.command && generation === this.generation) this.close({ restoreFocus: false });
+      try { this.win.gBrowser.selectedBrowser.focus(); } catch {}
     } catch (error) {
-      dump(`[lima] search action failed: ${error.message ?? error}\n`);
+      dump(`[lima] search action failed: ${error?.message ?? error}\n`);
       this.fail(item, error);
     } finally {
       this.running = false;
     }
   }
 
-  // MARK: Inline status, Quick Ask and delegation
+  showMore() {
+    const index = this.items.findIndex(item => item.key === MORE);
+    this.set.expand();
+    this.paint();
+    this.selectedKey = this.items[Math.max(0, index)]?.key ?? this.selectedKey;
+    this.paint();
+  }
+
+  // MARK: Inline status, Quick Ask
 
   clearStatus() {
     this.status.hidden = true;
@@ -354,25 +525,28 @@ class Panel {
   }
 
   button(label, onclick, primary = false) {
-    return el(this.doc, "button", { class: primary ? "lima-s-button primary" : "lima-s-button", onclick, onmousedown: event => event.preventDefault() }, label);
+    return el(this.doc, "button", { type: "button", class: primary ? "lima-s-button primary" : "lima-s-button", onclick, onmousedown: event => event.preventDefault() }, label);
   }
 
   /** Reopens the panel if needed and explains the failure next to the query. */
   fail(item, error) {
     if (!this.isOpen) {
       const query = this.input.value;
+      this.applyTheme();
       this.scrim.hidden = false;
       this.input.value = query;
       this.query();
     }
-    this.setStatus("bad", item.command ? "Command failed" : "Couldn't complete this action.", String(error?.message ?? error),
+    this.setStatus("bad", item.command ? "Command failed" : "Couldn't complete this action.", friendlyError(error),
       this.button("Retry", () => { this.clearStatus(); this.activate(item); }, true),
       item.command ? this.button("View Details", () => { this.close(); lazy.LimaTabs.openOrFocus(this.win, "about:lima?view=activity&tab=commands"); }) : null);
     this.input.focus();
   }
 
-  /** Streams a Quick Ask answer into the panel. Closing ignores the rest. */
+  /** Streams a Quick Ask answer in place of the results. Escape returns to
+   * them; closing ignores the rest of the stream. */
   async quickAsk(text) {
+    if (this.private) return;
     const doc = this.doc;
     const generation = ++this.generation;
     const requestId = Services.uuid.generateUUID().toString().slice(1, -1);
@@ -380,13 +554,14 @@ class Panel {
     const model = Services.prefs.getStringPref(`lima.agent.model.${provider}`, "default");
     this.answering = { text, requestId };
     this.items = [];
+    this.input.removeAttribute("aria-activedescendant");
     this.spinner.hidden = false;
-    const answer = el(doc, "div", { class: "lima-s-answer-text", "aria-live": "polite" });
+    const answer = el(doc, "div", { class: "lima-s-answer-text", "aria-live": "polite", tabindex: "0" });
     const actions = el(doc, "div", { class: "lima-s-answer-actions", hidden: true });
     const meta = el(doc, "span", { class: "lima-s-answer-meta", text: "Asking Lima…" });
     this.clearStatus();
     this.results.replaceChildren(el(doc, "div", { class: "lima-s-answer", role: "region", "aria-label": "Lima's answer" },
-      el(doc, "div", { class: "lima-s-answer-question", text: text }), answer, el(doc, "div", { class: "lima-s-answer-foot" }, meta, actions)));
+      el(doc, "div", { class: "lima-s-answer-question", text }), answer, el(doc, "div", { class: "lima-s-answer-foot" }, meta, actions)));
     let streamed = "";
     const current = () => generation === this.generation && this.answering?.requestId === requestId;
     const off = lazy.LimaBridge.onEvent(message => {
@@ -404,59 +579,87 @@ class Panel {
     };
     const asked = this.prompt(text);
     const chat = () => this.button("Continue in Chat", () => this.ask(asked));
+    const back = () => this.button("Close", () => this.close());
     try {
-      const result = await lazy.LimaBridge.request("quickAsk", { requestId, prompt: this.prompt(text), provider, ...(model !== "default" ? { model } : {}) });
+      const result = await lazy.LimaBridge.request("quickAsk", { requestId, prompt: asked, provider, ...(model !== "default" ? { model } : {}) });
       if (result?.error) {
-        meta.textContent = "Couldn't complete this action.";
+        meta.textContent = "Couldn't get an answer.";
+        answer.textContent = friendlyError(result.error.message || "The AI provider didn't answer.");
+        answer.dataset.tone = "bad";
         done(undefined, this.button("Retry", () => this.quickAsk(text), true), chat(),
           this.button("Open Settings", () => { this.close(); lazy.LimaTabs.openOrFocus(this.win, "about:lima?view=integrations&section=agents"); }));
-        answer.textContent = result.error.message || "Lima couldn't get an answer from the AI provider.";
-        answer.dataset.tone = "bad";
         return;
       }
-      meta.textContent = "Quick Ask · no page or file access";
+      meta.textContent = this.context ? "Quick Ask · shared what the chip shows" : "Quick Ask · no page or file access";
       const final = result?.text ?? streamed;
       done(final, this.button("Copy", () => {
         Cc["@mozilla.org/widget/clipboardhelper;1"].getService(Ci.nsIClipboardHelper).copyString(final);
         meta.textContent = "Copied";
-      }, true), chat(), this.button("Close", () => this.close()));
+      }, true), chat(), back());
     } catch (error) {
-      meta.textContent = "Couldn't complete this action.";
-      answer.textContent = String(error?.message ?? error);
+      meta.textContent = "Couldn't get an answer.";
+      answer.textContent = friendlyError(error);
       answer.dataset.tone = "bad";
-      done(undefined, this.button("Retry", () => this.quickAsk(text), true), chat());
+      done(undefined, this.button("Retry", () => this.quickAsk(text), true), chat(), back());
     }
-  }
-
-  /** Delegate Task: the Companion receives the query as its draft. */
-  delegate(text) {
-    this.win.dispatchEvent(new this.win.CustomEvent("LimaAssistantOpen", { detail: { draft: text } }));
   }
 
   // MARK: View
 
   paint() {
+    if (this.answering) return;
     const doc = this.doc;
-    this.items = GROUP_ORDER.flatMap(group => (this.groups?.get(group) ?? []).map(item => ({ ...item, group })));
+    const text = parseQuery(this.input.value).text;
+    const { sections, headings, hidden } = this.set.layout();
+    this.items = sections.flatMap(section => section.items);
+    if (hidden) this.items.push({ key: MORE, icon: "chevron", title: `Show ${hidden} more result${hidden === 1 ? "" : "s"}`, action: "Show" });
     if (!this.items.some(item => item.key === this.selectedKey)) this.selectedKey = this.items[0]?.key ?? null;
-    const nodes = [];
-    let group = null;
-    for (const item of this.items) {
-      if (item.group !== group) {
-        group = item.group;
-        if (group !== "Top") nodes.push(el(doc, "div", { class: "lima-s-group", text: group === "Lima" ? (this.input.value.trim() ? "In Lima" : "Recent") : group === "Web" ? "Suggestions" : group }));
-      }
+
+    const row = (item, index) => {
       const selected = item.key === this.selectedKey;
-      nodes.push(el(doc, "div", { class: "lima-s-row", role: "option", "aria-selected": String(selected), "data-key": item.key,
-        onmousemove: () => { if (this.selectedKey !== item.key) { this.selectedKey = item.key; this.paint(); } },
+      return el(doc, "div", { id: `lima-s-option-${index}`, class: item.key === MORE ? "lima-s-row lima-s-more" : "lima-s-row",
+        role: "option", "aria-selected": String(selected), "data-key": item.key,
+        onmousemove: () => { if (this.selectedKey !== item.key) this.select(item.key); },
         onmousedown: event => { event.preventDefault(); this.activate(item); } },
-        el(doc, "span", { class: "lima-s-icon" }, glyph(doc, item.icon)),
-        el(doc, "span", { class: "lima-s-text" }, el(doc, "span", { class: "lima-s-title", text: item.title }), item.subtitle ? el(doc, "span", { class: "lima-s-sub", text: item.subtitle }) : null),
-        selected ? el(doc, "span", { class: "lima-s-action", text: `↩ ${item.action}` }) : null));
+        el(doc, "span", { class: "lima-s-icon" }, item.image ? picture(doc, item.image, item.icon) : glyph(doc, item.icon)),
+        el(doc, "span", { class: "lima-s-text" }, el(doc, "span", { class: "lima-s-title", text: item.title }),
+          item.subtitle ? el(doc, "span", { class: "lima-s-sub", text: item.subtitle }) : null),
+        selected ? el(doc, "span", { class: "lima-s-action", "aria-hidden": "true" }, el(doc, "kbd", { text: "↩" }), ` ${item.action}`) : null);
+    };
+    const nodes = [];
+    let index = 0;
+    for (const section of sections) {
+      const label = `lima-s-group-${section.id}`;
+      nodes.push(el(doc, "div", { role: "group", "aria-labelledby": headings ? label : null, "aria-label": headings ? null : section.title, class: "lima-s-section" },
+        headings ? el(doc, "div", { id: label, class: "lima-s-group", role: "presentation", text: section.title }) : null,
+        section.items.map(item => row(item, index++))));
     }
-    if (!nodes.length) nodes.push(el(doc, "div", { class: "lima-s-empty", text: this.input.value.trim() ? "No matches" : "Search tabs, notes, workspaces, and the web" }));
+    if (hidden) nodes.push(row(this.items.at(-1), index));
+    if (!nodes.length && !this.set.loading) nodes.push(el(doc, "div", { class: "lima-s-empty", text: text ? "No matches yet" : EMPTY_HINT }));
     this.results.replaceChildren(...nodes);
+
+    const selectedIndex = this.items.findIndex(item => item.key === this.selectedKey);
+    this.input.setAttribute("aria-expanded", String(this.items.length > 0));
+    if (selectedIndex >= 0) this.input.setAttribute("aria-activedescendant", `lima-s-option-${selectedIndex}`);
+    else this.input.removeAttribute("aria-activedescendant");
     this.results.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+    this.announce(text);
+  }
+
+  /** One polite announcement after results settle, not one per source. */
+  announce(text) {
+    this.win.clearTimeout(this.announceTimer);
+    this.announceTimer = this.win.setTimeout(() => {
+      if (!this.isOpen || this.answering) return;
+      const count = this.items.filter(item => item.key !== MORE).length;
+      this.live.textContent = text ? `${count} result${count === 1 ? "" : "s"}` : count ? `${count} recent` : EMPTY_HINT;
+    }, 450);
+  }
+
+  select(key) {
+    this.set.freeze();
+    this.selectedKey = key;
+    this.paint();
   }
 
   onKey(event) {
@@ -465,20 +668,27 @@ class Panel {
       event.preventDefault();
       if (this.answering) { this.answering = null; this.generation++; this.spinner.hidden = true; this.query(); }
       else this.close();
-    }
-    else if (this.answering && event.key === "Enter" && !event.metaKey) { event.preventDefault(); }
-    else if (event.key === "ArrowDown" || (event.key === "n" && event.ctrlKey)) {
+    } else if (event.key === "Enter" && event.metaKey && event.shiftKey) {
       event.preventDefault();
-      this.selectedKey = this.items[Math.min(this.items.length - 1, index + 1)]?.key ?? this.selectedKey;
-      this.paint();
+      if (parseQuery(this.input.value).text) this.delegate();
+    } else if (event.key === "Enter" && event.metaKey) {
+      event.preventDefault();
+      this.ask();
+    } else if (this.answering && event.key === "Enter") {
+      event.preventDefault();
+    } else if (this.answering) {
+      // Typing a new query leaves the answer; arrows stay in the text field.
+    } else if (event.key === "ArrowDown" || (event.key === "n" && event.ctrlKey)) {
+      event.preventDefault();
+      const next = this.items[Math.min(this.items.length - 1, index + 1)]?.key;
+      if (next) this.select(next);
     } else if (event.key === "ArrowUp" || (event.key === "p" && event.ctrlKey)) {
       event.preventDefault();
-      this.selectedKey = this.items[Math.max(0, index - 1)]?.key ?? this.selectedKey;
-      this.paint();
+      const previous = this.items[Math.max(0, index - 1)]?.key;
+      if (previous) this.select(previous);
     } else if (event.key === "Enter") {
       event.preventDefault();
-      if (event.metaKey) this.ask();
-      else if (this.items[index]) this.activate(this.items[index]);
+      if (this.items[index]) this.activate(this.items[index]);
     }
   }
 }
@@ -486,6 +696,8 @@ class Panel {
 const panels = new WeakMap();
 
 export const LimaSearchPanel = {
+  TARGETS,
+
   open(win, initial = "", options = {}) {
     if (!panels.has(win)) panels.set(win, new Panel(win));
     panels.get(win).open(initial, options);
@@ -497,7 +709,11 @@ export const LimaSearchPanel = {
     else this.open(win);
   },
 
-  /** ⌘T and Zen's "New Tab" become Lima Search. */
+  /** Timings from the last open and query, for tests and benchmarks. */
+  metrics(win) { return { ...(panels.get(win)?.metrics ?? {}) }; },
+
+  /** ⌘T and Zen's "New Tab" become Lima Search. Pressing ⌘T again while it
+   * is open keeps the query and focuses the input. */
   install(win) {
     const ui = win.gZenUIManager;
     if (!ui?.handleNewTab || ui.limaWrapped) return;

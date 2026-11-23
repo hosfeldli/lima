@@ -28,12 +28,28 @@ export const LimaAssistant = {
     Services.prefs.addObserver("lima.personality", updatePersonality);
     win.addEventListener("unload", () => Services.prefs.removeObserver("lima.personality", updatePersonality), { once: true });
     button.append(icon);
+    const terminalButton = doc.createElementNS(HTML, "button");
+    terminalButton.id = "lima-quick-terminal-toggle";
+    terminalButton.title = "Quick Terminal";
+    terminalButton.setAttribute("aria-label", terminalButton.title);
+    terminalButton.setAttribute("aria-expanded", "false");
+    terminalButton.setAttribute("aria-controls", "lima-quick-terminal-panel");
+    terminalButton.setAttribute("skipintoolbarset", "true");
+    terminalButton.append(doc.createElementNS(HTML, "span"));
+    const regular = !lazy.PrivateBrowsingUtils.isWindowPrivate(win);
+    const controls = doc.createElementNS(HTML, "div");
+    controls.id = "lima-assistant-controls";
+    controls.setAttribute("skipintoolbarset", "true");
+    controls.append(button);
+    if (regular) controls.append(terminalButton);
     const root = doc.documentElement;
     function placeButton() {
       const floats = root.getAttribute("zen-compact-mode") === "true" || root.getAttribute("zen-right-side") === "true";
+      controls.toggleAttribute("floating", floats);
       button.toggleAttribute("floating", floats);
+      terminalButton.toggleAttribute("floating", floats);
       const parent = floats ? surface : toolbar;
-      if (button.parentNode !== parent) parent.prepend(button);
+      if (controls.parentNode !== parent) parent.prepend(controls);
     }
     placeButton();
     const layout = new win.MutationObserver(placeButton);
@@ -50,9 +66,17 @@ export const LimaAssistant = {
     outside.hidden = true;
     outside.setAttribute("aria-hidden", "true");
     surface.append(outside, panel);
+    const terminalPanel = doc.createXULElement("vbox");
+    terminalPanel.id = "lima-quick-terminal-panel";
+    terminalPanel.setAttribute("role", "complementary");
+    terminalPanel.setAttribute("aria-label", "Quick Terminal");
+    terminalPanel.setAttribute("aria-hidden", "true");
+    if (regular) surface.append(terminalPanel);
 
     let browser;
     let open = false;
+    let terminalOpen = false;
+    let terminalBrowser;
     let pendingDraft = "";
     let needsHandoff = false;
     let active;
@@ -67,9 +91,10 @@ export const LimaAssistant = {
     }
 
     function toggle(show = !open) {
+      if (show && terminalOpen) toggleTerminal(false);
       const returnFocus = panel.contains(doc.activeElement) || doc.activeElement === button;
       open = show;
-      outside.hidden = !open;
+      outside.hidden = !(open || terminalOpen);
       if (open) panel.style.setProperty("--lima-assistant-top", `${Math.max(8, button.getBoundingClientRect().bottom + 6)}px`);
       button.setAttribute("aria-expanded", String(open));
       panel.setAttribute("aria-hidden", String(!open));
@@ -98,14 +123,47 @@ export const LimaAssistant = {
       browser.focus();
     }
 
+    function toggleTerminal(show = !terminalOpen) {
+      if (show && open) toggle(false);
+      const returnFocus = terminalPanel.contains(doc.activeElement) || doc.activeElement === terminalButton;
+      terminalOpen = show;
+      outside.hidden = !(open || terminalOpen);
+      terminalPanel.toggleAttribute("open", show);
+      terminalPanel.setAttribute("aria-hidden", String(!show));
+      terminalButton.setAttribute("aria-expanded", String(show));
+      if (show) terminalPanel.style.setProperty("--lima-assistant-top", `${Math.max(8, terminalButton.getBoundingClientRect().bottom + 6)}px`);
+      if (show && !terminalBrowser) {
+        terminalBrowser = doc.createXULElement("browser");
+        terminalBrowser.id = "lima-quick-terminal-browser";
+        terminalBrowser.setAttribute("type", "content");
+        terminalBrowser.setAttribute("remote", "true");
+        terminalBrowser.setAttribute("remoteType", "privilegedabout");
+        terminalBrowser.setAttribute("maychangeremoteness", "true");
+        terminalBrowser.setAttribute("disableglobalhistory", "true");
+        const workspace = lazy.LimaWorkspaces.workspaceForTab(win.gBrowser.selectedTab);
+        terminalBrowser.setAttribute("src", `about:lima?view=quick-terminal${workspace ? `&workspaceId=${encodeURIComponent(workspace)}` : ""}`);
+        terminalPanel.append(terminalBrowser);
+      } else {
+        try {
+          terminalBrowser?.browsingContext?.currentWindowGlobal?.getActor("Lima")?.sendAsyncMessage("event",
+            { event: "ui.quickTerminalVisible", data: show });
+        } catch {}
+      }
+      if (show) terminalBrowser.focus();
+      else if (returnFocus) terminalButton.focus();
+    }
+
     button.addEventListener("click", () => toggle());
-    outside.addEventListener("click", () => toggle(false));
+    terminalButton.addEventListener("click", () => toggleTerminal());
+    outside.addEventListener("click", () => terminalOpen ? toggleTerminal(false) : toggle(false));
     win.addEventListener("keydown", event => {
       if (open && event.key === "Escape" && (event.target === button || panel.contains(event.target))) {
         event.preventDefault();
         toggle(false);
       }
+      if (terminalOpen && event.key === "Escape" && event.target === terminalButton) toggleTerminal(false);
     }, true);
+    win.addEventListener("LimaQuickTerminalClose", () => { if (terminalOpen) toggleTerminal(false); });
     // Search's Delegate Task opens the Companion with the query as its draft.
     win.addEventListener("LimaAssistantOpen", event => {
       if (typeof event.detail?.draft === "string") pendingDraft = event.detail.draft;

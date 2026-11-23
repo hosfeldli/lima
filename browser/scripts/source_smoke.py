@@ -110,20 +110,61 @@ const compiled = COMPILED;
   gBrowser.removeTab(prefsTab);
   // Lima's own surfaces never sit on the right edge of the window.
   const { LimaSearchPanel } = ChromeUtils.importESModule("resource://lima/LimaSearchPanel.sys.mjs");
+  const sleep = ms => new Promise(resolve => window.setTimeout(resolve, ms));
+  const rows = () => [...document.querySelectorAll("#lima-search-results [role=option]")];
+  const selected = () => document.querySelector('#lima-search-results [aria-selected="true"]');
+  const press = (key, modifiers = {}) => document.getElementById("lima-search-input")
+    .dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...modifiers }));
+  const type = async text => {
+    const field = document.getElementById("lima-search-input");
+    field.value = text;
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(400);
+  };
+  // A question keeps ordinary web search first and offers Ask Lima second.
   LimaSearchPanel.open(window, "what is a browser?");
-  await new Promise(resolve => window.setTimeout(resolve, 300));
+  await sleep(400);
   const input = document.getElementById("lima-search-input");
-  const askRow = !!document.querySelector('#lima-search-results [data-key="ask"]');
+  const question = rows().map(row => row.dataset.key);
+  const aria = input?.getAttribute("role") === "combobox" && input.getAttribute("aria-activedescendant") === selected()?.id &&
+    document.getElementById("lima-search-results")?.getAttribute("role") === "listbox";
+  // Keyboard: Down moves the selection (and the active descendant), Up returns.
+  press("ArrowDown");
+  const moved = selected()?.dataset.key === question[1] && input.getAttribute("aria-activedescendant") === selected()?.id;
+  press("ArrowUp");
+  const back = selected()?.dataset.key === question[0];
+  // A URL opens first; a plain word searches the web without AI rows.
+  await type("example.com");
+  const url = rows()[0]?.dataset.key;
+  await type("browser");
+  const plain = rows().map(row => row.dataset.key);
+  // Pressing ⌘T again keeps the query; Escape closes and returns focus.
+  LimaSearchPanel.open(window);
+  const kept = input.value === "browser" && document.activeElement === input;
+  const metrics = LimaSearchPanel.metrics(window);
+  press("Escape");
+  const closed = document.getElementById("lima-search-scrim")?.hidden === true && document.activeElement !== input;
+  const footer = document.getElementById("lima-search-foot")?.textContent ?? "";
   const rightEdge = [...document.querySelectorAll("[id^='lima-']")].filter(node => {
     if (node.closest("#lima-search-scrim")) return false;
     const box = node.getBoundingClientRect();
     return box.width > 0 && box.height > 0 && box.left > window.innerWidth * 0.6;
   }).map(node => node.id);
-  document.getElementById("lima-search-esc")?.click();
   const checks = {
     commandsOnce: uuidRuns === 1 && rendered && stored?.status === "completed" && stored.result?.text === ran.text && directRuns === 2 && recorded
       || { uuidRuns, rendered, status: stored?.status, directRuns, recorded },
-    search: input?.placeholder === "Search the web, find anything, or ask Lima…" && askRow,
+    search: (question[0] === "web" && question[1] === "ask" && question.length <= 9 && aria && moved && back &&
+      url === "nav:https://example.com" && plain[0] === "web" && !plain.some(key => ["ask", "delegate"].includes(key)) &&
+      kept && closed && /AI Chat/.test(footer) && !document.querySelector("#lima-search button:not(.lima-s-chip-remove, .lima-s-button)"))
+      || { question, aria, moved, back, url, plain, kept, closed, footer },
+    searchSpeed: metrics.open < 100 || metrics,
+    // First launch: the walkthrough has the window and the sidebar waits to the left.
+    welcomeSidebar: (() => {
+      const intro = [...gBrowser.tabs].some(tab => tab.linkedBrowser?.currentURI?.spec === "about:lima?view=welcome");
+      const tucked = Services.prefs.getBoolPref("lima.welcome.sidebarTucked", false);
+      return !intro || (tucked && window.gZenCompactModeManager?.preference === true && !Services.prefs.getBoolPref("zen.tabs.vertical.right-side"))
+        || { intro, tucked, compact: window.gZenCompactModeManager?.preference };
+    })(),
     pageActions: ["lima-tabctx-add", "lima-tabctx-ask", "lima-tabctx-send", "lima-page-summarize", "lima-page-save", "lima-page-ask",
       "lima-folder-reveal", "lima-folder-rename"].every(id => document.getElementById(id)),
     rightEdgeClear: rightEdge.length ? rightEdge.join(",") : true,
@@ -137,7 +178,9 @@ const compiled = COMPILED;
     noZenStrings: !/\bZen\b/.test(await new Localization(["browser/zen-general.ftl"]).formatValue("zen-window-sync-migration-dialog-message")),
     noAutoConfig: !compiled || !Services.prefs.getStringPref("general.config.filename", ""),
     noZenWelcome: Services.prefs.prefIsLocked("zen.welcome-screen.always-show") &&
-      !Services.prefs.getBoolPref("zen.welcome-screen.always-show"),
+      !Services.prefs.getBoolPref("zen.welcome-screen.always-show") &&
+      Services.prefs.prefIsLocked("browser.shell.checkDefaultBrowser") &&
+      !Services.prefs.getBoolPref("browser.shell.checkDefaultBrowser"),
     companion: !!document.getElementById("lima-assistant-toggle"),
     runtime: typeof hello.hostVersion === "string" && hello.pid > 1,
     note: persisted.markdown === "Verified"

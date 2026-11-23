@@ -221,6 +221,10 @@ for key in NSMicrophoneUsageDescription NSSpeechRecognitionUsageDescription NSAp
            NSCalendarsFullAccessUsageDescription NSRemindersFullAccessUsageDescription; do
   plutil -replace "$key" -string "$(plutil -extract "$key" raw "$HOST_PLIST")" "$PLIST"
 done
+# The browser owns location requests for websites and for Lima itself.
+for key in NSLocationUsageDescription NSLocationWhenInUseUsageDescription NSLocationAlwaysAndWhenInUseUsageDescription; do
+  plutil -replace "$key" -string "Lima uses location for sites you allow and for one-time Lima requests you approve." "$PLIST"
+done
 plutil -remove SUFeedURL "$PLIST" 2>/dev/null || true
 if [[ "$RELEASE" == 1 ]]; then
   plutil -replace LimaUpdateFeedURL -string "$FEED_URL" "$PLIST"

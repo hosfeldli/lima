@@ -27,6 +27,14 @@ jobs:
         with:
           submodules: recursive
           persist-credentials: false
+      - name: Free disk space
+        # The build needs about 30 GB. Drop runner SDKs the build never uses.
+        run: |
+          df -h "$GITHUB_WORKSPACE"
+          sudo rm -rf "$HOME/Library/Android" /usr/local/share/dotnet "$HOME/.dotnet" /usr/local/lib/node_modules/@aws-cdk || true
+          xcrun simctl delete all 2>/dev/null || true
+          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes/* || true
+          df -h "$GITHUB_WORKSPACE"
       - name: Install source build tools
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"

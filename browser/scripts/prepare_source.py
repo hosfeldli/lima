@@ -10,6 +10,13 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[2]
 BROWSER = ROOT / "browser"
 LOCK = json.loads((BROWSER / "lima.lock.json").read_text())
+MIGRATION_START = "  startupMigration(aProfileStartup, aMigratorKey, aProfileToMigrate) {\n"
+LIMA_MIGRATION_START = MIGRATION_START + (
+    "    // Lima offers browser import from its own walkthrough.\n"
+    "    if (!aMigratorKey && !aProfileToMigrate) {\n"
+    "      return;\n"
+    "    }\n"
+)
 
 
 def replace_once(text, old, new):
@@ -192,6 +199,9 @@ def engine(checkout, release):
     if f'MOZ_MACBUNDLE_ID="{bundle}"' not in confvars.read_text():
         raise ValueError("The branding confvars have no MOZ_MACBUNDLE_ID.")
     components = tree / "browser/components"
+    migration = components / "migration/MigrationUtils.sys.mjs"
+    if LIMA_MIGRATION_START not in migration.read_text():
+        edit(migration, lambda text: replace_once(text, MIGRATION_START, LIMA_MIGRATION_START))
     build = components / "moz.build"
     glue = components / "BrowserGlue.sys.mjs"
     marker = "LimaSourceBootstrap.sys.mjs"

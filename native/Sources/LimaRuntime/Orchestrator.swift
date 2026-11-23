@@ -116,6 +116,8 @@ public struct OrchestratedTask: Codable, Sendable, Equatable {
     /// One coherent result for the Companion to present.
     public var outcome: String?
     public var attention: Attention? = nil
+    /// A usage limit paused the task; Lima continues it at this time (ms).
+    public var retryAt: Double? = nil
     public var events: [Event]
     /// Routed messages from other agents (findings, dependency updates).
     var inbox: [Event]
@@ -177,6 +179,13 @@ public actor Orchestrator {
     static let maxAttempts = 2
     static let maxEvents = 200
     static let maxChildren = 8
+    /// A limit that resets later than this is a weekly (or longer) cap: the
+    /// user decides, Lima doesn't wait it out.
+    static let usageWindow: Double = 5 * 3_600
+    /// Seconds after the stated reset before retrying, and the wait when the
+    /// provider gave no reset time.
+    static let limitGrace: Double = 60
+    static let limitBackoff: Double = 120
 
     private var tasks: [String: OrchestratedTask] = [:]
 
@@ -490,7 +499,8 @@ public actor Orchestrator {
             await commit(task)
             return
         }
-        let transient: Set<AgentFailureKind> = [.connection, .rateLimited, .processCrashed, .unknown]
+        if error.kind == .rateLimited, task.conversationID != nil, await waitForLimit(&task, error: error) { return }
+        let transient: Set<AgentFailureKind> = [.connection, .processCrashed, .unknown]
         if transient.contains(error.kind), task.attempts < Self.maxAttempts, let conversation = task.conversationID {
             task.attempts += 1
             append(&task, "retry", "\(Self.failureLabel(error)). Checking whether the work completed, then retrying…")
@@ -520,6 +530,83 @@ public actor Orchestrator {
         task.outcome = task.state == .failed ? "\(task.title) failed: \(error.message)" : nil
         await commit(task)
         await settled(task)
+    }
+
+    /// A usage limit: wait until it resets, then continue. Returns false when
+    /// the ordinary failure path should handle it.
+    private func waitForLimit(_ task: inout OrchestratedTask, error: AgentFailure) async -> Bool {
+        let now = Date().timeIntervalSince1970
+        let name = task.provider.flatMap(CLIProvider.init(rawValue:)).map(RuntimeTaskExecutor.name) ?? "The AI provider"
+        if let reset = error.resetsAt, reset - now > Self.usageWindow {
+            task.state = .blocked
+            task.retryAt = nil
+            task.issues.append(error.message)
+            task.attention = .init(reason: "\(name)'s usage limit is used up until \(Self.limitTime(reset)).",
+                                   remedy: "That's more than 5 hours away, so Lima won't wait. Retry after it resets, or switch providers.",
+                                   action: "retry", needsUser: true)
+            append(&task, "blocked", "Usage limit reached. It resets \(Self.limitTime(reset)).")
+            await commit(task)
+            await settled(task)
+            return true
+        }
+        // A reset that has already passed may be misread; bound those retries.
+        let known = error.resetsAt.map { $0 > now } ?? false
+        if !known {
+            guard task.attempts < Self.maxAttempts else { return false }
+            task.attempts += 1
+        }
+        let at = (known ? error.resetsAt! + Self.limitGrace : now + Self.limitBackoff) * 1000
+        task.state = .paused
+        task.retryAt = at
+        task.attention = .init(reason: "\(name)'s usage limit was reached. Lima continues at \(Self.limitTime(at / 1000)).",
+                               remedy: "Nothing is needed from you. Resume to try sooner, or stop the task.", action: "resume", needsUser: false)
+        append(&task, "rate_limited", "Usage limit reached. Continuing at \(Self.limitTime(at / 1000))…")
+        await commit(task)
+        armLimitRetry(task.id, at: at)
+        return true
+    }
+
+    private func armLimitRetry(_ id: String, at: Double) {
+        let delay = max(0, at / 1000 - Date().timeIntervalSince1970)
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            await self?.limitReset(id, at: at)
+        }
+    }
+
+    /// Continues a task the usage limit paused, unless the user stopped,
+    /// resumed or paused it in the meantime.
+    func limitReset(_ id: String, at: Double) async {
+        guard var task = tasks[id], task.state == .paused, task.retryAt == at, let conversation = task.conversationID else { return }
+        task.retryAt = nil
+        do {
+            let message = try await executor.send(conversationID: conversation, text: """
+                Lima orchestrator: the usage limit that stopped task \(task.id) has reset. \
+                Before repeating any step, inspect the current state (files, terminal output, page) to see what already took effect. \
+                Then continue the same objective and end with the lima-report block.
+                """)
+            task = tasks[id] ?? task
+            guard task.state == .paused else { return }
+            task.retryAt = nil
+            task.sentMessageID = message
+            task.toolCount = 0
+            task.attention = nil
+            task.state = .running
+            append(&task, "retry", "Usage limit reset. Continuing…")
+        } catch {
+            task = tasks[id] ?? task
+            task.attention = .init(reason: "Lima couldn't continue after the usage limit reset: \(error)", remedy: "Resume to try again.", action: "resume", needsUser: true)
+            append(&task, "paused", "Couldn't continue after the usage limit reset.")
+        }
+        await commit(task)
+    }
+
+    static func limitTime(_ seconds: Double) -> String {
+        let date = Date(timeIntervalSince1970: seconds)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = Calendar.current.isDateInToday(date) ? "h:mm a" : "EEE MMM d, h:mm a"
+        return formatter.string(from: date)
     }
 
     /// After a task settles: start what it unblocked, and let its coordinator
@@ -637,6 +724,7 @@ public actor Orchestrator {
         guard !task.state.isTerminal else { throw OrchestratorError.invalid("This task has already finished.") }
         let active = task.state.isActive
         task.state = .paused
+        task.retryAt = nil
         append(&task, "paused", "Work paused")
         await commit(task)
         if active, let conversation = task.conversationID { await executor.cancel(conversationID: conversation) }
@@ -657,6 +745,7 @@ public actor Orchestrator {
             return try get(id)
         }
         task.attempts = 0
+        task.retryAt = nil
         task.finishedAt = nil
         task.issues.removeAll()
         task.outcome = nil
@@ -692,6 +781,10 @@ public actor Orchestrator {
     /// After a runtime restart: a turn that was running was interrupted (the
     /// conversation records that); report it honestly instead of replaying it.
     public func recover() async {
+        // Usage-limit waits survive a restart.
+        for task in tasks.values where task.state == .paused {
+            if let at = task.retryAt { armLimitRetry(task.id, at: at) }
+        }
         // Older records marked a partial result "blocked" with nothing for
         // the user to do; they become partial completions.
         for id in tasks.values.filter({ $0.state == .blocked && $0.report?.status == "blocked" && $0.report?.needsUser == nil }).map(\.id) {

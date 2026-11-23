@@ -4,7 +4,7 @@
 @import url("resource://lima-ui/theme.css");
 @namespace html url("http://www.w3.org/1999/xhtml");
 
-:root[lima-window] {
+:root[lima-window], #lima-search-scrim {
   --lima-character: url("resource://lima-ui/marks/companion-glyph.svg");
   --lima-panel: var(--lima-sidebar);
   --lima-hover: var(--lima-elevated);
@@ -381,8 +381,8 @@ zen-folder[lima-archiving] > .tab-group-label-container { opacity: .7; }
 .lima-dict-level > i { display: block; width: 3px; height: 16px; border-radius: 5px; background: currentColor; opacity: 0.8; transform: scaleY(0.15); transition: transform 90ms linear; }
 .lima-dict-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 
-/* ── Lima Search (⌘T): compact keyboard result rows ───────────────── */
-
+/* ── Universal Search (docs/spec/universal-search.md §2–§3) ─────────── */
+/* Only shared tokens; lima-theme="dark" on the scrim remaps them. */
 #lima-search-scrim {
   position: fixed;
   inset: 0;
@@ -390,44 +390,45 @@ zen-folder[lima-archiving] > .tab-group-label-container { opacity: .7; }
   display: flex;
   justify-content: center;
   align-items: flex-start;
-  padding-top: 12vh;
-  background: rgb(22 24 27 / 0.12);
+  padding: 20vh 16px 0;
+  background: var(--lima-scrim);
 }
 #lima-search-scrim[hidden] { display: none; }
 #lima-search {
-  width: min(610px, 86vw);
-  max-height: 68vh;
+  width: min(560px, 100%);
+  max-height: 65vh;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   border-radius: var(--lima-panel-radius);
-  background: var(--lima-surface);
+  background: var(--lima-bg);
   color: var(--lima-ink);
-  border: 1px solid var(--lima-line-strong);
+  border: 1px solid var(--lima-line);
   font: 13px/1.35 -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
-  box-shadow: 0 10px 30px rgb(0 0 0 / .12);
-  animation: lima-search-in 155ms cubic-bezier(.2,.8,.28,1) both;
+  box-shadow: var(--lima-overlay-shadow);
+  animation: lima-search-in 130ms cubic-bezier(.2, .8, .3, 1) both;
 }
-@keyframes lima-search-in { from { opacity: 0; transform: translateY(-5px) scale(.988); } }
+@keyframes lima-search-in { from { opacity: 0; transform: translateY(-6px); } }
 #lima-search-field {
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: 46px;
-  padding: 0 12px 0 8px;
+  gap: 10px;
+  flex: none;
+  height: 48px;
+  padding: 0 15px;
   border-bottom: 1px solid var(--lima-line);
 }
-#lima-search-mark {
-  appearance: none;
-  width: 30px;
-  height: 30px;
+#lima-search-mark { display: grid; place-items: center; width: 16px; height: 16px; flex: none; color: var(--lima-ink-2); }
+#lima-search-mark .lima-s-glyph { width: 15px; height: 15px; }
+#lima-search-scope {
   flex: none;
-  border: 0;
-  border-radius: 5px;
-  background: url("resource://lima-ui/marks/star-prism.svg") center / 18px no-repeat;
-  transition: background-color 120ms cubic-bezier(.23, 1, .32, 1);
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--lima-select);
+  color: var(--lima-ink-2);
+  font-size: 11.5px;
 }
-#lima-search-mark:hover { background-color: var(--lima-hover); }
-#lima-search-mark:active { transform: scale(.94); }
+#lima-search-scope[hidden] { display: none; }
 #lima-search-input {
   flex: 1;
   min-width: 0;
@@ -436,98 +437,97 @@ zen-folder[lima-archiving] > .tab-group-label-container { opacity: .7; }
   background: transparent;
   color: inherit;
   caret-color: var(--lima-accent);
-  font: 500 16px/1.2 -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
+  font: 400 16px/1.2 -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
 }
 #lima-search-input::placeholder { color: var(--lima-ink-3); }
-#lima-search-esc {
-  appearance: none;
-  border: 0;
-  color: var(--lima-ink-2);
-  background: transparent;
-  border-radius: var(--lima-radius);
-  width: 25px;
-  height: 25px;
-  font: 19px/1 system-ui;
-}
-#lima-search-esc:hover { background: var(--lima-hover); color: var(--lima-ink); }
 #lima-search kbd {
-  font: 600 10.5px/1 -apple-system, sans-serif;
+  font: 500 10.5px/1 -apple-system, sans-serif;
   color: var(--lima-ink-2);
-  padding: 3px 5px;
-  border-radius: 5px;
-  border: 1px solid var(--lima-line-strong);
+  padding: 2px 4px;
+  border-radius: 4px;
+  border: 1px solid var(--lima-line);
 }
-/* A static activity cue sits beside the field. */
-#lima-search-spinner { width: 14px; height: 2px; background: var(--lima-accent); }
+/* A quiet activity cue while sources load; static under Reduce Motion. */
+#lima-search-spinner {
+  width: 14px;
+  height: 2px;
+  flex: none;
+  border-radius: 1px;
+  background: var(--lima-ink-3);
+  animation: lima-search-pulse 900ms ease-in-out infinite alternate;
+}
 #lima-search-spinner[hidden] { display: none; }
-#lima-search-results { overflow-y: auto; min-height: 0; padding-bottom: 4px; }
+@keyframes lima-search-pulse { from { opacity: .25; } }
+#lima-search-results { overflow-y: auto; min-height: 0; padding: 4px 0 6px; overscroll-behavior: contain; }
 .lima-s-group {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  height: 18px;
-  margin: 8px 0 2px;
-  padding: 0 12px;
-  color: var(--lima-ink-2);
-  font-size: 10.5px;
-  font-weight: 650;
+  height: 22px;
+  margin-top: 4px;
+  padding: 0 15px;
+  color: var(--lima-ink-3);
+  font-size: 11px;
+  font-weight: 500;
 }
 .lima-s-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 34px;
-  margin-inline: 5px;
-  padding: 0 7px;
-  border-radius: var(--lima-radius);
+  height: 38px;
+  padding: 0 15px;
 }
 .lima-s-row[aria-selected="true"] { background: var(--lima-select); }
 .lima-s-icon { width: 16px; height: 16px; display: grid; place-items: center; flex: none; color: var(--lima-ink-2); }
-.lima-s-row[aria-selected="true"] .lima-s-icon { color: var(--lima-accent); }
 .lima-s-glyph { width: 15px; height: 15px; background: currentColor; mask-size: contain; mask-repeat: no-repeat; mask-position: center; }
+.lima-s-favicon { width: 16px; height: 16px; border-radius: 3px; object-fit: contain; }
 .lima-s-text { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; }
-.lima-s-title { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
-.lima-s-row[aria-selected="true"] .lima-s-title { font-weight: 650; }
+.lima-s-title { font-size: 13px; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
 .lima-s-sub { font-size: 11.5px; color: var(--lima-ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1 1 0; }
-.lima-s-action {
-  flex: none;
-  font: 650 10.5px/1 -apple-system, sans-serif;
-  color: var(--lima-ink-2);
-  padding: 4px 0;
-}
-.lima-s-empty { padding: 18px 12px; color: var(--lima-ink-3); }
+.lima-s-action { flex: none; display: flex; align-items: center; gap: 5px; color: var(--lima-ink-2); font-size: 11.5px; }
+.lima-s-more .lima-s-title { color: var(--lima-ink-2); }
+.lima-s-more .lima-s-icon { rotate: 90deg; }
+.lima-s-empty { padding: 14px 15px 10px; color: var(--lima-ink-3); }
+.lima-s-visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
+/* One context chip below the input names what Quick Ask would share. */
 #lima-search-context {
   display: flex;
   align-items: center;
-  gap: 4px;
-  margin: 6px 6px 0;
-  padding: 5px 6px 5px 10px;
-  border-radius: var(--lima-radius);
-  background: var(--lima-hover);
+  gap: 6px;
+  flex: none;
+  margin: 8px 15px 0;
+  padding: 3px 4px 3px 8px;
+  align-self: flex-start;
+  max-width: calc(100% - 30px);
+  border: 1px solid var(--lima-line);
+  border-radius: 7px;
   color: var(--lima-ink-2);
   font-size: 12px;
   white-space: nowrap;
-  overflow: hidden;
 }
 #lima-search-context[hidden] { display: none; }
-#lima-search-context > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--lima-ink); }
-.lima-s-chip-remove { appearance: none; margin-inline-start: auto; border: 0; background: transparent; color: var(--lima-ink-2); border-radius: 5px; width: 20px; height: 20px; font: 15px/1 system-ui; flex: none; }
-.lima-s-chip-remove:hover { background: var(--lima-surface); color: var(--lima-ink); }
+#lima-search-context > .lima-s-glyph { width: 12px; height: 12px; flex: none; }
+#lima-search-context > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--lima-ink); font-weight: 500; }
+.lima-s-chip-remove { appearance: none; border: 0; background: transparent; color: var(--lima-ink-2); border-radius: 5px; width: 18px; height: 18px; font: 14px/1 system-ui; flex: none; }
+.lima-s-chip-remove:hover { background: var(--lima-hover); color: var(--lima-ink); }
+.lima-s-chip-remove:focus-visible { outline: 2px solid var(--lima-accent); outline-offset: 0; }
 
-/* Inline status: running commands and failures stay beside the query. */
+/* Inline status: a running command or a failure, beside the kept query. */
 #lima-search-status {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 6px 6px 0;
+  flex: none;
+  margin: 8px 10px 0;
   padding: 8px 10px;
   border-radius: var(--lima-radius);
-  background: var(--lima-hover);
+  background: var(--lima-surface);
   font-size: 12.5px;
 }
 #lima-search-status[hidden] { display: none; }
-#lima-search-status[data-tone="bad"] { background: var(--lima-surface); box-shadow: inset 0 0 0 1px var(--lima-error); color: var(--lima-error); }
+#lima-search-status[data-tone="bad"] { box-shadow: inset 0 0 0 1px var(--lima-line); }
 .lima-s-status-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.lima-s-status-copy > strong { font-weight: 600; }
 .lima-s-status-copy > span { color: var(--lima-ink-2); overflow-wrap: anywhere; }
 .lima-s-status-actions, .lima-s-answer-actions { display: flex; gap: 6px; flex: none; }
 .lima-s-answer-actions[hidden] { display: none; }
@@ -535,31 +535,37 @@ zen-folder[lima-archiving] > .tab-group-label-container { opacity: .7; }
   appearance: none;
   height: 26px;
   padding: 0 10px;
-  border: 1px solid var(--lima-line-strong);
+  border: 1px solid var(--lima-line);
   border-radius: var(--lima-radius);
-  background: var(--lima-surface);
+  background: var(--lima-bg);
   color: var(--lima-ink);
-  font: 600 12px/1 -apple-system, sans-serif;
+  font: 500 12px/1 -apple-system, sans-serif;
 }
 .lima-s-button:hover { background: var(--lima-hover); }
-.lima-s-button.primary { background: var(--lima-accent); border-color: var(--lima-accent); color: var(--lima-bg); }
+.lima-s-button.primary { background: var(--lima-accent); border-color: var(--lima-accent); color: var(--lima-accent-contrast); }
 .lima-s-button:focus-visible { outline: 2px solid var(--lima-accent); outline-offset: 1px; }
 
-/* Quick Ask answers in place: bounded height, scrolls inside the panel. */
-.lima-s-answer { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 8px; }
-.lima-s-answer-question { font-weight: 650; color: var(--lima-ink-2); font-size: 12px; }
-.lima-s-answer-text { max-height: 42vh; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13.5px; line-height: 1.5; min-height: 20px; }
+/* An inline answer replaces the results and scrolls inside the panel. */
+.lima-s-answer { display: flex; flex-direction: column; gap: 8px; min-height: 0; padding: 10px 15px 6px; }
+.lima-s-answer-question { font-weight: 500; color: var(--lima-ink-2); font-size: 12px; }
+.lima-s-answer-text { max-height: calc(65vh - 150px); overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13.5px; line-height: 1.5; min-height: 20px; }
+.lima-s-answer-text:focus-visible { outline: 2px solid var(--lima-accent); outline-offset: 2px; }
 .lima-s-answer-text:empty::before { content: "…"; color: var(--lima-ink-3); }
-.lima-s-answer-text[data-tone="bad"] { color: var(--lima-error); }
-.lima-s-answer-foot { display: flex; align-items: center; gap: 8px; }
+.lima-s-answer-text[data-tone="bad"] { color: var(--lima-ink-2); }
+.lima-s-answer-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .lima-s-answer-meta { flex: 1; color: var(--lima-ink-3); font-size: 11.5px; }
 #lima-search-foot {
   display: flex;
+  align-items: center;
   gap: 14px;
-  padding: 6px 12px;
+  flex: none;
+  height: 28px;
+  padding: 0 15px;
   border-top: 1px solid var(--lima-line);
   color: var(--lima-ink-3);
   font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 /* Lima menu items in Zen's menus use the shared icon set. */
@@ -580,7 +586,9 @@ zen-folder[lima-archiving] > .tab-group-label-container { opacity: .7; }
   color: inherit;
   background: transparent;
 }
-#lima-assistant-toggle[floating] { position: fixed; left: 74px; top: 6px; z-index: 12; background: var(--lima-panel); color: var(--lima-ink); }
+#lima-assistant-controls { display: flex; align-items: center; flex: none; }
+#lima-assistant-controls[floating] { position: fixed; left: 74px; top: 6px; z-index: 12; }
+#lima-assistant-toggle[floating] { background: var(--lima-panel); color: var(--lima-ink); }
 #lima-assistant-toggle:hover,
 #lima-assistant-toggle[aria-expanded="true"] { background: var(--lima-hover); color: var(--lima-ink); }
 #lima-assistant-toggle:focus-visible { outline: 2px solid var(--lima-accent); outline-offset: -2px; }
@@ -648,6 +656,73 @@ zen-folder[lima-workspace]:is([lima-attention], [lima-task="blocked"]) > .tab-gr
 }
 #lima-assistant-panel > browser { flex: 1; min-height: 0; width: 100%; height: 100%; }
 
+#lima-quick-terminal-toggle {
+  appearance: none;
+  display: grid;
+  align-self: center;
+  place-items: center;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  margin-inline-start: 4px;
+  padding: 0;
+  position: relative;
+  z-index: 12;
+  border: 1px solid var(--lima-line);
+  border-radius: var(--lima-radius);
+  background: var(--lima-bg);
+  color: var(--lima-ink-2);
+}
+#lima-quick-terminal-toggle:is(:hover, [aria-expanded="true"]) { background: var(--lima-hover); color: var(--lima-ink); }
+#lima-quick-terminal-toggle:focus-visible { outline: 2px solid var(--lima-accent); outline-offset: -2px; }
+#lima-quick-terminal-toggle > html|span {
+  width: 17px;
+  height: 17px;
+  background: currentColor;
+  mask: url("resource://lima-ui/icons/terminal.svg") center / contain no-repeat;
+}
+#lima-quick-terminal-panel {
+  position: fixed;
+  z-index: 10;
+  top: var(--lima-assistant-top, 48px);
+  left: 8px;
+  width: min(680px, calc(100vw - 16px));
+  height: min(380px, calc(100vh - var(--lima-assistant-top, 48px) - 12px));
+  overflow: clip;
+  border: 1px solid var(--lima-line-strong);
+  border-radius: 14px;
+  background: var(--lima-bg);
+  box-shadow: 0 12px 38px rgb(0 0 0 / .14);
+  visibility: hidden;
+}
+#lima-quick-terminal-panel[open] { visibility: visible; }
+#lima-quick-terminal-panel > browser { flex: 1; min-height: 0; width: 100%; height: 100%; }
+
+:root[lima-window] #zen-toast-container .zen-toast {
+  --zen-toast-shortcut-background: var(--lima-hover);
+  --zen-toast-max-height: none;
+  padding: 7px 10px;
+  background: var(--lima-panel);
+  color: var(--lima-ink);
+  border: 1px solid var(--lima-line-strong);
+  border-radius: 9px;
+  font: 500 12px/1.4 -apple-system, system-ui, sans-serif;
+  min-height: 32px;
+  max-width: calc(100vw - 32px);
+  box-shadow: 0 3px 12px rgb(0 0 0 / .12);
+}
+:root[lima-window] #zen-toast-container .zen-toast .description { opacity: 1; color: var(--lima-ink-2); }
+:root[lima-window] #zen-toast-container .zen-toast label span { color: var(--lima-ink); }
+:root[lima-window] #zen-toast-container .zen-toast button {
+  background: var(--lima-bg) !important;
+  color: var(--lima-ink) !important;
+  border: 1px solid var(--lima-line);
+  outline: none;
+  box-shadow: none;
+}
+:root[lima-window] #zen-toast-container .zen-toast button:hover { background: var(--lima-hover) !important; }
+:root[lima-window] #zen-toast-container .zen-toast button:focus-visible { outline: 2px solid var(--lima-accent); }
+
 @keyframes lima-assistant-breathe { 42%, 62% { opacity: .68; transform: translateY(-1px) scale(.82); } }
 @keyframes lima-assistant-glance { 30%, 46% { transform: translateX(2px) rotate(12deg); } 72% { transform: translateX(-2px) rotate(-6deg); } }
 @keyframes lima-assistant-tap { 22%, 50% { transform: translateY(2px) scale(1.08, .79); } 34%, 68% { transform: none; } }
@@ -711,12 +786,37 @@ zen-folder[lima-workspace] > .tab-group-label-container[lima-offscreen] > .tab-g
   --panel-color: var(--lima-fg);
   --panel-border-color: var(--lima-border);
 }
-.lima-archive-content { width: min(328px, 80vw); padding: 16px; font: message-box; }
-.lima-archive-content > strong { font-size: 15px; }
-.lima-archive-content p { margin: 8px 0; overflow-wrap: anywhere; }
+.lima-archive-content { width: min(350px, 80vw); padding: 16px; font: message-box; }
+.lima-archive-header { display: flex; align-items: center; gap: 10px; }
+.lima-archive-summary { min-width: 0; display: grid; gap: 3px; }
+.lima-archive-heading { font-size: 15px; line-height: 1.2; }
+.lima-archive-title { color: var(--lima-secondary); overflow-wrap: anywhere; }
+.lima-archive-mark {
+  display: grid;
+  place-items: center;
+  flex: 0 0 34px;
+  height: 34px;
+  border: 1px solid var(--lima-line);
+  border-radius: 9px;
+  background: var(--lima-panel);
+  color: var(--lima-ink-2);
+}
+.lima-archive-mark::after {
+  content: "";
+  width: 18px;
+  height: 18px;
+  background: currentColor;
+  mask: url("resource://lima-ui/icons/folder.svg") center / contain no-repeat;
+}
+.lima-archive-panel[data-phase="complete"] .lima-archive-mark::after { mask-image: url("resource://lima-ui/icons/check.svg"); }
+.lima-archive-panel[data-phase="failed"] .lima-archive-status { color: var(--lima-error); }
+.lima-archive-content p { margin: 10px 0; line-height: 1.4; overflow-wrap: anywhere; }
 .lima-archive-content p:empty { display: none; }
 .lima-archive-description, .lima-archive-path { color: var(--lima-secondary); }
-.lima-archive-path { font-size: 11px; }
+.lima-archive-location { display: grid; gap: 4px; padding: 8px 10px; border: 1px solid var(--lima-line); border-radius: 7px; }
+.lima-archive-location[hidden] { display: none; }
+.lima-archive-location > span { font-size: 11px; font-weight: 600; }
+.lima-archive-path { font: 11px/1.35 ui-monospace, monospace; overflow-wrap: anywhere; }
 .lima-archive-actions { display: flex; justify-content: end; gap: 8px; margin-block-start: 16px; }
 .lima-archive-actions button {
   padding: 5px 12px;
@@ -726,7 +826,10 @@ zen-folder[lima-workspace] > .tab-group-label-container[lima-offscreen] > .tab-g
   color: var(--lima-fg);
   cursor: pointer;
 }
+.lima-archive-actions button:hover { background: var(--lima-hover); }
 .lima-archive-actions .lima-archive-action { background: var(--lima-accent); color: var(--lima-accent-contrast); }
+.lima-archive-actions .lima-archive-action:hover { filter: brightness(.9); }
+.lima-archive-actions button:focus-visible { outline: 2px solid var(--lima-accent); outline-offset: 2px; }
 .lima-archive-actions button:disabled { opacity: .55; cursor: wait; }
 
 :root[data-lima-personality]:not([data-lima-personality="full"]) zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon::after {

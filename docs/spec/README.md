@@ -19,3 +19,8 @@ the documents above. Its layout rules are recorded in [`DESIGN.md`](../../DESIGN
 - Universal Search (⌘T) is the single entry point, including Quick Ask, commands and delegation.
 - Commands execute once per invocation, failures are shown where the action started, and agent
   activity appears as compact marks on sidebar rows.
+
+The Universal Search final design specification ([`universal-search.md`](universal-search.md), November 2026)
+wins over all of the above for Search: one input, at most eight results in up to three adaptive categories,
+deterministic ranking that keeps URL navigation and web search first, AI offered only as a confident
+suggestion, and one shared light/dark token contract. Its implementation map lists the code and checks.

@@ -17,11 +17,14 @@ public enum AgentFailureKind: String, Codable, Sendable {
 public struct AgentFailure: Codable, Equatable, Sendable, Error {
     public var kind: AgentFailureKind
     public var message: String
+    /// When a usage limit resets (seconds since 1970), if the provider said.
+    public var resetsAt: Double? = nil
     public var recoverable: Bool { kind != .missingExecutable && kind != .incompatibleVersion }
 
-    public init(_ kind: AgentFailureKind, _ message: String) {
+    public init(_ kind: AgentFailureKind, _ message: String, resetsAt: Double? = nil) {
         self.kind = kind
         self.message = String(message.prefix(600))
+        self.resetsAt = resetsAt
     }
 
     /// Classifies CLI stderr / error-event text. Order matters: the most
@@ -37,7 +40,10 @@ public struct AgentFailure: Codable, Equatable, Sendable, Error {
         if has("operation not permitted", "permission denied", "sandbox denied", "access to this folder", "denied access to") {
             return AgentFailure(.permissionDenied, summary)
         }
-        if has("rate limit", "429", "usage limit", "quota") { return AgentFailure(.rateLimited, summary) }
+        if has("rate limit", "429", "usage limit", "quota", "limit reached", "-hour limit", "weekly limit", "opus limit")
+            || (has("hit your") && has("limit")) {
+            return AgentFailure(.rateLimited, summary, resetsAt: usageReset(in: text)?.timeIntervalSince1970)
+        }
         if has("model") && has("not found", "not supported", "does not exist", "invalid", "not available", "access", "unknown model") {
             return AgentFailure(.modelRejected, summary)
         }
@@ -49,6 +55,64 @@ public struct AgentFailure: Codable, Equatable, Sendable, Error {
         }
         if let exitCode, exitCode > 128 { return AgentFailure(.processCrashed, summary) }
         return AgentFailure(.unknown, summary.isEmpty ? "CLI exited with status \(exitCode ?? -1)" : summary)
+    }
+}
+
+extension AgentFailure {
+    /// Reads when a usage limit resets from provider text such as
+    /// "resets 12:20pm (America/New_York)", "resets Nov 25, 3pm",
+    /// "try again at 3:20 PM" or "try again in 2 hours 5 minutes".
+    public static func usageReset(in text: String, now: Date = Date()) -> Date? {
+        let lower = text.lowercased()
+        func groups(_ pattern: String) -> [String?]? {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let match = regex.firstMatch(in: lower, range: NSRange(lower.startIndex..., in: lower)) else { return nil }
+            return (0..<match.numberOfRanges).map { Range(match.range(at: $0), in: lower).map { String(lower[$0]) } }
+        }
+        if let relative = groups(#"(?:try again|resets?|retry|available)(?: again)? in\s+((?:\d+(?:\.\d+)?\s*[a-z]+[\s,and]*)+)"#)?[1] {
+            let units: [(String, Double)] = [("d", 86_400), ("h", 3_600), ("m", 60), ("s", 1)]
+            var seconds = 0.0
+            let regex = try! NSRegularExpression(pattern: #"(\d+(?:\.\d+)?)\s*([a-z]+)"#)
+            for match in regex.matches(in: relative, range: NSRange(relative.startIndex..., in: relative)) {
+                guard let amount = Range(match.range(at: 1), in: relative).flatMap({ Double(relative[$0]) }),
+                      let unit = Range(match.range(at: 2), in: relative).map({ String(relative[$0]) }),
+                      let scale = units.first(where: { unit.hasPrefix($0.0) })?.1 else { continue }
+                seconds += amount * scale
+            }
+            if seconds > 0 { return now.addingTimeInterval(seconds) }
+        }
+        guard let parts = groups(#"(?:resets?(?:\s+at)?|try again at|available (?:again )?at)\s+(?:on\s+)?(?:([a-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?(?:\s*\(([^)]+)\))?"#),
+              var hour = parts[3].flatMap({ Int($0) }) else { return nil }
+        let minute = parts[4].flatMap { Int($0) } ?? 0
+        let meridiem = parts[5]?.replacingOccurrences(of: ".", with: "")
+        guard meridiem != nil || parts[4] != nil, minute < 60 else { return nil }
+        if let meridiem {
+            guard (1...12).contains(hour) else { return nil }
+            hour = hour % 12 + (meridiem == "pm" ? 12 : 0)
+        }
+        guard hour < 24 else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        // Time zone identifiers are case-sensitive; read it from the original text.
+        if let zone = text.range(of: #"\(([A-Za-z_]+(?:/[A-Za-z_+\-0-9]+)*)\)"#, options: .regularExpression)
+            .flatMap({ TimeZone(identifier: String(text[$0].dropFirst().dropLast())) }) {
+            calendar.timeZone = zone
+        }
+        var components = calendar.dateComponents([.year, .month, .day], from: now)
+        components.hour = hour
+        components.minute = minute
+        if let monthName = parts[1] {
+            let months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+            guard let month = months.firstIndex(of: String(monthName.prefix(3))), let day = parts[2].flatMap({ Int($0) }) else { return nil }
+            components.month = month + 1
+            components.day = day
+            guard var date = calendar.date(from: components) else { return nil }
+            if date < now.addingTimeInterval(-86_400) { date = calendar.date(byAdding: .year, value: 1, to: date) ?? date }
+            return date
+        }
+        guard var date = calendar.date(from: components) else { return nil }
+        // A time that just passed was rounded down; a time well past means tomorrow.
+        if date < now.addingTimeInterval(-600) { date = calendar.date(byAdding: .day, value: 1, to: date) ?? date }
+        return max(date, now)
     }
 }
 

@@ -1,9 +1,10 @@
 /* Smaller Lima surfaces, each its own tab. */
-import { bar, bridge, call, el, errorText, icon, markdown, onEvent, prefs, relativeTime, setPage } from "./lib.js";
+import { bar, bridge, call, el, errorText, icon, markdown, onEvent, prefs, relativeTime, setPage, permissionSheet } from "./lib.js";
 import { resultView } from "./components.js";
 import { agentControls, PROVIDERS } from "./composer.js";
 import { companion, setCompanionState } from "./companion.js";
 import { generationSettings } from "./studio-production.js";
+import { companionMemorySettings, locationSettings, personalMemoryForm } from "./personal-memory.js";
 
 const page = (...children) => el("div", { class: "page narrow" }, ...children);
 const card = (title, ...children) => el("section", { class: "card" }, title ? el("h2", { text: title }) : null, ...children);
@@ -192,6 +193,10 @@ export async function renderIntegrations(app, section) {
         " ", el("button", { onclick: async () => { const n = await call("search.rebuild", { source: "app" }); alert(`Index rebuilt (${n} items).`); } }, "Rebuild app index")),
     ]],
     ["sidebar", "Sidebar", "dock shortcuts edit order spotify music calendar mail dictation", [card("Sidebar shortcuts", sidebarSettings())]],
+    ["personal", "Personal Memory", "profile name email phone home address location privacy context companion memory learned daily", [
+      card("Your information", personalMemoryForm()), card("What the Companion remembers", companionMemorySettings()),
+      card("Location Services", locationSettings()),
+    ]],
     ["agents", "AI providers", "claude codex opencode sign in install default model setup", [card("AI providers", providerSettings())]],
     ["image-generation", "Image Generation", "local ComfyUI checkpoints model artwork generator", [card("Local provider", generationSettings())]],
     ["writing", "Writing tools", "grammar accessibility global shortcut ai replace", [card("Grammar checker", grammarSettings())]],
@@ -460,8 +465,16 @@ function providerSettings() {
           el("pre", { class: "muted", text: [provider.version && `Version: ${provider.version}`, provider.diagnostic].filter(Boolean).join("\n") })) : null);
     }));
   }
+  const failover = el("input", { type: "checkbox", disabled: true, onchange: async () => {
+    failover.disabled = true;
+    try { failover.checked = await call("agents.failover", { enabled: failover.checked }); }
+    catch { failover.checked = !failover.checked; }
+    finally { failover.disabled = false; }
+  } });
+  call("agents.failover").then(enabled => { failover.checked = enabled !== false; failover.disabled = false; }).catch(() => {});
   node.append(el("div", { class: "row" }, el("strong", { text: "Default AI" }), controls.provider, controls.model,
-    el("button", { class: "ghost", onclick: () => draw().catch(error => fail(items, error)) }, "Check Again")), items);
+    el("button", { class: "ghost", onclick: () => draw().catch(error => fail(items, error)) }, "Check Again")),
+  el("label", { class: "personal-check" }, failover, "When a provider hits its usage limit, continue with another signed-in provider"), items);
   draw().catch(error => fail(items, error));
   return node;
 }
@@ -587,7 +600,7 @@ function grammarSettings() {
   });
   node.append(el("p", { class: "muted", text: "Select text and press ⌘G to check it with your default AI. Lima sends only the selection when you use the shortcut. Choose Replace to apply the suggestion." }),
     el("label", { class: "toggle" }, control, "Enable ⌘G"),
-    el("button", { class: "ghost", onclick: () => bridge.browser("accessibilitySettings", {}) }, "Accessibility settings"),
+    el("button", { class: "ghost", onclick: () => permissionSheet("accessibility", { onGranted: () => call("integrations.grammar.status").then(draw).catch(() => {}) }) }, "Allow Accessibility…"),
     el("p", { class: "muted", text: "Allow Lima’s grammar helper in macOS Accessibility to read and replace your selection." }), status);
   call("integrations.grammar.status").then(draw).catch(error => { status.textContent = errorText(error); })
     .finally(() => { control.disabled = false; });

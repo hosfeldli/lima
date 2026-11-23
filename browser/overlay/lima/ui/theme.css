@@ -15,6 +15,60 @@
   --lima-warning: #4b4b4b;
   --lima-error: #303030;
   --lima-info: #4e4e4e;
+  --lima-scrim: rgb(22 24 27 / .1);
+  --lima-overlay-shadow: 0 12px 32px rgb(0 0 0 / .1), 0 1px 3px rgb(0 0 0 / .06);
   --lima-radius: 8px;
   --lima-panel-radius: 14px;
 }
+
+/* The same contract mapped to charcoal and neutrals. A surface opts in with
+ * lima-theme="dark" (Search follows the lima.theme pref). */
+[lima-theme="dark"] {
+  color-scheme: dark;
+  --lima-bg: #1c1c1d;
+  --lima-sidebar: #202021;
+  --lima-surface: #262627;
+  --lima-elevated: #333335;
+  --lima-border: #3b3b3d;
+  --lima-fg: #ececec;
+  --lima-secondary: #bdbdbf;
+  --lima-muted: #9a9a9d;
+  --lima-accent: #e6e6e6;
+  --lima-accent-hover: #ffffff;
+  --lima-accent-fill: #3a3a3c;
+  --lima-accent-contrast: #1c1c1d;
+  --lima-success: #d6d6d6;
+  --lima-warning: #cfcfcf;
+  --lima-error: #f0f0f0;
+  --lima-info: #c8c8c8;
+  --lima-scrim: rgb(0 0 0 / .28);
+  --lima-overlay-shadow: 0 16px 40px rgb(0 0 0 / .45), 0 0 0 1px rgb(255 255 255 / .04);
+}
+
+/* Personal Memory and the compact view of the shared terminal. */
+.personal-memory fieldset { display: grid; gap: 12px; padding: 0; margin: 0; border: 0; min-inline-size: 0; }
+.personal-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 12px; }
+.personal-field { display: grid; align-content: start; min-width: 0; gap: 5px; font-weight: 550; }
+.personal-field :is(input, textarea) { width: 100%; min-width: 0; font-weight: normal; }
+.personal-field textarea { resize: vertical; }
+.personal-check { display: flex; align-items: flex-start; gap: 8px; line-height: 1.4; }
+.personal-check > input { flex: none; width: 15px; height: 15px; margin: 2px 0 0; accent-color: var(--lima-accent); }
+
+.quick-shell { display: flex; flex-direction: column; min-height: 0; height: 100vh; }
+.quick-shell-head { display: flex; align-items: center; gap: 5px; padding: 6px; border-bottom: 1px solid var(--lima-border); }
+.quick-shell-head select { flex: 0 1 125px; min-width: 65px; padding: 3px 5px; }
+.quick-shell-tabs { display: flex; flex: 1; min-width: 0; gap: 4px; overflow: auto; }
+.quick-shell-tab { display: flex; flex: 0 0 auto; align-items: center; max-width: 155px; min-width: 0; border: 1px solid transparent; border-radius: 7px; }
+.quick-shell-tab[data-selected="true"] { background: var(--lima-panel); border-color: var(--lima-border); }
+.quick-shell-tab button[role="tab"] { padding: 4px 7px; min-width: 0; border: 0; background: none; }
+.quick-shell-tab button[role="tab"] > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quick-shell-tab .icon-only { opacity: .72; }
+.quick-shell-content { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+.quick-shell-content .term-bar { min-height: 30px; }
+.quick-shell-content .term-bar .workspace-avatar { width: 22px; height: 22px; }
+.quick-shell-content .term-path { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.quick-shell-content .terminal-host { padding: 4px 8px; }
+.quick-shell-content .explorer[hidden] { display: none; }
+.quick-shell-status { color: var(--lima-secondary); font-size: 12px; padding: 4px 10px; }
+.quick-shell-status:empty { display: none; }
+.quick-shell-empty { margin: auto; padding: 12px; }

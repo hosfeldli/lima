@@ -176,3 +176,80 @@ func waitIdle(_ service: ConversationService, _ id: String) async throws -> Conv
     let completion = parser.parse(line: #"{"type":"item.completed","item":{"id":"tool1","type":"mcp_tool_call","server":"lima","tool":"workspace_open_tab"}}"#)
     #expect(completion.isEmpty)
 }
+
+@Test func usageLimitsAreRateLimitsWithTheirResetTime() throws {
+    let zone = TimeZone(identifier: "America/New_York")!
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = zone
+    let now = calendar.date(from: DateComponents(year: 2026, month: 11, day: 23, hour: 9, minute: 5))!
+    let message = "You've hit your 5-hour limit · resets 12:20pm (America/New_York)"
+    let failure = AgentFailure.classify(message)
+    #expect(failure.kind == .rateLimited)
+    #expect(failure.resetsAt != nil)
+    let reset = try #require(AgentFailure.usageReset(in: message, now: now))
+    #expect(reset == calendar.date(from: DateComponents(year: 2026, month: 11, day: 23, hour: 12, minute: 20)))
+    // A time earlier in the day means tomorrow.
+    let tomorrow = try #require(AgentFailure.usageReset(in: "Limit reached · resets 3am (America/New_York)", now: now))
+    #expect(tomorrow == calendar.date(from: DateComponents(year: 2026, month: 11, day: 24, hour: 3)))
+    let weekly = try #require(AgentFailure.usageReset(in: "Weekly limit reached ∙ resets Nov 27, 1am (America/New_York)", now: now))
+    #expect(weekly == calendar.date(from: DateComponents(year: 2026, month: 11, day: 27, hour: 1)))
+    #expect(AgentFailure.classify("Weekly limit reached ∙ resets Nov 27, 1am").kind == .rateLimited)
+    let relative = try #require(AgentFailure.usageReset(in: "You've hit your usage limit. Try again in 2 hours 5 minutes.", now: now))
+    #expect(relative == now.addingTimeInterval(7_500))
+    #expect(AgentFailure.usageReset(in: "Rate limit exceeded", now: now) == nil)
+}
+
+@Test(.timeLimit(.minutes(1))) func usageLimitSwitchesToAnotherReadyProvider() async throws {
+    let cli = try fakeCLI("claude", script: """
+    cat >/dev/null
+    echo '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Claude AI usage limit reached"}'
+    exit 1
+    """)
+    let codex = cli.appendingPathComponent("codex")
+    try """
+    #!/bin/sh
+    cat >/dev/null
+    echo '{"type":"thread.started","thread_id":"T2"}'
+    echo '{"type":"item.completed","item":{"type":"agent_message","text":"Codex here"}}'
+    echo '{"type":"turn.completed"}'
+    """.write(to: codex, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: codex.path)
+    let (service, dir) = try await makeConversations(cliDir: cli)
+    defer {
+        try? FileManager.default.removeItem(at: cli)
+        try? FileManager.default.removeItem(at: dir)
+    }
+    await service.setFailover { failed, tried in
+        [.codex, .opencode].first { $0 != failed && !tried.contains($0) }
+    }
+    let conversation = try await service.create(provider: .claude, model: nil, workingDirectory: NSTemporaryDirectory())
+    _ = try await service.send(conversation.id, text: "hello")
+    let result = try await waitIdle(service, conversation.id)
+    #expect(result.provider == .codex)
+    #expect(result.messages.map(\.text) == ["hello", "Codex here"])
+    #expect(result.messages.last?.status == .complete)
+    #expect(result.messages.last?.notice == "Claude Code reached its usage limit, so Lima switched to Codex.")
+
+    let quick = await service.quickAsk(provider: .claude, model: nil, prompt: "hi") { _ in }
+    #expect((try? quick.get()) == "Codex here")
+}
+
+@Test(.timeLimit(.minutes(1))) func usageLimitWithoutAnotherProviderStaysOnTheMessage() async throws {
+    let cli = try fakeCLI("claude", script: """
+    cat >/dev/null
+    echo '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Claude AI usage limit reached"}'
+    exit 1
+    """)
+    let (service, dir) = try await makeConversations(cliDir: cli)
+    defer {
+        try? FileManager.default.removeItem(at: cli)
+        try? FileManager.default.removeItem(at: dir)
+    }
+    await service.setFailover { _, _ in nil }
+    let conversation = try await service.create(provider: .claude, model: nil, workingDirectory: NSTemporaryDirectory())
+    _ = try await service.send(conversation.id, text: "hello")
+    let result = try await waitIdle(service, conversation.id)
+    #expect(result.provider == .claude)
+    #expect(result.messages.last?.status == .failed)
+    #expect(result.messages.last?.error?.kind == .rateLimited)
+}

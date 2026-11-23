@@ -60,7 +60,8 @@ An agent's "done" is not success. When the turn the task waits on completes, the
 
 ### Failures, stopping and restarts
 
-- **Transient failures** (connection, rate limit, crashed process, unknown) retry at most twice. The retry tells the agent to inspect what already took effect before repeating anything.
+- **Transient failures** (connection, crashed process, unknown) retry at most twice. The retry tells the agent to inspect what already took effect before repeating anything.
+- **Usage limits** first try another provider: when failover is on (Settings → AI providers, default on) and another provider is signed in, the agent's conversation continues the same turn there, and the workspace's provider follows. Only when none is ready do they pause the task until the reset time the provider reports, such as "resets 12:20pm (America/New_York)", plus a minute. The task then continues with the same inspect-first instruction. The wait survives a restart. Pause, Resume and Stop cancel it. If the reset is more than five hours away (a weekly cap), the task is blocked for the user instead. Without a stated reset time, Lima waits two minutes and retries at most twice.
 - **Failures that need the user** (sign-in, missing CLI, permission, rejected model, version) block the task with the reason. **Anything else** fails it.
 - **Stop Task** stops the task and every descendant. Stopping one helper leaves its siblings and unrelated tasks running. Completed artifacts are kept. A canceled agent's late reply never revives its task.
 - **Pause** stops the current turn. **Resume and Retry** send a resume instruction to continue from the latest verified point without replaying commands or clicks.

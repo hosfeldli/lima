@@ -5,7 +5,9 @@ export function workspacePrompts({ workspace = () => null, signal } = {}) {
   const rows = new Map();
   function draw() {
     const id = workspace();
-    for (const card of rows.values()) card.hidden = id !== null && card.dataset.workspace !== id;
+    for (const card of rows.values()) {
+      card.hidden = id !== null && card.dataset.workspace !== id && card.dataset.parent !== id;
+    }
     tray.hidden = ![...rows.values()].some(card => !card.hidden);
   }
   function show(prompt) {
@@ -34,7 +36,7 @@ export function workspacePrompts({ workspace = () => null, signal } = {}) {
           ...(field.type === "checkbox" ? [control, caption] : [caption, control]));
       })) : null,
       status, el("div", { class: "prompt-actions" }, cancel, send));
-    const card = el("article", { "data-workspace": prompt.workspaceId },
+    const card = el("article", { "data-workspace": prompt.workspaceId, "data-parent": prompt.parentWorkspaceId ?? undefined },
       el("header", {}, el("div", { class: "prompt-workspace", text: prompt.workspaceName }),
         el("h3", { text: prompt.question })),
       prompt.detail ? el("p", { class: "prompt-detail", text: prompt.detail }) : null, form);

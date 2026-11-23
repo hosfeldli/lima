@@ -86,14 +86,19 @@ public enum Daemon {
 
         await MainActor.run { runtime.activity = ActivityRecorder(runtime: runtime) }
 
-        // Weekly report: check at startup, every 15 minutes, and on wake, so
-        // a Mac asleep at Friday 3 PM catches up once (dedupe by week ID).
+        // Weekly report and Companion memory: check at startup, every 15
+        // minutes, and on wake, so a Mac asleep at Friday 3 PM catches up
+        // once (dedupe by week ID; memory resumes from its last window).
         let checkReports: @Sendable () -> Void = {
             Task {
                 if let report = try? await runtime.context.runScheduledReportIfDue() {
                     runtime.search.index.upsert(Runtime.document(for: report))
                     runtime.broadcast("context.report", (try? JSONValue.from(report)) ?? .null)
                 }
+                // The Companion's daily memory update rides the same checks, so
+                // a day missed while the Mac was off or a failed request runs
+                // at the next one.
+                _ = try? await runtime.runCompanionMemoryIfDue()
             }
         }
         checkReports()

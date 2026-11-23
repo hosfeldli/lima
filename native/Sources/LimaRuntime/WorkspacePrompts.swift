@@ -143,6 +143,8 @@ actor WorkspacePrompts {
             let data: JSONValue = .object([
                 "id": .string(id), "workspaceId": .string(workspace.id),
                 "workspaceName": .string(workspace.name), "question": .string(question),
+                // A helper's request also shows in its parent workspace, where the user is.
+                "parentWorkspaceId": workspace.parentID.map(JSONValue.string) ?? .null,
                 "detail": detail.map(JSONValue.string) ?? .null, "approval": .bool(approval),
                 "fields": form, "actionLabel": actionLabel.map(JSONValue.string) ?? .null,
             ])

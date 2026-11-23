@@ -9,6 +9,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
   LimaNotesBookmarks: "resource://lima/LimaNotesBookmarks.sys.mjs",
   LimaVisualActivity: "resource://lima/LimaVisualActivity.sys.mjs",
+  approximateLocation: "resource://lima/LimaWorkspaces.sys.mjs",
 });
 
 const ALLOWED_PREFIXES = [
@@ -16,6 +17,33 @@ const ALLOWED_PREFIXES = [
   "assistant.", "agents.", "integrations.", "mcp.grants.", "storage.", "background.", "capabilities.", "workspace.", "agent.", "agents.", "fs.", "dictation.", "task.", "image.", "vector.", "animation.",
 ];
 const ALLOWED_METHODS = new Set(["quickAsk", "auth.approve", "auth.evaluate", "system.openApp", "host.hello"]);
+const PERSONAL_METHODS = new Set(["personalMemory.get", "personalMemory.save", "companionMemory.get", "companionMemory.update", "companionMemory.run",
+  "system.permissions"]);
+// The walkthrough may save the optional details it asks for, and set the
+// Companion's memory on or off; nothing else personal.
+const WELCOME_METHODS = new Set(["personalMemory.get", "personalMemory.save", "companionMemory.get", "companionMemory.update", "system.permissions"]);
+
+function isWelcomePage(browser) {
+  return browser?.currentURI?.spec === "about:lima?view=welcome";
+}
+
+/** Opens a macOS privacy pane through the runtime (no "open this link?"
+ * prompt); falls back to the external-protocol handler if it is offline. */
+async function openPrivacyPane(pane, anchor) {
+  try {
+    await lazy.LimaBridge.request("system.openSettings", { pane });
+  } catch {
+    const page = Services.io.newURI(`x-apple.systempreferences:com.apple.preference.security?${anchor}`);
+    Cc["@mozilla.org/uriloader/external-protocol-service;1"].getService(Ci.nsIExternalProtocolService)
+      .loadURI(page, Services.scriptSecurityManager.getSystemPrincipal());
+  }
+  return null;
+}
+
+function isSettingsPage(browser) {
+  const spec = browser?.currentURI?.spec;
+  return spec?.startsWith("about:lima?") && new URL(spec).searchParams.get("view") === "integrations";
+}
 
 const actors = new Set();
 let unsubscribe = null;
@@ -67,11 +95,18 @@ export class LimaParent extends JSWindowActorParent {
     switch (message.name) {
       case "request": {
         const { method, params } = message.data;
-        if (!ALLOWED_PREFIXES.some(p => method.startsWith(p)) && !ALLOWED_METHODS.has(method)) {
+        const personal = PERSONAL_METHODS.has(method);
+        const win = this.browsingContext.topChromeWindow;
+        const browser = this.browsingContext.top.embedderElement;
+        const personalAllowed = personal && win && !lazy.PrivateBrowsingUtils.isWindowPrivate(win) &&
+          (isSettingsPage(browser) || (isWelcomePage(browser) && WELCOME_METHODS.has(method)));
+        if (!personalAllowed && !ALLOWED_PREFIXES.some(p => method.startsWith(p)) && !ALLOWED_METHODS.has(method)) {
           return { ok: false, code: "not_authorized", message: `${method} is not available to Lima pages` };
         }
         try {
-          const result = await lazy.LimaBridge.request(method, params);
+          const requestParams = method === "assistant.plan" && win && lazy.PrivateBrowsingUtils.isWindowPrivate(win)
+            ? { ...params, omitPersonalMemory: true } : params;
+          const result = await lazy.LimaBridge.request(method, requestParams);
           return { ok: true, result };
         } catch (error) {
           return { ok: false, code: error.code ?? "error", message: error.message };
@@ -115,6 +150,22 @@ export class LimaParent extends JSWindowActorParent {
     const win = this.browsingContext.topChromeWindow;
     const browser = this.browsingContext.top.embedderElement;
     switch (kind) {
+      case "closeQuickTerminal":
+        if (browser?.id === "lima-quick-terminal-browser") win.dispatchEvent(new win.CustomEvent("LimaQuickTerminalClose"));
+        return null;
+      case "locationPreference":
+      case "locationCheck":
+      case "locationSettings": {
+        if (lazy.PrivateBrowsingUtils.isWindowPrivate(win) || !isSettingsPage(browser) || browser !== win.gBrowser.selectedBrowser) {
+          throw new Error("Open Personal Memory in Lima Settings.");
+        }
+        if (kind === "locationPreference") {
+          if (typeof payload?.enabled === "boolean") Services.prefs.setBoolPref("lima.location.enabled", payload.enabled);
+          return Services.prefs.getBoolPref("lima.location.enabled", false);
+        }
+        if (kind === "locationCheck") return lazy.approximateLocation(win);
+        return openPrivacyPane("location", "Privacy_LocationServices");
+      }
       case "visualActivity":
         return lazy.PrivateBrowsingUtils.isWindowPrivate(win) ? null : lazy.LimaVisualActivity.snapshot;
       case "finishWelcome": {
@@ -122,6 +173,16 @@ export class LimaParent extends JSWindowActorParent {
         const { LimaWelcome } = ChromeUtils.importESModule("resource://lima/LimaWelcome.sys.mjs");
         await LimaWelcome.finish(win, browser);
         return null;
+      }
+      case "welcomeImport":
+      case "welcomeDefaultStatus":
+      case "welcomeMakeDefault": {
+        if (lazy.PrivateBrowsingUtils.isWindowPrivate(win) || browser?.currentURI?.spec !== "about:lima?view=welcome" ||
+            win.gBrowser.selectedBrowser !== browser) throw new Error("Open the Lima walkthrough to continue.");
+        const { LimaWelcome } = ChromeUtils.importESModule("resource://lima/LimaWelcome.sys.mjs");
+        if (kind === "welcomeImport") return LimaWelcome.importBrowserData(win, browser);
+        if (kind === "welcomeMakeDefault") return LimaWelcome.makeDefaultBrowser();
+        return LimaWelcome.isDefaultBrowser();
       }
       case "updateStatus":
       case "checkForUpdate":
@@ -136,19 +197,10 @@ export class LimaParent extends JSWindowActorParent {
         }
         return lazy.LimaBridge.request(kind === "updateStatus" ? "update.status" : "update.check");
       }
-      case "filesPrivacySettings": {
-        const page = Services.io.newURI("x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders");
-        Cc["@mozilla.org/uriloader/external-protocol-service;1"]
-          .getService(Ci.nsIExternalProtocolService)
-          .loadURI(page, Services.scriptSecurityManager.getSystemPrincipal());
-        return null;
-      }
-      case "accessibilitySettings": {
-        const page = Services.io.newURI("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
-        Cc["@mozilla.org/uriloader/external-protocol-service;1"].getService(Ci.nsIExternalProtocolService)
-          .loadURI(page, Services.scriptSecurityManager.getSystemPrincipal());
-        return null;
-      }
+      case "filesPrivacySettings":
+        return openPrivacyPane("files", "Privacy_FilesAndFolders");
+      case "accessibilitySettings":
+        return openPrivacyPane("accessibility", "Privacy_Accessibility");
       case "personalityChanged": {
         if (["full", "subtle", "off"].includes(payload?.value)) {
           Services.prefs.setStringPref("lima.personality", payload.value);
@@ -307,7 +359,7 @@ export class LimaParent extends JSWindowActorParent {
         const { LimaCreate } = ChromeUtils.importESModule("resource://lima/LimaSidebar.sys.mjs");
         const win = this.browsingContext.topChromeWindow;
         // Awaited so the page that asked shows any failure in place.
-        if (payload?.what === "workspace") await LimaCreate.workspace(win, { pickFolder: payload?.pickFolder === true });
+        if (payload?.what === "workspace") return await LimaCreate.workspace(win, { pickFolder: payload?.pickFolder === true });
         else if (payload?.what === "note") await LimaCreate.note(win);
         else if (payload?.what === "terminal") await LimaCreate.terminal(win);
         return null;

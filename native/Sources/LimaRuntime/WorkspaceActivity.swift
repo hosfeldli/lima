@@ -95,6 +95,14 @@ extension Runtime {
         case .updated(let conversation):
             guard let workspaceID = conversation.workspaceID else { return }
             focus.bind(conversation: conversation.id, to: workspaceID)
+            // Provider failover moved the agent's chat; keep the workspace in step.
+            if conversation.messages.last?.notice != nil {
+                let provider = conversation.provider
+                Task {
+                    guard let workspace = try? await workspaces.get(workspaceID), workspace.provider != provider else { return }
+                    _ = try? await workspaces.update(workspaceID) { workspace in workspace.provider = provider }
+                }
+            }
             let streaming = conversation.messages.last.map { $0.role == .assistant && $0.status == .streaming } ?? false
             if !streaming {
                 let wasActive = focus.state(workspaceID).surface != .idle

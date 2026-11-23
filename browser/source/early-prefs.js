@@ -1,4 +1,5 @@
 pref("browser.aboutwelcome.enabled", false);
+pref("browser.shell.checkDefaultBrowser", false);
 pref("startup.homepage_welcome_url", "");
 pref("startup.homepage_welcome_url.additional", "");
 pref("startup.homepage_override_url", "");

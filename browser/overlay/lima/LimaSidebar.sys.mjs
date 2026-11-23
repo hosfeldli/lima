@@ -120,7 +120,7 @@ export const LimaCreate = {
     let name = "New Workspace";
     if (pickFolder) {
       directory = await pick(win);
-      if (!directory) return;
+      if (!directory) return false;
       name = directory.split("/").filter(Boolean).pop() ?? name;
     }
     const provider = Services.prefs.getStringPref("lima.agent.provider", "claude");
@@ -130,7 +130,7 @@ export const LimaCreate = {
     // The reconciler builds the folder from the workspace.created event.
     for (let i = 0; i < 40; i++) {
       const folder = lazy.LimaWorkspaces.folderFor(workspace.id, "folder", win);
-      if (folder) return;
+      if (folder) return true;
       await new Promise(resolve => win.setTimeout(resolve, 100));
     }
     throw new Error(`“${workspace.name}” was created, but its sidebar folder didn't appear. Reopen Lima to restore it.`);

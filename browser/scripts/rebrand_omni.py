@@ -17,7 +17,10 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from prepare_source import BROWSER, LIMA_REPO, LIMA_SITE, WORDMARK, rebrand_text, render_svg  # noqa: E402
+from prepare_source import (  # noqa: E402
+    BROWSER, LIMA_MIGRATION_START, LIMA_REPO, LIMA_SITE, MIGRATION_START, WORDMARK,
+    rebrand_text, render_svg,
+)
 
 ICON = BROWSER / "branding/lima-app-icon.svg"
 BRANDING = "chrome/browser/content/branding"
@@ -25,6 +28,7 @@ BRANDING = "chrome/browser/content/branding"
 # (archive member, old, new). Lima owns onboarding and updates, and Zen's
 # share server and page injections would trust Zen's servers inside Lima.
 EDITS = [
+    ("moz-src/browser/components/migration/MigrationUtils.sys.mjs", MIGRATION_START, LIMA_MIGRATION_START),
     ("defaults/preferences/firefox-branding.js", '"https://zen-browser.app/whatsnew?v=%VERSION%"', '""'),
     ("defaults/preferences/firefox-branding.js", '"https://zen-browser.app/welcome/"', '""'),
     ("defaults/preferences/firefox-branding.js", '"https://zen-browser.app/privacy-policy/"', '""'),
