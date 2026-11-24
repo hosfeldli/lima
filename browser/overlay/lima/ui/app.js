@@ -5,14 +5,14 @@
 import { bridge, el, setPage } from "./lib.js";
 import { renderActivity, renderRun } from "./home.js";
 import { renderIndex, renderNote } from "./notes.js";
-import { renderTerminal } from "./terminal.js";
 import { renderAssistant } from "./assistant.js";
 import { renderWorkspace } from "./workspace.js";
-import { renderChat } from "./chat.js";
+import { renderChat, renderMedia } from "./chat.js";
 import { renderStudio } from "./studio.js";
 import { renderWelcome } from "./welcome.js";
 import { renderAsk, renderAudio, renderIntegrations } from "./views.js";
 import { renderImageStudio } from "./image-studio.js";
+import { renderSchedules } from "./schedules.js";
 import { renderStudioAnimation, renderStudioVector } from "./studio-production.js";
 
 const params = new URLSearchParams(location.search);
@@ -36,11 +36,14 @@ const routes = [
   [() => ["workspaces", "agents"].includes(params.get("view")), () => renderStart(app)],
   [() => params.has("note"), () => renderNote(app, params.get("note"))],
   [() => params.get("view") === "notes", () => renderIndex(app)],
-  [() => params.has("terminal") || params.get("view") === "terminal", () => renderTerminal(app, params.get("terminal"))],
+  // The terminal was removed (agents use their own tools); old tabs land home.
+  [() => params.has("terminal") || params.get("view") === "terminal", () => renderStart(app)],
   [() => params.has("chat") || params.get("view") === "chat", () => renderChat(app, params.get("chat") ?? "new", params.get("prompt"))],
   [() => params.has("ask"), () => renderAsk(app, params.get("ask"))],
   [() => params.has("run"), () => renderRun(app, params.get("run"), params.get("input"), params.get("execution"))],
   [() => params.has("tool"), () => renderRun(app, params.get("tool"), params.get("input"))],
+  [() => params.get("view") === "schedules", () => renderSchedules(app)],
+  [() => params.get("view") === "media", () => renderMedia(app, params.get("chat"), params.get("media"))],
   [() => params.get("view") === "activity", () => renderActivity(app, params.get("tab") ?? "commands")],
   [() => params.get("view") === "context", () => renderActivity(app, "reports", params.get("report"))],
   [() => params.get("view") === "studio", () => renderStudio(app)],

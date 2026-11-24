@@ -15,7 +15,11 @@
 #                                            throwaway feed key; skips git gates, never uploads
 #
 # Environment (CI sets these; see .github/workflows/release.yml):
-#   LIMA_SIGN_KEYCHAIN     keychain with the pinned identity (local default: Lima 4 signing dir)
+#   LIMA_SIGN_KEYCHAIN     keychain with the pinned identity (local default: Lima 4 signing dir,
+#                          or the login keychain for developer-id signing)
+#   LIMA_NOTARY_KEY_FILE, LIMA_NOTARY_KEY_ID, LIMA_NOTARY_ISSUER
+#                          App Store Connect API key for notarization (developer-id signing);
+#                          locally LIMA_NOTARY_PROFILE (a `notarytool store-credentials` profile) also works
 #   LIMA_UPDATE_KEY_FILE   Ed25519 private key for the feed (base64 raw)
 #   LIMA_UPDATE_BUCKET     public GCS bucket serving the feed and downloads
 #   LIMA_ARCHIVE_BUCKET    private GCS bucket keeping every release's artifacts
@@ -36,6 +40,8 @@ require() { for tool in "$@"; do command -v "$tool" >/dev/null || fail "missing 
 
 IDENTITY="$(json "$POLICY" "['signing']['identity']")"
 CERT_SHA="$(json "$POLICY" "['signing']['certificateSHA256']")"
+SIGN_MODE="$(json "$POLICY" "['signing']['mode']")"
+[[ "$SIGN_MODE" == self-signed || "$SIGN_MODE" == developer-id ]] || { echo "error: signing.mode must be self-signed or developer-id" >&2; exit 1; }
 FEED_URL="$(json "$POLICY" "['updates']['feedURL']")"
 UPDATE_PUBLIC_KEY="$(json "$POLICY" "['updates']['publicKey']")"
 REPOSITORY="$(json "$POLICY" "['github']['repository']")"
@@ -143,7 +149,10 @@ cmd_tag() {
 # Uses LIMA_SIGN_KEYCHAIN (CI) or the local Lima signing keychain, and proves
 # it holds the pinned certificate before anything is signed.
 prepare_signing() {
-  if [[ -z "${LIMA_SIGN_KEYCHAIN:-}" ]]; then
+  if [[ -z "${LIMA_SIGN_KEYCHAIN:-}" && "$SIGN_MODE" == developer-id ]]; then
+    # Locally, the Developer ID certificate lives in the login keychain.
+    LIMA_SIGN_KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
+  elif [[ -z "${LIMA_SIGN_KEYCHAIN:-}" ]]; then
     LIMA_SIGN_KEYCHAIN="$LOCAL_SIGNING_DIR/RayPlacementSigning.keychain-db"
     [[ -f "$LIMA_SIGN_KEYCHAIN" && -f "$LOCAL_SIGNING_DIR/keychain-password" ]] || fail "no signing keychain (set LIMA_SIGN_KEYCHAIN)"
     security unlock-keychain -p "$(cat "$LOCAL_SIGNING_DIR/keychain-password")" "$LIMA_SIGN_KEYCHAIN"
@@ -161,6 +170,33 @@ prepare_signing() {
   local actual
   actual="$(security find-certificate -c "$IDENTITY" -p "$LIMA_SIGN_KEYCHAIN" | openssl x509 -outform der | shasum -a 256 | awk '{print $1}')"
   [[ "$actual" == "$CERT_SHA" ]] || fail "signing certificate $actual is not the pinned $CERT_SHA"
+  if [[ "$SIGN_MODE" == developer-id ]]; then
+    [[ -n "${LIMA_NOTARY_PROFILE:-}" || ( -f "${LIMA_NOTARY_KEY_FILE:-}" && -n "${LIMA_NOTARY_KEY_ID:-}" && -n "${LIMA_NOTARY_ISSUER:-}" ) ]] \
+      || fail "developer-id releases are notarized: set LIMA_NOTARY_KEY_FILE, LIMA_NOTARY_KEY_ID and LIMA_NOTARY_ISSUER (or LIMA_NOTARY_PROFILE)"
+  fi
+}
+
+# MARK: Notarization
+
+notary_auth() {
+  if [[ -n "${LIMA_NOTARY_PROFILE:-}" ]]; then echo --keychain-profile "$LIMA_NOTARY_PROFILE"
+  else echo --key "$LIMA_NOTARY_KEY_FILE" --key-id "$LIMA_NOTARY_KEY_ID" --issuer "$LIMA_NOTARY_ISSUER"; fi
+}
+
+# Submits a zip or DMG to Apple and waits. A rejection prints Apple's log.
+notarize() {
+  local file="$1" result status id
+  step "Notarizing $(basename "$file")"
+  # shellcheck disable=SC2046
+  result="$(xcrun notarytool submit "$file" $(notary_auth) --wait --timeout 45m --output-format json)" || true
+  status="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read() or "{}").get("status", ""))' <<<"$result")"
+  id="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read() or "{}").get("id", ""))' <<<"$result")"
+  if [[ "$status" != Accepted ]]; then
+    # shellcheck disable=SC2046
+    [[ -n "$id" ]] && xcrun notarytool log "$id" $(notary_auth) >&2 || true
+    fail "Apple did not notarize $(basename "$file") (${status:-no response}; submission ${id:-none})"
+  fi
+  echo "Notarized $(basename "$file") ($id)"
 }
 
 # MARK: Gates
@@ -181,7 +217,7 @@ published_feed_build() {
 
 cmd_preflight() {
   local tag="$1"
-  require git gh swift python3 codesign security hdiutil ditto shasum openssl curl plutil
+  require git gh swift python3 codesign security hdiutil ditto shasum openssl curl plutil tiffutil
   [[ "$FEED_URL" == https://*/latest.json ]] || fail "browser/release.json updates.feedURL must be an https URL ending in /latest.json"
   [[ -n "$UPDATE_PUBLIC_KEY" ]] || fail "browser/release.json updates.publicKey is empty (run browser/scripts/release/setup_update_key.sh)"
   if [[ -n "${LIMA_UPDATE_BUCKET:-}" ]]; then
@@ -239,6 +275,22 @@ cmd_build() {
   echo "Built $tag in $(dist_dir "$tag"). Next: release.sh stage --tag $tag"
 }
 
+# The installer window: Lima, an arrow and Applications on a drawn background,
+# laid out by dmgbuild (pinned, hash-checked) without scripting Finder.
+build_dmg() {
+  local app="$1" dmg="$2" work
+  work="$(mktemp -d)"
+  python3 -m venv "$work/venv"
+  "$work/venv/bin/pip" install --quiet --disable-pip-version-check --no-deps --require-hashes \
+    -r "$SCRIPTS/release/dmg-requirements.txt" || fail "couldn't install the pinned DMG tools"
+  tiffutil -cathidpicheck "$ROOT/browser/branding/dmg/background.png" "$ROOT/browser/branding/dmg/background@2x.png" \
+    -out "$work/background.tiff" >/dev/null
+  rm -f "$dmg"
+  "$work/venv/bin/dmgbuild" -s "$SCRIPTS/release/dmg_settings.py" -D app="$app" -D background="$work/background.tiff" \
+    -D icon="$app/Contents/Resources/lima.icns" "Lima" "$dmg" >/dev/null || fail "couldn't build the DMG"
+  rm -rf "$work"
+}
+
 build_artifacts() {
   local tag="$1" v="${1#v}"
   prepare_signing
@@ -251,18 +303,25 @@ build_artifacts() {
   step "Building signed Lima.app"
   LIMA_RELEASE_POLICY="$POLICY" LIMA_RELEASE=1 LIMA_SIGN_IDENTITY="$IDENTITY" LIMA_BUILD_DIR="$out" "$SCRIPTS/repack.sh"
   [[ "$(plutil -extract CFBundleVersion raw "$out/Lima.app/Contents/Info.plist")" == "$(build_number "$v")" ]] || fail "built app has the wrong CFBundleVersion"
+  if [[ "$SIGN_MODE" == developer-id ]]; then
+    # Notarize the app, then staple the ticket so it opens offline too.
+    local submission; submission="$(mktemp -d)/Lima.zip"
+    ditto -c -k --sequesterRsrc --keepParent "$out/Lima.app" "$submission"
+    notarize "$submission"
+    rm -f "$submission"
+    xcrun stapler staple "$out/Lima.app"
+  fi
 
   step "Packaging"
   ditto -c -k --sequesterRsrc --keepParent "$out/Lima.app" "$dist/Lima-$v.zip"
-  local stage; stage="$(mktemp -d)"
-  ditto "$out/Lima.app" "$stage/Lima.app"
-  ln -s /Applications "$stage/Applications"
-  cp "$ROOT/browser/branding/install-lima.html" "$stage/Install Lima.html"
-  cp "$out/Lima.app/Contents/Resources/lima.icns" "$stage/.VolumeIcon.icns"
-  if command -v SetFile >/dev/null 2>&1; then SetFile -a C "$stage"; fi
-  hdiutil create -quiet -volname "Lima $v" -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$dist/Lima-$v.dmg"
-  rm -rf "$stage"
-  codesign --force --timestamp=none --sign "$IDENTITY" --keychain "$LIMA_SIGN_KEYCHAIN" "$dist/Lima-$v.dmg"
+  build_dmg "$out/Lima.app" "$dist/Lima-$v.dmg"
+  if [[ "$SIGN_MODE" == developer-id ]]; then
+    codesign --force --timestamp --sign "$IDENTITY" --keychain "$LIMA_SIGN_KEYCHAIN" "$dist/Lima-$v.dmg"
+    notarize "$dist/Lima-$v.dmg"
+    xcrun stapler staple "$dist/Lima-$v.dmg"
+  else
+    codesign --force --timestamp=none --sign "$IDENTITY" --keychain "$LIMA_SIGN_KEYCHAIN" "$dist/Lima-$v.dmg"
+  fi
   cp "$out/zen-entitlements.json" "$dist/zen-entitlements.json"
 
   step "Signing update feed"
@@ -303,9 +362,20 @@ cmd_verify() {
   [[ "$(plutil -extract LimaUpdatePublicKey raw "$work/Lima.app/Contents/Info.plist")" == "$UPDATE_PUBLIC_KEY" ]] || fail "app carries the wrong update key"
   [[ "$(plutil -extract LimaUpdateFeedURL raw "$work/Lima.app/Contents/Info.plist")" == "$FEED_URL" ]] || fail "app carries the wrong feed URL"
   grep -q 'lockPref("lima.release.hardened", true)' "$work/Lima.app/Contents/Resources/lima.cfg" || fail "release prefs are missing"
-  rm -rf "$work"
+  local team; team="$(json "$POLICY" "['signing'].get('developerTeam', '')")"
+  if [[ -n "$team" ]]; then
+    [[ "$(plutil -extract LimaTrustedTeam raw "$work/Lima.app/Contents/Info.plist")" == "$team" ]] || fail "app doesn't trust Developer ID team $team"
+  fi
   codesign --verify --strict "$dist/Lima-$v.dmg"
-  echo "Verified $tag: checksums, signed feed, signed app (pinned certificate), DMG"
+  if [[ "$SIGN_MODE" == developer-id ]]; then
+    # What Gatekeeper decides on a downloaded copy: notarized and stapled.
+    xcrun stapler validate "$work/Lima.app" >/dev/null || fail "app has no stapled notarization ticket"
+    spctl --assess --type execute "$work/Lima.app" || fail "Gatekeeper rejects the app"
+    xcrun stapler validate "$dist/Lima-$v.dmg" >/dev/null || fail "DMG has no stapled notarization ticket"
+    spctl --assess --type open --context context:primary-signature "$dist/Lima-$v.dmg" || fail "Gatekeeper rejects the DMG"
+  fi
+  rm -rf "$work"
+  echo "Verified $tag: checksums, signed feed, signed app (pinned certificate), DMG$([[ "$SIGN_MODE" == developer-id ]] && echo ', notarized and accepted by Gatekeeper')"
 }
 
 # MARK: Distribution

@@ -245,7 +245,7 @@ public final class CapabilityRegistry: @unchecked Sendable {
         // Navigate: every Lima surface (rail order is bottom-up by rank)
         add("open.notes", "Notes", "All notes, organized by your bookmark folders", category: "navigate", icon: "note", keywords: ["notebook"], rank: 1, handler: open("about:lima?view=notes"))
         add("open.chat", "AI Chat", "Conversations with Claude, Codex and OpenCode", category: "navigate", icon: "chat", keywords: ["assistant"], rank: 2, handler: open("about:lima?view=chat"))
-        add("open.terminal", "Terminal", "A shell that keeps running when tabs close", category: "navigate", icon: "terminal", keywords: ["shell", "zsh"], rank: 3, handler: open("about:lima?view=terminal"))
+        add("open.schedules", "Scheduled Tasks", "Work Lima runs on its own, once or on repeat", category: "navigate", icon: "calendar", keywords: ["schedule", "recurring", "reminder", "every day", "later"], rank: 4, handler: open("about:lima?view=schedules"))
         add("open.activity", "Activity & Reports", "Commands Lima ran, activity history and weekly reports", category: "navigate", icon: "activity", keywords: ["history", "log", "timeline"], rank: 5, handler: open("about:lima?view=activity&tab=commands"))
         add("open.context", "Weekly Reports", "Friday summaries of your week", category: "navigate", icon: "context", keywords: ["week", "reports", "context shelf"], rank: 6, handler: open("about:lima?view=activity&tab=reports"))
         add("open.studio", "Screenshot Studio", "Capture, annotate and read text", category: "navigate", icon: "studio", rank: 7, handler: open("about:lima?view=studio"))
@@ -263,12 +263,7 @@ public final class CapabilityRegistry: @unchecked Sendable {
             let note = try await runtime.notes.create(title: input.isEmpty ? "Untitled Canvas" : input, kind: .canvas)
             return CapabilityResult.open("about:lima?note=\(note.id)")
         }
-        add("terminal.new", "New Terminal", "Start a zsh session in a tab", category: "create", icon: "terminal", keywords: ["shell"],
-            home: true, risk: .runBuildOrTest, rank: 12) { _, runtime, _ in
-            let info = try await runtime.terminals.create(cwd: nil)
-            return CapabilityResult.open("about:lima?terminal=\(info.id)")
-        }
-        add("workspace.new", "New AI Workspace", "A folder, terminal and agent that work together in their own tab folder", category: "ai", icon: "workspace",
+        add("workspace.new", "New AI Workspace", "A folder and an agent that work together in their own tab folder", category: "ai", icon: "workspace",
             keywords: ["project", "agent", "folder"], input: ("Name", false), home: true, risk: .runBuildOrTest, mcp: "workspaces:create", rank: 9) { input, runtime, context in
             let workspace = try await runtime.createWorkspace(name: input.isEmpty ? "Workspace" : input, directory: nil, provider: .claude,
                                                               parentID: context.workspaceID, task: nil)

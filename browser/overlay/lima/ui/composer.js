@@ -1,4 +1,4 @@
-import { bridge, call, el, prefs } from "./lib.js";
+import { bridge, call, el, errorText, icon, prefs } from "./lib.js";
 
 export const PROVIDERS = { claude: "Claude", codex: "Codex", opencode: "OpenCode" };
 
@@ -6,6 +6,31 @@ async function storedPreferences() {
   const remote = await bridge.browser("agentPreferences", {}).catch(() => null);
   const fallback = Object.fromEntries(Object.keys(PROVIDERS).map(provider => [provider, prefs.get("model." + provider, "default")]));
   return remote ?? { provider: prefs.get("provider", "claude"), models: fallback };
+}
+
+/* Sending while a reply runs: ↩ queues the message to run after it (in
+ * order); ⌘↩ stops the reply, keeping what it wrote, and sends at once. */
+export const sendMode = event => (event?.metaKey || event?.ctrlKey ? "interrupt" : "queue");
+
+export const QUEUE_HINT = "↩ queues it for after this reply · ⌘↩ stops the reply and sends now";
+
+/** A queued message's row: send it now, or take it back to edit. */
+export function queuedActions({ interrupt, edit }) {
+  const act = (label, title, run) => el("button", { class: "ghost", title, onclick: async event => {
+    event.currentTarget.disabled = true;
+    try { await run(); } finally { if (event.currentTarget) event.currentTarget.disabled = false; }
+  } }, label);
+  return el("div", { class: "queued-actions" },
+    el("span", { class: "queued-label" }, icon("history"), "Queued · sends after this reply"),
+    act("Send now", "Stop the current reply and send this now", interrupt),
+    act("Edit", "Take it back into the message box", edit));
+}
+
+/** Puts text that never ran back in front of the user's draft. */
+export function restoreDraft(input, texts) {
+  const restored = [...texts, input.value.trim()].filter(Boolean).join("\n\n");
+  input.value = restored;
+  input.dispatchEvent(new Event("input"));
 }
 
 export async function preferredAgent() {
@@ -190,4 +215,123 @@ export function composerMenu(input, load) {
       return true;
     },
   };
+}
+
+// MARK: Attachments
+
+const CHUNK = 1536 * 1024; // raw bytes per upload frame (2 MB as base64)
+const LONG_PASTE = { characters: 4000, lines: 80 };
+
+function base64(bytes) {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
+}
+
+const formatSize = bytes => bytes < 1000 ? `${bytes} B` : bytes < 1e6 ? `${(bytes / 1e3).toFixed(0)} KB` : `${(bytes / 1e6).toFixed(1)} MB`;
+
+/** Files dropped or pasted into a composer: uploaded to the conversation as
+ * they arrive, shown as chips (thumbnails for images), sent with the next
+ * message. A very long paste becomes a text attachment instead of filling
+ * the box. `conversation()` returns the chat's ID. */
+export function attachmentTray({ conversation, input, onChange = () => {} }) {
+  const node = el("div", { class: "attachment-tray", hidden: true });
+  const items = [];
+
+  function paint() {
+    node.hidden = !items.length;
+    node.replaceChildren(...items.map(item => item.chip));
+    onChange();
+  }
+
+  function add(file, { label } = {}) {
+    const item = { file, name: file.name || "attachment", type: file.type || "application/octet-stream", state: "uploading", result: null };
+    const progress = el("i", { class: "attachment-progress" });
+    const preview = file.type.startsWith("image/") ? el("img", { class: "attachment-thumb", alt: "", src: URL.createObjectURL(file) })
+      : el("span", { class: "attachment-thumb file" }, icon(file.type.startsWith("text/") ? "paragraph" : "file"));
+    item.chip = el("span", { class: "attachment-chip", "data-state": "uploading", title: item.name },
+      preview, el("span", { class: "attachment-text" }, el("strong", { text: label ?? item.name }), el("small", { text: formatSize(file.size) })),
+      progress,
+      el("button", { type: "button", class: "attachment-remove", title: "Remove", "aria-label": `Remove ${item.name}`, onclick: () => {
+        items.splice(items.indexOf(item), 1);
+        if (preview.src?.startsWith("blob:")) URL.revokeObjectURL(preview.src);
+        paint();
+      } }, icon("close")));
+    items.push(item);
+    paint();
+    upload(item, progress).then(() => { item.state = "ready"; item.chip.dataset.state = "ready"; onChange(); },
+      error => { item.state = "failed"; item.chip.dataset.state = "failed"; item.chip.title = errorText(error); onChange(); });
+  }
+
+  async function upload(item, progress) {
+    const bytes = new Uint8Array(await item.file.arrayBuffer());
+    if (bytes.length > 50 * 1024 * 1024) throw new Error("Attachments can be up to 50 MB.");
+    let token;
+    for (let offset = 0; offset < Math.max(bytes.length, 1); offset += CHUNK) {
+      const done = offset + CHUNK >= bytes.length;
+      const reply = await call("chat.attach", { id: conversation(), name: item.name, type: item.type, upload: token,
+        data: base64(bytes.subarray(offset, offset + CHUNK)), done });
+      token = reply.upload;
+      progress.style.width = `${Math.round(Math.min(1, (offset + CHUNK) / Math.max(bytes.length, 1)) * 100)}%`;
+      if (done) item.result = reply;
+    }
+  }
+
+  function takeFiles(list) {
+    const files = [...(list ?? [])].filter(file => file.size >= 0);
+    for (const file of files.slice(0, 10)) add(file);
+    return files.length > 0;
+  }
+
+  // Drop anywhere on the composer; paste files, images or very long text.
+  const target = input.closest(".composer-box") ?? input;
+  target.addEventListener("dragover", event => {
+    if (![...event.dataTransfer.types].includes("Files")) return;
+    event.preventDefault();
+    target.classList.add("dropping");
+  });
+  target.addEventListener("dragleave", event => { if (!target.contains(event.relatedTarget)) target.classList.remove("dropping"); });
+  target.addEventListener("drop", event => {
+    target.classList.remove("dropping");
+    if (!event.dataTransfer.files.length) return;
+    event.preventDefault();
+    takeFiles(event.dataTransfer.files);
+    input.focus();
+  });
+  input.addEventListener("paste", event => {
+    if (event.clipboardData.files.length) {
+      event.preventDefault();
+      takeFiles(event.clipboardData.files);
+      return;
+    }
+    const text = event.clipboardData.getData("text/plain");
+    if (text.length < LONG_PASTE.characters && text.split("\n").length < LONG_PASTE.lines) return;
+    event.preventDefault();
+    const lines = text.split("\n").length;
+    add(new File([text], "Pasted text.txt", { type: "text/plain" }), { label: `Pasted text · ${lines} lines` });
+  });
+
+  return {
+    node,
+    /** Ready attachments for chat.send, or throws while one is still uploading. */
+    ready() {
+      if (items.some(item => item.state === "uploading")) throw new Error("Wait for attachments to finish uploading.");
+      return items.filter(item => item.state === "ready").map(item => ({ path: item.result.path, type: item.result.type }));
+    },
+    get count() { return items.length; },
+    get busy() { return items.some(item => item.state === "uploading"); },
+    clear() {
+      for (const item of items) { const img = item.chip.querySelector("img"); if (img?.src?.startsWith("blob:")) URL.revokeObjectURL(img.src); }
+      items.length = 0;
+      paint();
+    },
+  };
+}
+
+/** Attachment chips on a sent message. */
+export function sentAttachments(list) {
+  if (!list?.length) return null;
+  return el("div", { class: "attachment-tray sent" }, list.map(item => el("span", { class: "attachment-chip", "data-state": "ready", title: item.path },
+    el("span", { class: "attachment-thumb file" }, icon(item.type?.startsWith("image/") ? "image" : item.type?.startsWith("text/") ? "paragraph" : "file")),
+    el("span", { class: "attachment-text" }, el("strong", { text: item.name }), el("small", { text: formatSize(item.size ?? 0) })))));
 }

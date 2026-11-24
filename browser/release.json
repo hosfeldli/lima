@@ -4,7 +4,8 @@
   "signing": {
     "mode": "self-signed",
     "identity": "RayPlacement Local Code Signing",
-    "certificateSHA256": "3dfe6a7f48bff98946a3b309f733c58b515d026daca0cfe63bf03f6a09142f12"
+    "certificateSHA256": "3dfe6a7f48bff98946a3b309f733c58b515d026daca0cfe63bf03f6a09142f12",
+    "developerTeam": "575W282638"
   },
   "updates": {
     "channel": "stable",
@@ -13,5 +14,8 @@
   },
   "github": {
     "repository": "hosfeldli/lima"
+  },
+  "usage": {
+    "endpoint": "https://lima-usage-940267100054.us-central1.run.app"
   }
 }

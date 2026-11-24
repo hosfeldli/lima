@@ -30,7 +30,6 @@ export async function renderWorkspace(app, id) {
     const open = (glyph, label, fn) => el("button", { class: "ghost", onclick: fn }, icon(glyph), label);
     sections.replaceChildren(
       open("chat", "Agent", () => bridge.browser("openChat", { id })),
-      workspace.terminalID ? open("terminal", "Terminal · Files · Changes", () => bridge.openTab("about:lima?terminal=" + workspace.terminalID)) : null,
       ...workspace.tabs.map(tab => open(tab.url.startsWith("about:lima?note=") ? "note" : "tab", tab.title, () => {
         if (tab.url.startsWith("about:lima?")) bridge.openTab(tab.url);
         else bridge.browser("openWorkspacePage", { id, url: tab.url });

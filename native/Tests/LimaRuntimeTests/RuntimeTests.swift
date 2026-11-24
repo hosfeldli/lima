@@ -41,8 +41,11 @@ import Testing
     }
     #expect(allowed.ok)
     let grant = await runtime.handle(BridgeRequest(id: "3", method: "terminal.lease.grant", params: .object(["id": .string("t"), "agentId": .string("a")])), context: mcp)
-    #expect(grant.error?.code == .notAuthorized)
-    let search = await runtime.handle(BridgeRequest(id: "4", method: "search.query", params: .object(["query": .string("zebra")])), context: mcp)
+    #expect(grant.error?.code == .unknownMethod, "Lima no longer has a terminal to control")
+    // Reading needs the search:read grant (on by default; asks when another test turned it off).
+    let (search, _) = try await answeringApproval(runtime, approve: true) {
+        await runtime.handle(BridgeRequest(id: "4", method: "search.query", params: .object(["query": .string("zebra")])), context: mcp)
+    }
     #expect(search.result?["results"]?.arrayValue?.first?["source"]?.stringValue == "note")
     let unknown = await runtime.handle(BridgeRequest(id: "5", method: "nope"), context: browser)
     #expect(unknown.error?.code == .unknownMethod)
@@ -73,4 +76,31 @@ import Testing
     // A blocking send never returns; the margin only absorbs copying the
     // frames on a loaded CI runner.
     #expect(finished.wait(timeout: .now() + .seconds(10)) == .success)
+}
+
+@Test(.timeLimit(.minutes(1))) func attachmentsUploadInChunksAndOnlyLimaFilesCanBeSent() async throws {
+    let (runtime, dir) = try await workspaceRuntime()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let chat = try #require(await call(runtime, "chat.create", ["provider": .string("claude")]).result?["id"]?.stringValue)
+    let first = await call(runtime, "chat.attach", ["id": .string(chat), "name": .string("../notes.txt"), "type": .string("text/plain"),
+                                                    "data": .string(Data("hello ".utf8).base64EncodedString())])
+    let upload = try #require(first.result?["upload"]?.stringValue, "\(String(describing: first.error))")
+    let done = await call(runtime, "chat.attach", ["id": .string(chat), "name": .string("../notes.txt"), "type": .string("text/plain"), "upload": .string(upload),
+                                                   "data": .string(Data("world".utf8).base64EncodedString()), "done": .bool(true)])
+    let path = try #require(done.result?["path"]?.stringValue)
+    #expect(URL(fileURLWithPath: path).lastPathComponent == "-notes.txt", "names can't climb out of the folder")
+    #expect(try String(contentsOfFile: path, encoding: .utf8) == "hello world")
+    #expect(done.result?["size"]?.doubleValue == 11)
+    // Outside tools can't attach; a path Lima didn't save can't be sent.
+    let (outside, card) = try await answeringApproval(runtime, approve: false) {
+        await call(runtime, "chat.attach", ["id": .string(chat), "data": .string("")], origin: .mcp)
+    }
+    #expect(outside.error?.code == .notAuthorized)
+    #expect(card?["question"]?.stringValue == "Let Outside AI tool read or change your AI chats?")
+    let forged = await call(runtime, "chat.send", ["id": .string(chat), "text": .string("read this"), "attachments": .array([.object(["path": .string("/etc/hosts")])])])
+    #expect(forged.error?.code == .badRequest)
+    let sent = await call(runtime, "chat.send", ["id": .string(chat), "text": .string("read this"),
+                                                 "attachments": .array([.object(["path": .string(path), "type": .string("text/plain")])])])
+    #expect(sent.result?["messages"]?.arrayValue?.first?["attachments"]?.arrayValue?.first?["name"]?.stringValue == "-notes.txt")
+    _ = await call(runtime, "chat.cancel", ["id": .string(chat)])
 }

@@ -4,7 +4,7 @@
 import { activityStatus, bridge, call, el, errorText, filesPrivacyButton, icon, markdown, onEvent, prefs, setPage } from "./lib.js";
 import { failureActivity, isFolderPermissionError, toolActivity } from "./tool-activity.sys.mjs";
 
-import { agentControls, composerMenu, preferredAgent } from "./composer.js";
+import { agentControls, attachmentTray, composerMenu, preferredAgent, QUEUE_HINT, queuedActions, restoreDraft, sentAttachments, sendMode } from "./composer.js";
 import { companion, MASCOTS, setCompanionState, watchVisualActivity } from "./companion.js";
 import { workspacePrompts } from "./workspace-prompts.js";
 const MASCOT = "resource://lima-ui/marks/companion.svg";
@@ -28,10 +28,36 @@ function toolLabel(raw) {
   return [label, detail, server].filter(Boolean).join(" · ");
 }
 
-function toolRow(raw, active = false) {
+function toolRow(raw, active = false, step = null, chatId = null) {
   const { icon: glyph, kind } = toolActivity(raw);
   return el("span", { class: "tool-row", "data-motion": active ? kind : null },
-    icon(glyph, "icon tool-glyph"), el("span", { text: toolLabel(raw) }));
+    icon(glyph, "icon tool-glyph"), el("span", { class: "tool-text", text: toolLabel(raw) }),
+    step?.added || step?.removed ? el("span", { class: "tool-diff", title: `${step.added ?? 0} lines added, ${step.removed ?? 0} removed` },
+      step.added ? el("span", { class: "diff-add", text: `+${step.added}` }) : null, step.removed ? el("span", { class: "diff-del", text: `−${step.removed}` }) : null) : null,
+    step?.images?.length && chatId ? mediaStrip(chatId, step.images) : null);
+}
+
+// Images a step saw (screenshots, pictures it read): small thumbnails that
+// open full size in Glance.
+const mediaCache = new Map();
+function mediaURL(chatId, mediaId) {
+  const key = `${chatId}/${mediaId}`;
+  if (!mediaCache.has(key)) {
+    mediaCache.set(key, call("chat.media", { id: chatId, mediaId }).then(media => `data:${media.type};base64,${media.data}`)
+      .catch(error => { mediaCache.delete(key); throw error; }));
+  }
+  return mediaCache.get(key);
+}
+export function mediaStrip(chatId, ids) {
+  return el("span", { class: "tool-media" }, ids.map(mediaId => {
+    const img = el("img", { alt: "Screenshot", loading: "lazy" });
+    mediaURL(chatId, mediaId).then(url => { img.src = url; }, () => img.closest("button")?.remove());
+    return el("button", { type: "button", class: "tool-thumb", title: "Open in Glance", onclick: event => {
+      event.stopPropagation();
+      bridge.browser("openGlance", { url: `about:lima?view=media&chat=${encodeURIComponent(chatId)}&media=${encodeURIComponent(mediaId)}` })
+        .catch(() => bridge.openTab(`about:lima?view=media&chat=${encodeURIComponent(chatId)}&media=${encodeURIComponent(mediaId)}`));
+    } }, img);
+  }));
 }
 
 export function mountChat(app, chatId, { compact = false } = {}) {
@@ -85,8 +111,13 @@ async function initializeChat(app, chatId, compact, signal) {
     },
   }, Object.entries(MASCOTS).map(([value, text]) => el("option", { value, text })));
   const prompts = workspacePrompts({ workspace: () => workspace?.id ?? "", signal });
-  const sendButton = el("button", { class: "send", title: "Send (↩)", onclick: send, disabled: true }, "Send");
-  const stopButton = el("button", { class: "send stop", title: "Stop the reply", onclick: () => call("chat.cancel", { id: chatId }).catch(reportError), hidden: true }, "Stop");
+  const sendButton = el("button", { class: "send", title: "Send (↩)", onclick: () => send("queue"), disabled: true }, "Send");
+  // Files dropped or pasted in; long pastes become a text attachment.
+  const tray = attachmentTray({ conversation: () => chatId, input, onChange: () => draw() });
+  // While a reply runs, Send queues and Send Now interrupts (⌘↩).
+  const nowButton = el("button", { class: "ghost send-now", title: "Stop the reply and send this now (⌘↩)", onclick: () => send("interrupt"), hidden: true }, "Send Now");
+  const stopButton = el("button", { class: "send stop", title: "Stop the reply", onclick: stop, hidden: true }, "Stop");
+  const queueHint = el("p", { class: "composer-hint", text: QUEUE_HINT, hidden: true });
   const title = el("h1", { class: "chat-title", text: "AI Chat" });
   const subtitle = el("div", { class: "chat-sub" });
   const draftKey = `draft.${chatId}`;
@@ -121,19 +152,29 @@ async function initializeChat(app, chatId, compact, signal) {
     el("section", { class: "chat-main" }, el("div", { class: "mod-head chat-views", role: "tablist" }, chatTab, progressTab, agentsTab, stepsTab, filesTab),
       messages, progress, agents, steps, files,
       el("div", { class: "composer" }, prompts.node, activity.node, recovery,
-        el("div", { class: "composer-box" }, input, completionMenu.node,
-          el("div", { class: "composer-row" }, controls.provider, controls.model, el("span", { class: "spacer" }), stopButton, sendButton)))));
+        el("div", { class: "composer-box" }, tray.node, input, completionMenu.node,
+          el("div", { class: "composer-row" }, controls.provider, controls.model, el("span", { class: "spacer" }), stopButton, nowButton, sendButton)), queueHint)));
   app.replaceChildren(el("div", { class: compact ? "chat-page assistant-chat" : "chat-page" },
     el("header", { class: "chat-head" }, character, title, subtitle, el("span", { class: "spacer" }), mascot),
     body));
 
   const autosize = () => { input.style.height = "auto"; input.style.height = `${Math.min(220, input.scrollHeight)}px`; };
   input.addEventListener("input", () => { prefs.set(draftKey, input.value); autosize(); });
-  input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
+  input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(sendMode(e)); } });
 
-  async function send() {
-    const text = input.value.trim();
+  /** Stops the reply; messages queued behind it come back to the box. */
+  async function stop() {
+    try {
+      const result = await call("chat.cancel", { id: chatId });
+      if (result?.unsent?.length) { restoreDraft(input, result.unsent); input.focus(); }
+    } catch (error) { reportError(error); }
+  }
+
+  async function send(mode = "queue") {
+    const text = input.value.trim() || (tray.count ? "See the attached files." : "");
     if (!text || !loaded || pendingRequest || completionMenu.handle(text) || !controls.settings().provider) return;
+    let attachments;
+    try { attachments = tray.ready(); } catch (error) { reportError(error); return; }
     requestError = undefined;
     sendFailed = false;
     pendingRequest = true;
@@ -143,10 +184,11 @@ async function initializeChat(app, chatId, compact, signal) {
       await controls.settled();
       const revision = eventRevision;
       const response = workspace && !workspace.parentID
-        ? await call("workspace.instruct", { id: workspace.id, text })
-        : await call("chat.send", { id: chatId, text });
+        ? await call("workspace.instruct", { id: workspace.id, text, mode, attachments })
+        : await call("chat.send", { id: chatId, text, mode, attachments });
+      tray.clear();
       if (eventRevision === revision) conversation = response;
-      if (input.value.trim() === text) {
+      if (input.value.trim() === text || !input.value.trim()) {
         input.value = "";
         prefs.set(draftKey, "");
         autosize();
@@ -156,6 +198,10 @@ async function initializeChat(app, chatId, compact, signal) {
       requestError = error;
       sendFailed = true;
     } finally { pendingRequest = false; draw(); }
+  }
+
+  function adopt(updated) {
+    if (updated) { eventRevision++; conversation = updated; draw(); }
   }
 
   function runningReply() {
@@ -181,9 +227,11 @@ async function initializeChat(app, chatId, compact, signal) {
     subtitle.textContent = workspace?.parentID ? `Helper · ${workspace.task ?? ""}` : [conversation.provider, conversation.model && conversation.model !== "default" ? conversation.model : null, folder].filter(Boolean).join(" · ");
     subtitle.title = workspace?.directory ?? "";
     const running = !!runningReply();
-    stopButton.hidden = !running;
-    sendButton.hidden = running;
-    sendButton.disabled = !loaded || pendingRequest || !controls.settings().provider;
+    stopButton.hidden = nowButton.hidden = queueHint.hidden = !running;
+    sendButton.textContent = running ? "Queue" : "Send";
+    sendButton.title = running ? "Send after this reply (↩)" : "Send (↩)";
+    sendButton.disabled = nowButton.disabled = !loaded || pendingRequest || tray.busy || !controls.settings().provider;
+    input.placeholder = running ? "Add a message… it runs after this reply" : "Message…";
     // Status and Activity must never stop the transcript from rendering.
     try { drawSteps(); } catch (error) { console.error(error); }
     try { paintNow(); } catch (error) { console.error(error); }
@@ -212,17 +260,39 @@ async function initializeChat(app, chatId, compact, signal) {
   }
 
   function messageNode(message) {
+    if (message.role === "user" && message.status === "queued") {
+      return el("div", { class: "msg user queued" }, el("div", { class: "bubble", text: message.text }),
+        queuedActions({
+          interrupt: () => call("chat.interrupt", { id: chatId, messageId: message.id }).then(adopt, reportError),
+          edit: () => call("chat.unqueue", { id: chatId, messageId: message.id }).then(updated => {
+            adopt(updated);
+            restoreDraft(input, [message.text]);
+            input.focus();
+          }, reportError),
+        }));
+    }
     if (message.role === "user") {
-      return el("div", { class: "msg user" }, el("div", { class: "bubble", text: message.text }),
+      return el("div", { class: "msg user" }, sentAttachments(message.attachments), el("div", { class: "bubble", text: message.text }),
         el("button", { class: "ghost edit", title: "Edit and resend", onclick: e => edit(message, e.currentTarget.parentElement) }, "Edit"));
     }
     const node = el("div", { class: "msg assistant" });
     if (message.notice) node.append(el("p", { class: "msg-notice", role: "note" }, icon("redo"), el("span", { text: message.notice })));
-    const shownTools = visibleTools(message.tools ?? []);
-    if (shownTools.length) {
-      const details = el("details", { class: "tools" }, el("summary", { text: `${shownTools.length} step${shownTools.length === 1 ? "" : "s"} · ${toolLabel(shownTools.at(-1))}` }),
-        ...shownTools.map(t => el("div", {}, toolRow(t))));
-      node.append(details);
+    // Every step stays visible: what it did, lines it changed (+/−) and
+    // images it saw. Long runs fold the earlier steps.
+    const steps = (message.steps?.length ? message.steps : (message.tools ?? []).map(tool => ({ tool })))
+      .filter(step => visibleTools([step.tool]).length);
+    if (steps.length) {
+      const added = steps.reduce((sum, step) => sum + (step.added ?? 0), 0);
+      const removed = steps.reduce((sum, step) => sum + (step.removed ?? 0), 0);
+      const row = (step, index) => el("li", {}, toolRow(step.tool, message.status === "streaming" && index === steps.length - 1, step, chatId));
+      const recent = steps.slice(-8);
+      const earlier = steps.slice(0, -8);
+      node.append(el("div", { class: "steps-log" },
+        el("div", { class: "steps-head" }, el("strong", { text: `${steps.length} step${steps.length === 1 ? "" : "s"}` }),
+          added || removed ? el("span", { class: "tool-diff" }, added ? el("span", { class: "diff-add", text: `+${added}` }) : null, removed ? el("span", { class: "diff-del", text: `−${removed}` }) : null) : null),
+        earlier.length ? el("details", { class: "steps-earlier" }, el("summary", { text: `${earlier.length} earlier step${earlier.length === 1 ? "" : "s"}` }),
+          el("ol", { class: "steps-list" }, earlier.map(row))) : null,
+        el("ol", { class: "steps-list" }, recent.map((step, index) => row(step, earlier.length + index)))));
     }
     const body = markdown(message.text, { onTaskToggle: () => {} });
     if (message.status === "streaming") body.classList.add("typing");
@@ -414,7 +484,7 @@ async function initializeChat(app, chatId, compact, signal) {
     const folderError = requestError ?? reply?.error;
     recovery.replaceChildren(
       !loaded && requestError ? el("button", { class: "ghost", onclick: loadConversation }, "Retry") : null,
-      loaded && sendFailed && requestError ? el("button", { class: "ghost", onclick: send }, "Retry Message") : null,
+      loaded && sendFailed && requestError ? el("button", { class: "ghost", onclick: () => send() }, "Retry Message") : null,
       isFolderPermissionError(folderError) ? filesPrivacyButton(reportError) : null,
       ...(!requestError ? attentionActions(next) : []));
     recovery.hidden = !recovery.childElementCount;
@@ -510,4 +580,16 @@ async function initializeChat(app, chatId, compact, signal) {
     input.focus();
   }
   loadConversation();
+}
+
+/** about:lima?view=media: one image an agent saw, full size (opened in Glance). */
+export async function renderMedia(app, chatId, mediaId) {
+  setPage("Screenshot", "image");
+  const img = el("img", { class: "media-full", alt: "Image from an agent step" });
+  const status = el("p", { class: "muted", text: "Loading…" });
+  app.replaceChildren(el("div", { class: "media-page" }, img, status));
+  try {
+    img.src = await mediaURL(chatId, mediaId);
+    status.remove();
+  } catch (error) { status.textContent = errorText(error); }
 }

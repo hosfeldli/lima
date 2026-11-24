@@ -189,11 +189,13 @@ export async function renderIntegrations(app, section) {
     bridge.browser("browserActionOverlayChanged", { value: event.target.checked }).catch(() => {}) });
   bridge.browser("agentPreferences", {}).then(data => { overlay.checked = data?.browserActionOverlay === true; }).catch(() => {});
   const groups = [
-    ["general", "General", "appearance theme dark light mode animation search index preferences", [
+    ["general", "General", "appearance theme dark light mode animation search index preferences tabs size height compact large ai overview sponsored ads google results youtube shorts browsing", [
       card("Appearance", el("label", { class: "row" }, "Theme", theme),
         el("label", { class: "row" }, "Companion Animations", personality),
         el("p", { class: "muted", text: "Off keeps the mascot still. Lima also respects macOS Reduce Motion." }),
         el("label", { class: "row appearance-checkbox" }, overlay, "Show agent click and typing markers on webpages")),
+      card("Tabs", tabSizeSettings()),
+      card("Browsing", searchCleanupSettings()),
       card("Search", el("button", { onclick: async () => { await call("search.resetLearning"); alert("Learned ranking reset."); } }, "Reset learned ranking"),
         " ", el("button", { onclick: async () => { const n = await call("search.rebuild", { source: "app" }); alert(`Index rebuilt (${n} items).`); } }, "Rebuild app index")),
     ]],
@@ -209,12 +211,15 @@ export async function renderIntegrations(app, section) {
       card("Gmail & Google Calendar", googleSettings()), card("GitHub", services),
       card("Messages", messagesSettings()),
     ]],
+    ["privacy", "Privacy", "privacy usage statistics analytics telemetry anonymous share data delete tracking", [
+      card("Your data stays on your Mac", privacySummary()), card("Anonymous usage statistics", usageSettings()),
+    ]],
     ["data", "Data & permissions", "backup recovery encryption MCP storage grants permission", [
       card("MCP for external agents", mcp), card("Encrypted storage", storage),
     ]],
     ["updates", "Updates", "version download release restart stable check", [card(null, updateSettings())]],
   ];
-  const aliases = { google: "connections", grammar: "writing" };
+  const aliases = { google: "connections", grammar: "writing", usage: "privacy" };
   let active = aliases[section] ?? (groups.some(([id]) => id === section) ? section : "general");
   const search = el("input", { type: "search", placeholder: "Search settings", "aria-label": "Search settings" });
   const nav = el("nav", { class: "settings-nav", "aria-label": "Settings categories" });
@@ -254,7 +259,7 @@ export async function renderIntegrations(app, section) {
   async function drawMCP() {
     const scopes = new Set(await call("mcp.grants.get"));
     const all = [["notes:read", "Read notes"], ["search:read", "Search Lima"], ["context:read", "Read activity & reports"],
-      ["notes:write", "Create and edit notes (undoable agent edits)"], ["terminal:control", "Type in terminals after you grant keyboard control"]];
+      ["notes:write", "Create and edit notes (undoable agent edits)"]];
     const save = async () => { await call("mcp.grants.set", { scopes: [...scopes] }); };
     mcp.replaceChildren(
       el("p", { class: "muted", text: "Add Lima to Codex, Claude Code or OpenCode as a stdio MCP server:" }),
@@ -280,6 +285,96 @@ export async function renderIntegrations(app, section) {
       } }, "Export recovery key")));
   }
   drawStorage().catch(e => fail(storage, e));
+}
+
+/** Tab height with a preview of sidebar tabs at that size. */
+function tabSizeSettings() {
+  const PRESETS = [["Compact", 22], ["Default", 26], ["Comfortable", 32], ["Large", 38]];
+  const slider = el("input", { type: "range", min: 22, max: 40, step: 1, value: 26, "aria-label": "Tab height" });
+  const readout = el("span", { class: "muted tab-size-readout" });
+  const sample = [["web", "Lima — Release notes"], ["note", "Trip ideas"], ["globe", "Weather · San Francisco"], ["chat", "Plan the launch"]];
+  const preview = el("div", { class: "tab-size-preview", "aria-hidden": "true" },
+    sample.map(([glyph, label], index) => el("div", { class: index === 1 ? "tab-size-row selected" : "tab-size-row" }, icon(glyph), el("span", { text: label }))));
+  const presets = el("div", { class: "row tab-size-presets" }, PRESETS.map(([label, value]) =>
+    el("button", { class: "ghost", "data-height": String(value), onclick: () => apply(value, true) }, label)));
+  function paint(height) {
+    slider.value = String(height);
+    preview.style.setProperty("--preview-height", `${height}px`);
+    preview.style.setProperty("--preview-font", `${(11.5 + (height - 26) * 0.2).toFixed(2)}px`);
+    readout.textContent = `${height} px`;
+    for (const button of presets.children) button.setAttribute("aria-pressed", String(Number(button.dataset.height) === height));
+  }
+  function apply(height, save) {
+    paint(height);
+    if (save) bridge.browser("browsingPrefs", { key: "tabHeight", value: height }).catch(() => {});
+  }
+  slider.addEventListener("input", () => apply(Number(slider.value), false));
+  slider.addEventListener("change", () => apply(Number(slider.value), true));
+  bridge.browser("browsingPrefs", {}).then(prefs => paint(prefs?.tabHeight ?? 26)).catch(() => paint(26));
+  return el("div", { class: "tab-size-settings" },
+    el("label", { class: "row" }, "Tab size", slider, readout), presets, preview,
+    el("p", { class: "muted", text: "Changes every window's sidebar tabs as you drag." }));
+}
+
+/** Hide AI answers and sponsored results on search engines' result pages. */
+function searchCleanupSettings() {
+  const box = (key, label) => {
+    const input = el("input", { type: "checkbox", onchange: () => bridge.browser("browsingPrefs", { key, value: input.checked }).catch(() => {}) });
+    return [input, el("label", { class: "row appearance-checkbox" }, input, label)];
+  };
+  const [ai, aiRow] = box("hideSearchAI", "Hide AI answers (Google AI Overviews and AI Mode, Bing Copilot, DuckDuckGo Assist, Brave answers)");
+  const [ads, adsRow] = box("hideSearchAds", "Hide sponsored results and shopping ads");
+  const [shorts, shortsRow] = box("hideShorts", "Hide YouTube Shorts (shelves, the Shorts tab, and Shorts links open as normal videos)");
+  const [address, addressRow] = box("searchAsAddressBar", "Use Lima Search as the address bar (⌘L opens it with the current address; pages open in this tab)");
+  bridge.browser("browsingPrefs", {}).then(prefs => {
+    ai.checked = prefs?.hideSearchAI !== false; ads.checked = prefs?.hideSearchAds !== false; address.checked = prefs?.searchAsAddressBar !== false;
+    shorts.checked = prefs?.hideShorts !== false;
+  }).catch(() => {});
+  return el("div", {}, addressRow, aiRow, adsRow, shortsRow,
+    el("p", { class: "muted", text: "AI answers and ads are hidden on Google, Bing, DuckDuckGo, Yahoo and Brave result pages; Shorts on YouTube. Lima only hides these blocks on your Mac: your searches and results are unchanged and nothing is sent anywhere. Reload a page to see a change." }));
+}
+
+/** What Lima keeps and where: plain facts, first. */
+function privacySummary() {
+  const facts = [
+    "Notes, chats, activity and memory are encrypted on this Mac with a key in your Keychain. Lima has no account and no cloud copy.",
+    "Your AI provider (Claude, Codex or OpenCode) receives only what you send it, under that provider's own terms.",
+    "Agents and outside AI tools ask before they read your chats, take screenshots, open apps or touch your settings.",
+    "Private windows are never recorded, counted or shown to agents.",
+    "Lima hides AI answers, ads and Shorts locally; nothing about your browsing leaves your Mac.",
+  ];
+  return el("ul", { class: "privacy-facts" }, facts.map(text => el("li", {}, icon("check"), el("span", { text }))));
+}
+
+/** Opt-in, anonymous, previewable and deletable usage statistics. */
+function usageSettings() {
+  const box = el("input", { type: "checkbox" });
+  const status = el("p", { class: "muted", role: "status" });
+  const preview = el("pre", { class: "usage-preview", hidden: true });
+  const paint = state => {
+    box.checked = state?.enabled === true;
+    status.textContent = !state?.enabled ? "Off. Nothing is counted or sent."
+      : state.lastSent ? `On. Last report sent ${new Date(state.lastSent).toLocaleDateString()}.` : "On. The first report goes out tomorrow.";
+  };
+  box.addEventListener("change", async () => {
+    try { paint(await call("usage.set", { enabled: box.checked })); } catch (error) { status.textContent = errorText(error); }
+  });
+  const show = el("button", { class: "ghost", onclick: async () => {
+    if (!preview.hidden) { preview.hidden = true; return; }
+    try { preview.textContent = JSON.stringify(await call("usage.preview"), null, 2); preview.hidden = false; }
+    catch (error) { status.textContent = errorText(error); }
+  } }, "See exactly what's sent");
+  const remove = el("button", { class: "ghost", onclick: async () => {
+    if (!confirm("Delete every report sent from this Mac and start over with a new anonymous ID?")) return;
+    try { paint(await call("usage.delete")); status.textContent = "Deleted. Lima's server no longer has any report from this Mac."; }
+    catch (error) { status.textContent = errorText(error); }
+  } }, "Delete my data");
+  call("usage.get").then(paint).catch(error => { status.textContent = errorText(error); });
+  return el("div", { class: "usage-settings" },
+    el("label", { class: "row appearance-checkbox" }, box, "Share anonymous usage statistics"),
+    el("p", { class: "muted", text: "Helps decide what to build next. Once a day Lima sends how many times each feature was used (for example: searches opened, chats sent, workspaces created), the Lima and macOS versions, your region from macOS's language settings, and a few settings such as light or dark mode." }),
+    el("p", { class: "muted", text: "Never sent: web pages, searches, chat or note text, file names, accounts, contacts or your IP address (the server doesn't keep it). Reports use a random ID that changes every month and are deleted after 13 months." }),
+    status, el("div", { class: "row" }, show, remove), preview);
 }
 
 function updateSettings() {
@@ -359,7 +454,7 @@ function updateSettings() {
 
 function sidebarSettings() {
   const node = el("div", { class: "settings-shortcuts" });
-  const names = { inbox: "Gmail", calendar: "Calendar", spotify: "Spotify", mic: "Dictation", grammar: "Grammar settings" };
+  const names = { inbox: "Gmail", calendar: "Calendar", spotify: "Music (Spotify, Apple Music, tabs)", downloads: "Downloads", mic: "Dictation", grammar: "Grammar settings" };
   async function draw() {
     const saved = await bridge.browser("sidebarShortcuts", {});
     const order = [...new Set([...(saved.order ?? []), ...Object.keys(names)])].filter(id => Object.hasOwn(names, id));

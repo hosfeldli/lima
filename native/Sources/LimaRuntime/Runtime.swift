@@ -49,6 +49,8 @@ public final class Runtime: @unchecked Sendable {
     public let workspaces: WorkspaceService
     public let capabilities: CapabilityRegistry
     public let orchestrator: Orchestrator
+    public let schedules: ScheduleService
+    public let usage: UsageStats
     public let discovery = CLIDiscovery()
     public let focus = WorkspaceFocus()
     let browserCalls = BrowserCalls()
@@ -61,7 +63,7 @@ public final class Runtime: @unchecked Sendable {
     public let startedAt = Date()
 
     private static let conversationMethods: Set<String> = [
-        "chat.get", "chat.resources", "chat.configure", "chat.mascot", "chat.send", "chat.retry", "chat.edit", "chat.cancel", "chat.delete"
+        "chat.get", "chat.resources", "chat.configure", "chat.mascot", "chat.send", "chat.attach", "chat.media", "chat.interrupt", "chat.unqueue", "chat.retry", "chat.edit", "chat.cancel", "chat.delete"
     ]
     private var handlers: [String: MethodHandler] = [:]
     private let clientsLock = NSLock()
@@ -75,6 +77,7 @@ public final class Runtime: @unchecked Sendable {
         let sink = EventSink()
         let notes = try await NotesService(store: store)
         let conversations = try await ConversationService(store: store) { event in sink.conversation(event) }
+        await conversations.setMediaDirectory(paths.data.appendingPathComponent("chat-media", isDirectory: true))
         let terminals = TerminalService(integrationDirectory: paths.data.appendingPathComponent("shell-integration")) { event in sink.terminal(event) }
         let selections = try await store.get([String: Int].self, collection: "settings", id: "search.selections") ?? [:]
         let search = SearchService(selections: selections)
@@ -86,18 +89,22 @@ public final class Runtime: @unchecked Sendable {
         let orchestrator = Orchestrator(tasks: saved, executor: executor, maxActive: budget,
             persist: { task in try await store.put(task, collection: Orchestrator.collection, id: task.id) },
             emit: { task in sink.task(task) })
+        let schedules = try await ScheduleService(store: store) { task, id in sink.schedule(task, id: id) }
+        let usage = UsageStats(state: try? await store.get(UsageStats.State.self, collection: "settings", id: "usage"),
+                               endpoint: Runtime.usageEndpoint()) { state in try? await store.put(state, collection: "settings", id: "usage") }
         let runtime = try await Runtime(paths: paths, store: store, notes: notes, conversations: conversations,
                                         terminals: terminals, search: search, context: context, workspaces: workspaces,
-                                        orchestrator: orchestrator, sink: sink)
+                                        orchestrator: orchestrator, schedules: schedules, usage: usage, sink: sink)
         executor.runtime = runtime
         // Report turns a restart interrupted, and pick up queued work.
         Task { await orchestrator.recover() }
+        runtime.startScheduler()
         return runtime
     }
 
     private init(paths: RuntimePaths, store: EncryptedStore, notes: NotesService, conversations: ConversationService,
                  terminals: TerminalService, search: SearchService, context: ContextService, workspaces: WorkspaceService,
-                 orchestrator: Orchestrator, sink: EventSink) async throws {
+                 orchestrator: Orchestrator, schedules: ScheduleService, usage: UsageStats, sink: EventSink) async throws {
         self.paths = paths
         self.store = store
         self.notes = notes
@@ -107,6 +114,8 @@ public final class Runtime: @unchecked Sendable {
         self.context = context
         self.workspaces = workspaces
         self.orchestrator = orchestrator
+        self.schedules = schedules
+        self.usage = usage
         self.capabilities = CapabilityRegistry()
         sink.runtime = self
 
@@ -133,6 +142,8 @@ public final class Runtime: @unchecked Sendable {
         registerImages()
         registerAssistant()
         registerOrchestrator()
+        registerSchedules()
+        registerUsage()
         registerWorkspaceActivity()
         registerDictation()
         registerSystemSettings()
@@ -192,6 +203,7 @@ public final class Runtime: @unchecked Sendable {
                         risk: "access")
                 }
             }
+            try await SecurityPolicy.check(request.method, context: context, runtime: self)
             if Self.conversationMethods.contains(request.method) {
                 let conversation = try await conversations.get(try request.params.string("id"))
                 if let workspaceID = conversation.workspaceID {
@@ -304,6 +316,11 @@ final class EventSink: @unchecked Sendable {
 
     func task(_ task: OrchestratedTask) {
         runtime?.broadcast("task.updated", task.publicView)
+    }
+
+    func schedule(_ task: ScheduledTask?, id: String) {
+        if let task { runtime?.broadcast("schedule.updated", task.publicView) }
+        else { runtime?.broadcast("schedule.deleted", .object(["id": .string(id)])) }
     }
 
     func terminal(_ event: TerminalEvent) {

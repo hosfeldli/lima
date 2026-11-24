@@ -74,53 +74,9 @@ extension Runtime {
 
     // MARK: Terminal
 
+    /// Explicit user approvals for exact operations (the Lima terminal is gone;
+    /// agents run commands with their own tools).
     func registerTerminal() {
-        register("terminal.create") { [unowned self] params, _ in
-            try JSONValue.from(try await self.terminals.create(cwd: params.optionalString("cwd"), cols: params.int("cols", default: 100), rows: params.int("rows", default: 30)))
-        }
-        register("terminal.list") { [unowned self] _, _ in try JSONValue.from(await self.terminals.list()) }
-        register("terminal.info") { [unowned self] params, _ in try JSONValue.from(try await self.terminals.info(try params.string("id"))) }
-        register("terminal.attach") { [unowned self] params, _ in
-            let (info, scrollback, offset) = try await self.terminals.attachWithOffset(try params.string("id"))
-            return .object(["info": try JSONValue.from(info), "scrollback": .string(scrollback.base64EncodedString()), "offset": .number(Double(offset))])
-        }
-        register("terminal.write") { [unowned self] params, _ in
-            guard let data = Data(base64Encoded: try params.string("data")) else { throw BridgeError(.badRequest, "data must be base64") }
-            try await self.terminals.userWrite(try params.string("id"), data: data)
-            return .null
-        }
-        register("terminal.resize") { [unowned self] params, _ in
-            try await self.terminals.resize(try params.string("id"), cols: params.int("cols", default: 80), rows: params.int("rows", default: 24))
-            return .null
-        }
-        register("terminal.close") { [unowned self] params, _ in try await self.terminals.close(try params.string("id")); return .null }
-        register("terminal.history") { [unowned self] params, _ in try JSONValue.from(try await self.terminals.history(try params.string("id"))) }
-        register("terminal.lease.request") { [unowned self] params, _ in
-            try await self.terminals.requestLease(try params.string("id"), agentID: try params.string("agentId")); return .null
-        }
-        register("terminal.lease.grant") { [unowned self] params, context in
-            // Only the user-facing browser UI may grant keyboard control.
-            guard context.origin == .browser else { throw BridgeError(.notAuthorized, "only the user can grant terminal control") }
-            return try JSONValue.from(try await self.terminals.grantLease(try params.string("id"), agentID: try params.string("agentId")))
-        }
-        register("terminal.lease.deny") { [unowned self] params, _ in
-            try await self.terminals.denyLease(try params.string("id"), agentID: try params.string("agentId")); return .null
-        }
-        register("terminal.lease.release") { [unowned self] params, _ in
-            try await self.terminals.releaseLease(try params.string("id"), handle: try params.decode("handle", as: InputLeaseHandle.self)); return .null
-        }
-        register("terminal.lease.reclaim") { [unowned self] params, _ in try await self.terminals.reclaim(try params.string("id")); return .null }
-        /// Agent-side: type a command under a lease, then wait for the shell
-        /// to report the prompt. The command is authorized first.
-        register("terminal.agentRun") { [unowned self] params, context in
-            let id = try params.string("id")
-            let handle = try params.decode("handle", as: InputLeaseHandle.self)
-            let command = try params.string("command")
-            let info = try await self.terminals.info(id)
-            try await self.authorizeTerminalCommand(command, cwd: info.cwd, context: context, approvalDigest: params.optionalString("approvalDigest"))
-            let result = try await self.terminals.agentRunCommand(id, command: command, handle: handle, timeout: params.double("timeout", default: 120))
-            return Self.terminalCommandResult(result)
-        }
         register("auth.approve") { params, context in
             // The browser UI records an explicit user approval for one exact operation.
             guard context.origin == .browser else { throw BridgeError(.notAuthorized, "approvals come from the user interface") }
@@ -137,6 +93,71 @@ extension Runtime {
             "exitStatus": result.exitStatus.map { .number(Double($0)) } ?? .null,
             "output": .string(String(decoding: result.output.suffix(64 * 1024), as: UTF8.self))
         ])
+    }
+
+    /// `mode: "interrupt"` stops a reply in progress; anything else queues.
+    static func sendMode(_ params: JSONValue?) -> ConversationService.SendMode {
+        params.optionalString("mode").flatMap(ConversationService.SendMode.init(rawValue:)) ?? .queue
+    }
+
+    static let attachmentLimit = 50 * 1024 * 1024
+
+    func receiveAttachment(_ params: JSONValue?) async throws -> JSONValue {
+        let id = try params.string("id")
+        guard let chunk = Data(base64Encoded: try params.string("data")), chunk.count <= 2 * 1024 * 1024 else {
+            throw BridgeError(.badRequest, "Send attachments in base64 chunks of up to 2 MB.")
+        }
+        let folder = try await conversations.attachmentDirectory(id)
+        let fm = FileManager.default
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        // A partial upload lives under a random token until it's complete.
+        let token = params.optionalString("upload") ?? UUID().uuidString
+        guard token.range(of: #"^[0-9A-F-]{36}$"#, options: .regularExpression) != nil else { throw BridgeError(.badRequest, "Unknown upload.") }
+        let partial = folder.appendingPathComponent(".\(token).part")
+        if params.optionalString("upload") == nil {
+            guard fm.createFile(atPath: partial.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
+                throw BridgeError(.internalError, "Lima couldn't save the attachment.")
+            }
+        }
+        guard let handle = try? FileHandle(forWritingTo: partial) else { throw BridgeError(.badRequest, "That upload expired. Attach the file again.") }
+        defer { try? handle.close() }
+        let size = Int(try handle.seekToEnd())
+        guard size + chunk.count <= Self.attachmentLimit else {
+            try? fm.removeItem(at: partial)
+            throw BridgeError(.badRequest, "Attachments can be up to 50 MB.")
+        }
+        try handle.write(contentsOf: chunk)
+        guard params?["done"]?.boolValue == true else { return .object(["upload": .string(token)]) }
+        // Done: a safe, unique name the agent can read.
+        let raw = (params.optionalString("name") ?? "attachment").components(separatedBy: CharacterSet(charactersIn: "/\\:\0\n\r")).joined(separator: "-")
+        let name = String(raw.trimmingCharacters(in: CharacterSet(charactersIn: ". ")).prefix(120)).isEmpty ? "attachment" : String(raw.trimmingCharacters(in: CharacterSet(charactersIn: ". ")).prefix(120))
+        var target = folder.appendingPathComponent(name)
+        var counter = 2
+        while fm.fileExists(atPath: target.path) {
+            let base = (name as NSString).deletingPathExtension, ext = (name as NSString).pathExtension
+            target = folder.appendingPathComponent(ext.isEmpty ? "\(base) \(counter)" : "\(base) \(counter).\(ext)")
+            counter += 1
+        }
+        try fm.moveItem(at: partial, to: target)
+        let type = String((params.optionalString("type") ?? "application/octet-stream").prefix(100))
+        return try JSONValue.from(ChatAttachment(name: target.lastPathComponent, path: target.path, size: size + chunk.count, type: type))
+    }
+
+    /// Attachments named in a send: only files Lima saved for this conversation.
+    func attachments(_ params: JSONValue?, conversationID: String) async throws -> [ChatAttachment] {
+        let listed = params?["attachments"]?.arrayValue ?? []
+        guard !listed.isEmpty else { return [] }
+        let folder = try await conversations.attachmentDirectory(conversationID).resolvingSymlinksInPath().path + "/"
+        return try listed.prefix(20).map { item in
+            guard let path = item["path"]?.stringValue,
+                  URL(fileURLWithPath: path).resolvingSymlinksInPath().path.hasPrefix(folder),
+                  let attributes = try? FileManager.default.attributesOfItem(atPath: path) else {
+                throw BridgeError(.badRequest, "An attachment is missing. Attach it again.")
+            }
+            return ChatAttachment(name: URL(fileURLWithPath: path).lastPathComponent, path: path,
+                                  size: (attributes[.size] as? NSNumber)?.intValue ?? 0,
+                                  type: String((item["type"]?.stringValue ?? "application/octet-stream").prefix(100)))
+        }
     }
 
     func registerChat() {
@@ -176,18 +197,41 @@ extension Runtime {
             }
             return try JSONValue.from(try await self.conversations.configure(id, provider: provider, model: params.optionalString("model")))
         }
-        register("chat.send") { [unowned self] params, _ in try JSONValue.from(try await self.conversations.send(try params.string("id"), text: try params.string("text"))) }
+        register("chat.send") { [unowned self] params, _ in
+            let id = try params.string("id")
+            Task { await self.usage.count("chat.sent") }
+            if !(params?["attachments"]?.arrayValue ?? []).isEmpty { Task { await self.usage.count("chat.attachment") } }
+            return try JSONValue.from(try await self.conversations.send(id, text: try params.string("text"), mode: Self.sendMode(params),
+                                                                        attachments: try await self.attachments(params, conversationID: id)))
+        }
+        // Files dropped or pasted into a composer, uploaded in chunks of up
+        // to 2 MB (base64) so each frame stays under the bridge limit.
+        register("chat.attach") { [unowned self] params, context in
+            guard context.origin == .browser else { throw BridgeError(.notAuthorized, "Only Lima's composer attaches files.") }
+            return try await self.receiveAttachment(params)
+        }
+        register("chat.media") { [unowned self] params, _ in
+            let media = try await self.conversations.media(try params.string("id"), id: try params.string("mediaId"))
+            return .object(["type": .string(media.type), "data": .string(media.data.base64EncodedString())])
+        }
+        register("chat.interrupt") { [unowned self] params, _ in
+            try JSONValue.from(try await self.conversations.interrupt(try params.string("id"), messageID: try params.string("messageId")))
+        }
+        register("chat.unqueue") { [unowned self] params, _ in
+            try JSONValue.from(try await self.conversations.unqueue(try params.string("id"), messageID: try params.string("messageId")))
+        }
         register("chat.retry") { [unowned self] params, _ in try JSONValue.from(try await self.conversations.retry(try params.string("id"), assistantMessageID: try params.string("messageId"))) }
         register("chat.edit") { [unowned self] params, _ in
             try JSONValue.from(try await self.conversations.edit(try params.string("id"), messageID: try params.string("messageId"), text: try params.string("text")))
         }
         register("chat.cancel") { [unowned self] params, _ in
             let id = try params.string("id")
-            await self.conversations.cancel(id)
+            let unsent = await self.conversations.cancel(id)
             if let workspace = try await self.conversations.get(id).workspaceID {
                 await self.workspacePrompts.clear(self, workspace: workspace)
             }
-            return .null
+            // Queued messages that never ran, for the composer to restore.
+            return .object(["unsent": .array(unsent.map(JSONValue.string))])
         }
         register("chat.delete") { [unowned self] params, _ in
             let id = try params.string("id")
@@ -196,6 +240,7 @@ extension Runtime {
             return .null
         }
         register("quickAsk") { [unowned self] params, _ in
+            Task { await self.usage.count("search.quickAsk") }
             let requestID = try params.string("requestId")
             let provider = CLIProvider(rawValue: params.optionalString("provider") ?? "claude") ?? .claude
             let started = Date()
@@ -338,7 +383,8 @@ extension Runtime {
             return try JSONValue.from(context.origin == .mcp ? all.filter { $0.mcpScope != nil } : all)
         }
         register("capabilities.run") { [unowned self] params, context in
-            try await self.capabilities.run(try params.string("id"), input: params.optionalString("input") ?? "", runtime: self,
+            Task { await self.usage.count("capability.ran") }
+            return try await self.capabilities.run(try params.string("id"), input: params.optionalString("input") ?? "", runtime: self,
                                             context: context, approvalDigest: params.optionalString("approvalDigest"),
                                             executionID: params.optionalString("executionId"))
         }
@@ -429,7 +475,7 @@ extension Runtime {
         register("integrations.github.summary") { _, _ in try await Integrations.githubSummary() }
         register("mcp.grants.get") { _, _ in try JSONValue.from(MCPGrants.shared.scopes) }
         register("mcp.grants.set") { [unowned self] params, context in
-            guard context.origin == .browser else { throw BridgeError(.notAuthorized, "MCP grants are set by the user") }
+            // Non-browser callers reach this only after the user approved it (SecurityPolicy).
             let scopes = (params?["scopes"]?.arrayValue ?? []).compactMap(\.stringValue)
             MCPGrants.shared.scopes = Set(scopes)
             try await self.store.put(scopes, collection: "settings", id: "mcp.grants")

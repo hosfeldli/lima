@@ -25,6 +25,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
   LimaAppearance: "resource://lima/LimaAppearance.sys.mjs",
   LimaTabs: "resource://lima/LimaTabs.sys.mjs",
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
+  LimaUsage: "resource://lima/LimaUsage.sys.mjs",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
   SearchService: "moz-src:///toolkit/components/search/SearchService.sys.mjs",
   SearchSuggestionController: "moz-src:///toolkit/components/search/SearchSuggestionController.sys.mjs",
@@ -96,8 +97,12 @@ class Panel {
       "aria-controls": "lima-search-results", "aria-expanded": "false", "aria-autocomplete": "list",
       placeholder: this.private ? "Search the web or enter an address" : "Search, open, or ask Lima",
       autocomplete: "off", spellcheck: "false" });
-    this.mark = el(doc, "span", { id: "lima-search-mark", "aria-hidden": "true" }, glyph(doc, "resource://lima-ui/marks/lima-mask.svg"));
+    this.mark = el(doc, "span", { id: "lima-search-mark", "aria-hidden": "true" }, glyph(doc, "search")); // a plain magnifier, not the old Lima mark
     this.scope = el(doc, "span", { id: "lima-search-scope", hidden: true });
+    // Where a page opens: "This tab" when Search stands in for the address
+    // bar (⌘L), "New tab" for ⌘T. ⌥↩ or a click on the chip switches.
+    this.where = el(doc, "button", { id: "lima-search-where", type: "button", hidden: true, title: "Switch where the page opens (⌥↩ opens the other way)",
+      onmousedown: event => event.preventDefault(), onclick: () => { this.setMode(this.mode === "here" ? "new" : "here"); this.input.focus(); } });
     this.spinner = el(doc, "span", { id: "lima-search-spinner", hidden: true, "aria-hidden": "true" });
     // What a Quick Ask shares beyond the question (a page or a selection).
     this.contextChip = el(doc, "div", { id: "lima-search-context", hidden: true });
@@ -106,10 +111,10 @@ class Panel {
     this.live = el(doc, "div", { id: "lima-search-live", class: "lima-s-visually-hidden", "aria-live": "polite" });
     const hint = (key, label) => el(doc, "span", {}, el(doc, "kbd", { text: key }), ` ${label}`);
     this.panel = el(doc, "div", { id: "lima-search", role: "dialog", "aria-label": "Lima Search" },
-      el(doc, "div", { id: "lima-search-field" }, this.mark, this.scope, this.input, this.spinner),
+      el(doc, "div", { id: "lima-search-field" }, this.mark, this.scope, this.input, this.spinner, this.where),
       this.contextChip, this.status, this.results, this.live,
       el(doc, "div", { id: "lima-search-foot", "aria-hidden": "true" },
-        hint("↑↓", "Select"), hint("↩", "Open"), this.private ? null : hint("⌘↩", "AI Chat"), hint("esc", "Close")));
+        hint("↑↓", "Select"), this.openHint = hint("↩", "Open"), hint("⌥↩", "Other tab"), this.private ? null : hint("⌘↩", "AI Chat"), hint("esc", "Close")));
     this.scrim = el(doc, "div", { id: "lima-search-scrim", hidden: true, onpointerdown: event => { if (event.target === this.scrim) this.close(); } }, this.panel);
     doc.documentElement.append(this.scrim);
 
@@ -144,11 +149,13 @@ class Panel {
   /** `context` (optional): { kind: "page" | "selection", title, url, text }.
    * The chip says exactly what Quick Ask will share. Opening again while
    * open keeps the query and returns focus to the input. */
-  open(initial = "", { context = null, ask = null } = {}) {
+  open(initial = "", { context = null, ask = null, mode = "new" } = {}) {
     if (this.isOpen && !initial && !context && !ask) {
       this.input.focus();
       return;
     }
+    this.setMode(mode);
+    lazy.LimaUsage.count(mode === "here" ? "search.addressBar" : "search.opened", this.win);
     const started = this.win.performance.now();
     this.selectedEngine().then(async engine => {
       this.engineName = engine?.name;
@@ -175,6 +182,17 @@ class Panel {
     if (ask) this.quickAsk(ask);
     else this.query();
     this.metrics.open = this.win.performance.now() - started;
+  }
+
+  setMode(mode) {
+    this.mode = mode === "here" ? "here" : "new";
+    const here = this.mode === "here";
+    this.where.hidden = false;
+    this.where.dataset.mode = this.mode;
+    this.where.replaceChildren(glyph(this.doc, here ? "tab" : "plus"), el(this.doc, "span", { text: here ? "This tab" : "New tab" }));
+    this.where.setAttribute("aria-label", here ? "Opens in this tab. Switch to a new tab" : "Opens in a new tab. Switch to this tab");
+    this.input.placeholder = here ? "Edit the address, search, or ask Lima" : this.private ? "Search the web or enter an address" : "Search, open, or ask Lima";
+    if (this.openHint) this.openHint.lastChild.textContent = here ? " Open here" : " Open";
   }
 
   currentPage() {
@@ -424,9 +442,13 @@ class Panel {
 
   openURL(url, postData = null) {
     if (!/^https?:\/\//i.test(url)) throw new Error("Lima only opens web addresses from Search.");
-    const gBrowser = this.win.gBrowser;
-    const tab = gBrowser.addTab(url, { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(), postData });
-    gBrowser.selectedTab = tab;
+    // Typed in the address bar's stead: the browser's trusted-load path,
+    // in this tab or a new one as the chip says (⌥↩ flips it once).
+    const here = (this.mode === "here") !== !!this.flipWhere;
+    this.flipWhere = false;
+    const current = this.win.gBrowser.selectedTab;
+    const where = here && !current.pinned && !current.hasAttribute("zen-essential") ? "current" : "tab";
+    this.win.openTrustedLinkIn(url, where, { postData, inBackground: false });
   }
 
   async webSearch(text) {
@@ -692,6 +714,7 @@ class Panel {
       if (previous) this.select(previous);
     } else if (event.key === "Enter") {
       event.preventDefault();
+      this.flipWhere = event.altKey;
       if (this.items[index]) this.activate(this.items[index]);
     }
   }
@@ -716,9 +739,42 @@ export const LimaSearchPanel = {
   /** Timings from the last open and query, for tests and benchmarks. */
   metrics(win) { return { ...(panels.get(win)?.metrics ?? {}) }; },
 
+  /** Lima Search as the address bar: ⌘L and clicks on Zen's URL bar open it
+   * with the current address selected, opening pages in this tab. */
+  openAddress(win) {
+    const url = win.gBrowser.selectedBrowser?.currentURI?.spec ?? "";
+    this.open(win, /^https?:/i.test(url) ? url : "", { mode: "here" });
+  },
+
+  installAddressBar(win) {
+    if (win.limaAddressBar || !Services.prefs.getBoolPref("lima.search.replaceAddressBar", true)) return;
+    win.limaAddressBar = true;
+    const original = win.openLocation?.bind(win);
+    win.openLocation = (...args) => {
+      if (!Services.prefs.getBoolPref("lima.search.replaceAddressBar", true)) return original?.(...args);
+      LimaSearchPanel.openAddress(win);
+      return undefined;
+    };
+    const urlbar = win.document.getElementById("urlbar");
+    const take = event => {
+      if (!Services.prefs.getBoolPref("lima.search.replaceAddressBar", true) || event.button > 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      LimaSearchPanel.openAddress(win);
+    };
+    urlbar?.addEventListener("mousedown", take, true);
+    // Anything else that focuses the address bar (Tab, extensions) lands in Search.
+    win.gURLBar?.inputField?.addEventListener("focus", () => {
+      if (!Services.prefs.getBoolPref("lima.search.replaceAddressBar", true)) return;
+      win.gURLBar.blur();
+      LimaSearchPanel.openAddress(win);
+    });
+  },
+
   /** ⌘T and Zen's "New Tab" become Lima Search. Pressing ⌘T again while it
    * is open keeps the query and focuses the input. */
   install(win) {
+    this.installAddressBar(win);
     const ui = win.gZenUIManager;
     if (!ui?.handleNewTab || ui.limaWrapped) return;
     const original = ui.handleNewTab.bind(ui);

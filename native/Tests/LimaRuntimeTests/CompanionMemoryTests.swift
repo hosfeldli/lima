@@ -75,7 +75,10 @@ private func ms(_ date: Date) -> Double { date.timeIntervalSince1970 * 1000 }
     // The user can turn it off or edit it; only Lima's settings may.
     #expect(await call(runtime, "companionMemory.update", ["enabled": .bool(false)]).ok)
     #expect(await runtime.companionMemoryContext().isEmpty)
-    #expect(await call(runtime, "companionMemory.get", origin: .chat).error?.code == .notAuthorized)
+    // An agent asking to read it gets a card; declined, nothing is shared.
+    let (asked, card) = try await answeringApproval(runtime, approve: false) { await call(runtime, "companionMemory.get", origin: .chat) }
+    #expect(asked.error?.code == .notAuthorized)
+    #expect(card?["risk"]?.stringValue == "access")
 }
 
 @Test(.timeLimit(.minutes(1))) func companionThreadsStayOutOfChatListsAndSearch() async throws {

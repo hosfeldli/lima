@@ -29,12 +29,53 @@ enum CodeTrust {
         return staticCode
     }()
 
+    /// Peers this lima-host accepts as itself: its designated requirement,
+    /// widened to the same code signed with Lima's Developer ID (see
+    /// `trusted(_:code:)`), so a runtime left running across the move to
+    /// Developer ID still recognizes the browser and can be replaced.
     nonisolated(unsafe) static let selfRequirement: SecRequirement? = {
         guard let selfStaticCode else { return nil }
         var requirement: SecRequirement?
-        guard SecCodeCopyDesignatedRequirement(selfStaticCode, [], &requirement) == errSecSuccess else { return nil }
-        return requirement
+        guard SecCodeCopyDesignatedRequirement(selfStaticCode, [], &requirement) == errSecSuccess, let requirement else { return nil }
+        return trusted(requirement, code: selfStaticCode)
     }()
+
+    // MARK: Developer ID
+
+    /// The Apple Team ID whose Developer ID signatures Lima also trusts,
+    /// stamped into the app's Info.plist from browser/release.json.
+    static let trustedTeam: String? = {
+        guard let contents = bundleContents,
+              let team = NSDictionary(contentsOf: contents.appendingPathComponent("Info.plist"))?["LimaTrustedTeam"] as? String
+        else { return nil }
+        return isTeamID(team) ? team : nil
+    }()
+
+    static func isTeamID(_ text: String) -> Bool {
+        text.count == 10 && text.allSatisfy { ("A"..."Z").contains($0) || ("0"..."9").contains($0) }
+    }
+
+    /// `base` or: the same identifier, signed with a Developer ID
+    /// Application certificate issued by Apple to `team`.
+    static func requirementText(base: String, identifier: String, team: String) -> String? {
+        guard isTeamID(team), !identifier.contains("\""), !identifier.isEmpty else { return nil }
+        let developerID = "identifier \"\(identifier)\" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] " +
+            "and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = \"\(team)\""
+        return "(\(base)) or (\(developerID))"
+    }
+
+    static func trusted(_ base: SecRequirement, code: SecStaticCode, team: String? = trustedTeam) -> SecRequirement {
+        var text: CFString?
+        var info: CFDictionary?
+        guard let team, SecRequirementCopyString(base, [], &text) == errSecSuccess, let text,
+              SecCodeCopySigningInformation(code, [], &info) == errSecSuccess,
+              let identifier = (info as? [String: Any])?[kSecCodeInfoIdentifier as String] as? String,
+              let combined = requirementText(base: text as String, identifier: identifier, team: team)
+        else { return base }
+        var requirement: SecRequirement?
+        guard SecRequirementCreateWithString(combined as CFString, [], &requirement) == errSecSuccess, let requirement else { return base }
+        return requirement
+    }
 
     static let selfLeafCertificate: Data? = selfStaticCode.flatMap(leafCertificate)
 

@@ -43,7 +43,7 @@ async function sync() {
   try {
     const [workspaces, chats, tasks, prompts, focus, terminals] = await Promise.all([
       LimaBridge.request("workspace.list"), LimaBridge.request("chat.list"), LimaBridge.request("task.visualState"),
-      LimaBridge.request("workspace.prompts"), LimaBridge.request("workspace.activity"), LimaBridge.request("terminal.list"),
+      LimaBridge.request("workspace.prompts"), LimaBridge.request("workspace.activity"), Promise.resolve([]),
     ]);
     if (revision !== generation) return;
     state.restore({ workspaces, chats, tasks, prompts, focus, terminals });

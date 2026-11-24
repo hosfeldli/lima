@@ -46,8 +46,14 @@ if [[ "$RELEASE" == 1 ]]; then
   [[ "$IDENTITY" != "-" ]] || fail "release builds need LIMA_SIGN_IDENTITY"
   [[ "$IDENTITY" == "$(json "$POLICY" "['signing']['identity']")" ]] || fail "LIMA_SIGN_IDENTITY is not the pinned release identity"
   CERT_SHA="$(json "$POLICY" "['signing']['certificateSHA256']")"
+  SIGN_MODE="$(json "$POLICY" "['signing']['mode']")"
+  TEAM="$(json "$POLICY" "['signing'].get('developerTeam', '')")"
+  [[ -z "$TEAM" || "$TEAM" =~ ^[A-Z0-9]{10}$ ]] || fail "browser/release.json signing.developerTeam must be a 10-character Team ID"
+  [[ "$SIGN_MODE" != developer-id || -n "$TEAM" ]] || fail "developer-id signing needs signing.developerTeam"
   FEED_URL="$(json "$POLICY" "['updates']['feedURL']")"
   UPDATE_KEY="$(json "$POLICY" "['updates']['publicKey']")"
+  USAGE_ENDPOINT="$(json "$POLICY" "['usage']['endpoint'] if 'usage' in d else ''" 2>/dev/null || true)"
+  [[ -z "$USAGE_ENDPOINT" || "$USAGE_ENDPOINT" == https://* ]] || fail "browser/release.json usage.endpoint must be an https URL"
   [[ "$FEED_URL" == https://* ]] || fail "browser/release.json updates.feedURL must be an https URL"
   [[ -n "$UPDATE_KEY" ]] || fail "browser/release.json updates.publicKey is empty (run browser/scripts/release/setup_update_key.sh)"
   APP_VERSION="$VERSION"
@@ -236,7 +242,13 @@ plutil -remove SUFeedURL "$PLIST" 2>/dev/null || true
 if [[ "$RELEASE" == 1 ]]; then
   plutil -replace LimaUpdateFeedURL -string "$FEED_URL" "$PLIST"
   plutil -replace LimaUpdatePublicKey -string "$UPDATE_KEY" "$PLIST"
+  # Where opted-in anonymous usage reports go (nothing is sent unless the user turns it on).
+  if [[ -n "${USAGE_ENDPOINT:-}" ]]; then plutil -replace LimaUsageEndpoint -string "$USAGE_ENDPOINT" "$PLIST"; else plutil -remove LimaUsageEndpoint "$PLIST" 2>/dev/null || true; fi
+  # Updates and the runtime also trust this team's Developer ID signature.
+  if [[ -n "$TEAM" ]]; then plutil -replace LimaTrustedTeam -string "$TEAM" "$PLIST"; else plutil -remove LimaTrustedTeam "$PLIST" 2>/dev/null || true; fi
 else
+  plutil -remove LimaTrustedTeam "$PLIST" 2>/dev/null || true
+  plutil -remove LimaUsageEndpoint "$PLIST" 2>/dev/null || true
   plutil -remove LimaUpdateFeedURL "$PLIST" 2>/dev/null || true
   plutil -remove LimaUpdatePublicKey "$PLIST" 2>/dev/null || true
 fi
@@ -247,7 +259,8 @@ rm -f "$C/embedded.provisionprofile"
 # 6. Sign inside-out with the hardened runtime, then verify the result.
 step "Signing (${IDENTITY/#-/ad-hoc})"
 python3 "$BROWSER/scripts/lima_codesign.py" sign "$APP" "$ENTITLEMENTS" \
-  --identity "$IDENTITY" ${LIMA_SIGN_KEYCHAIN:+--keychain "$LIMA_SIGN_KEYCHAIN"}
+  --identity "$IDENTITY" ${LIMA_SIGN_KEYCHAIN:+--keychain "$LIMA_SIGN_KEYCHAIN"} \
+  ${SIGN_MODE:+--mode-"$SIGN_MODE"}
 python3 "$BROWSER/scripts/lima_codesign.py" verify "$APP" "$ENTITLEMENTS" ${CERT_SHA:+--certificate-sha256 "$CERT_SHA"}
 
 step "Built $APP"

@@ -162,6 +162,16 @@ export function toMarkdown(root) {
     if (node.nodeType !== Node.ELEMENT_NODE) return;
     if (node.dataset.noteEmbed) { out.push("::embed " + node.dataset.noteEmbed, ""); return; }
     if (node.dataset.artifact) { out.push("```" + node.dataset.artifact, node.dataset.artifactSource, "```", ""); return; }
+    if (node.classList.contains("note-columns")) {
+      out.push(":::columns");
+      [...node.querySelectorAll(":scope > .note-column")].slice(0, 3).forEach((column, index) => {
+        if (index) out.push(":::column");
+        const text = toMarkdown(column).trim();
+        if (text) out.push(text);
+      });
+      out.push(":::end", "");
+      return;
+    }
     const tag = node.localName;
     if (/^h[1-6]$/.test(tag)) out.push(`${"#".repeat(Number(tag[1]))} ${inline(node).trim()}`, "");
     else if (tag === "ul" || tag === "ol") { list(node, 0); out.push(""); }
@@ -212,7 +222,17 @@ async function renderClassic(app, note) {
   const exec = (command, value) => () => document.execCommand(command, false, value);
   const addRow = tool("+ Row", "Add row below", () => extendTable("row"));
   const addColumn = tool("+ Column", "Add column after", () => extendTable("column"));
-  addRow.disabled = addColumn.disabled = true;
+  const removeRow = tool("− Row", "Delete this row", () => shrinkTable("row"));
+  const removeColumn = tool("− Column", "Delete this column", () => shrinkTable("column"));
+  const removeTable = tool(icon("trash"), "Delete table", () => shrinkTable("table"));
+  const tableTools = [addRow, addColumn, removeRow, removeColumn, removeTable];
+  const setTableTools = enabled => { for (const button of tableTools) button.hidden = button.disabled = !enabled; };
+  setTableTools(false);
+  // Layout: one, two or three columns for the section holding the cursor.
+  const layout = el("select", { class: "fmt-select", title: "Columns for this section", "aria-label": "Columns for this section",
+    onmousedown: () => { rememberSelection(); },
+    onchange: () => { const count = Number(layout.value); selectBody(); setColumns(count); markDirty(); } },
+    [["1", "1 column"], ["2", "2 columns"], ["3", "3 columns"]].map(([value, text]) => el("option", { value, text })));
   const toolbar = el("div", { class: "page-tools", role: "toolbar" },
     tool("H1", "Heading", exec("formatBlock", "h1")), tool("H2", "Subheading", exec("formatBlock", "h2")), tool(icon("paragraph"), "Text", exec("formatBlock", "p")),
     el("i", { class: "sep" }),
@@ -220,7 +240,7 @@ async function renderClassic(app, note) {
     tool("{}", "Code", wrapCode), tool(icon("link"), "Link (⌘K)", insertLink),
     el("i", { class: "sep" }),
     tool(icon("list"), "Bulleted list", exec("insertUnorderedList")), tool("1.", "Numbered list", exec("insertOrderedList")), tool(icon("checkbox"), "To-do", () => insertTodo()),
-    tool(icon("table"), "Insert table", insertTable), addRow, addColumn,
+    tool(icon("table"), "Insert table", insertTable), ...tableTools, layout,
     tool(icon("globe"), "Insert an interactive embed", () => {
       const value = window.prompt("Paste an HTTPS or local preview URL");
       if (!value) return;
@@ -247,7 +267,7 @@ async function renderClassic(app, note) {
     const rendered = markdown(note.markdown, { attachments: attachmentURL, embeds: true });
     for (const box of rendered.querySelectorAll("input[type=checkbox]")) box.disabled = false;
     selectionRange = undefined;
-    addRow.disabled = addColumn.disabled = true;
+    setTableTools(false);
     body.replaceChildren(...rendered.childNodes);
     body.classList.toggle("empty", !note.markdown.trim());
   }
@@ -298,6 +318,84 @@ async function renderClassic(app, note) {
     const replacement = parent.children[index];
     const target = replacement?.rows?.[row + (kind === "row" ? 1 : 0)]?.cells[column + (kind === "column" ? 1 : 0)];
     if (target) selection.collapse(target, 0);
+  }
+
+  /** Swaps a block for new markup as one editing transaction (Undo restores it). */
+  function replaceBlock(node, html, focus) {
+    const parent = node.parentElement;
+    const index = [...parent.children].indexOf(node);
+    const range = document.createRange();
+    range.selectNode(node);
+    const selection = getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    if (!document.execCommand("insertHTML", false, html)) return null;
+    const replacement = parent.children[index];
+    const target = focus?.(replacement);
+    if (target) selection.collapse(target, 0);
+    return replacement;
+  }
+
+  function shrinkTable(kind) {
+    const cell = tableCell();
+    if (!cell) return;
+    const table = cell.closest("table");
+    const row = cell.parentElement.rowIndex;
+    const column = cell.cellIndex;
+    const columns = table.rows[0]?.cells.length ?? 0;
+    // The last row or column takes the whole table with it.
+    if (kind === "table" || (kind === "row" && table.rows.length <= 1) || (kind === "column" && columns <= 1)) {
+      replaceBlock(table, "<p><br></p>", replacement => replacement);
+      return;
+    }
+    const next = table.cloneNode(true);
+    if (kind === "row") {
+      next.rows[row].remove();
+      // Deleting the header row promotes the first body row to header.
+      if (row === 0 && next.rows[0]) {
+        const promoted = el("tr", {}, Array.from(next.rows[0].cells, c => { const th = el("th"); th.append(...c.childNodes); return th; }));
+        next.rows[0].remove();
+        (next.tHead ?? next.createTHead()).append(promoted);
+      }
+    } else for (const line of Array.from(next.rows)) line.cells[column]?.remove();
+    replaceBlock(table, next.outerHTML, replacement =>
+      replacement?.rows?.[Math.min(row, replacement.rows.length - 1)]?.cells[Math.min(column, (replacement.rows[0]?.cells.length ?? 1) - 1)]);
+  }
+
+  // MARK: Columns
+  function topBlock() {
+    const anchor = getSelection().anchorNode;
+    let node = anchor?.nodeType === Node.ELEMENT_NODE ? anchor : anchor?.parentElement;
+    while (node && node.parentElement !== body) node = node.parentElement;
+    return node && body.contains(node) ? node : null;
+  }
+  function currentColumns() {
+    const block = topBlock();
+    return block?.classList.contains("note-columns") ? block : null;
+  }
+  function setColumns(count) {
+    const block = topBlock();
+    if (!block) return;
+    const existing = block.classList.contains("note-columns") ? [...block.querySelectorAll(":scope > .note-column")] : null;
+    if (existing && existing.length === count) return;
+    const blank = "<p><br></p>";
+    if (count === 1) {
+      if (!existing) return;
+      // Back to one column: the columns' content, in order.
+      replaceBlock(block, existing.map(column => column.innerHTML.trim() || "").join("") || blank, replacement => replacement);
+      return;
+    }
+    let parts;
+    if (existing) {
+      parts = existing.map(column => column.innerHTML.trim());
+      // Fewer columns: the extra content joins the last one kept.
+      while (parts.length > count) { const extra = parts.pop(); parts[parts.length - 1] += extra; }
+      while (parts.length < count) parts.push(blank);
+    } else {
+      parts = [block.outerHTML, ...Array.from({ length: count - 1 }, () => blank)];
+    }
+    const html = `<div class="note-columns" data-columns="${count}">${parts.map(part => `<div class="note-column">${part || blank}</div>`).join("")}</div>`;
+    replaceBlock(block, existing ? html : html + blank, replacement => replacement?.querySelector(".note-column")?.firstElementChild ?? replacement);
   }
 
   function wrapCode() {
@@ -440,7 +538,9 @@ async function renderClassic(app, note) {
   }
 
   const rememberSelection = () => {
-    addRow.disabled = addColumn.disabled = !tableCell();
+    setTableTools(!!tableCell());
+    const columns = currentColumns();
+    layout.value = String(columns ? columns.querySelectorAll(":scope > .note-column").length : 1);
     const selection = getSelection();
     if (selection.rangeCount && body.contains(selection.anchorNode)) selectionRange = selection.getRangeAt(0).cloneRange();
   };

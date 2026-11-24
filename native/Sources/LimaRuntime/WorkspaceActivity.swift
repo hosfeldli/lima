@@ -190,23 +190,6 @@ extension Runtime {
                 return (a["name"]?.stringValue ?? "").localizedStandardCompare(b["name"]?.stringValue ?? "") == .orderedAscending
             })
         }
-        register("fs.changes") { [unowned self] params, context in
-            guard context.origin == .browser else { throw BridgeError(.notAuthorized, "the change tree is for the user") }
-            let url = try await self.readableURL(try params.string("path"), terminalID: params.optionalString("terminalId"))
-            return try await Task.detached(priority: .utility) { try Self.gitChanges(at: url) }.value
-        }
-        register("fs.gitFile") { [unowned self] params, context in
-            guard context.origin == .browser else { throw BridgeError(.notAuthorized, "Git review is a Lima interface action.") }
-            let id = try params.string("terminalId")
-            let terminal = try await self.terminals.info(id)
-            let directory = try await self.readableURL(terminal.cwd, terminalID: id)
-            let path = try params.string("path")
-            _ = try await self.readableURL(path, terminalID: id)
-            let action = params.optionalString("action") ?? "diff"
-            return try await Task.detached(priority: .utility) {
-                try Self.gitFile(at: directory, path: path, previous: params.optionalString("previous"), action: action)
-            }.value
-        }
         register("fs.gitBranch") { [unowned self] params, context in
             guard context.origin == .browser else { throw BridgeError(.notAuthorized, "Git branch is shown in the workspace interface.") }
             let directory = try await self.readableURL(try params.string("path"), terminalID: nil)

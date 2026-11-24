@@ -2,7 +2,7 @@
 """Sign and verify Lima.app with the hardened runtime.
 
     lima_codesign.py capture <Zen.app> <entitlements.json>
-    lima_codesign.py sign    <Lima.app> <entitlements.json> --identity ID [--keychain PATH]
+    lima_codesign.py sign    <Lima.app> <entitlements.json> --identity ID [--keychain PATH] [--secure-timestamp]
     lima_codesign.py verify  <Lima.app> <entitlements.json> [--certificate-sha256 HEX]
 
 `capture` records the entitlements of every Mach-O in the pinned, notarized
@@ -182,8 +182,10 @@ def expected(app, captured):
     return plan
 
 
-def codesign(path, identity, keychain, entitlements):
-    args = ["codesign", "--force", "--timestamp=none", "--options", "runtime", "--sign", identity]
+def codesign(path, identity, keychain, entitlements, secure_timestamp=False):
+    # Notarization needs Apple's secure timestamp; self-signed builds skip it.
+    timestamp = "--timestamp" if secure_timestamp else "--timestamp=none"
+    args = ["codesign", "--force", timestamp, "--options", "runtime", "--sign", identity]
     if keychain:
         args += ["--keychain", keychain]
     with tempfile.NamedTemporaryFile(suffix=".plist") as handle:
@@ -194,7 +196,7 @@ def codesign(path, identity, keychain, entitlements):
         run(*args, path)
 
 
-def sign(app, capture_path, identity, keychain):
+def sign(app, capture_path, identity, keychain, secure_timestamp=False):
     import shutil
 
     for relative in REMOVED:
@@ -210,13 +212,13 @@ def sign(app, capture_path, identity, keychain):
     # 1. Loose code, deepest first.
     loose = [path for path in plan if path not in main_executables and path != bundle_executable(app, ".")]
     for relative in sorted(loose, key=lambda path: (-path.count(os.sep), path)):
-        codesign(os.path.join(app, relative), identity, keychain, plan[relative])
+        codesign(os.path.join(app, relative), identity, keychain, plan[relative], secure_timestamp)
     # 2. Nested bundles, deepest first, with their main executable's entitlements.
     for bundle in bundles:
         executable = bundle_executable(app, bundle)
-        codesign(os.path.join(app, bundle), identity, keychain, plan.get(executable, {}))
+        codesign(os.path.join(app, bundle), identity, keychain, plan.get(executable, {}), secure_timestamp)
     # 3. The app itself (its main executable is the Lima launcher).
-    codesign(app, identity, keychain, plan.get(bundle_executable(app, "."), {}))
+    codesign(app, identity, keychain, plan.get(bundle_executable(app, "."), {}), secure_timestamp)
     print(f"signed {len(plan)} binaries in {len(bundles)} nested bundles with {identity if identity != '-' else 'an ad-hoc signature'}")
 
 
@@ -270,6 +272,10 @@ def main():
     s.add_argument("capture")
     s.add_argument("--identity", default="-")
     s.add_argument("--keychain")
+    s.add_argument("--secure-timestamp", action="store_true")
+    # repack.sh passes the release policy's signing mode; Developer ID needs the secure timestamp.
+    s.add_argument("--mode-developer-id", dest="secure_timestamp", action="store_true")
+    s.add_argument("--mode-self-signed", action="store_true")
     v = commands.add_parser("verify")
     v.add_argument("app")
     v.add_argument("capture")
@@ -278,7 +284,7 @@ def main():
     if args.command == "capture":
         capture(args.zen_app, args.output)
     elif args.command == "sign":
-        sign(args.app, args.capture, args.identity, args.keychain)
+        sign(args.app, args.capture, args.identity, args.keychain, args.secure_timestamp)
     else:
         verify(args.app, args.capture, args.certificate_sha256)
 

@@ -249,7 +249,6 @@ class Workspaces {
   #coreEntries(workspace) {
     const entries = [];
     if (workspace.conversationID) entries.push({ url: `about:lima?chat=${workspace.conversationID}`, title: "Chat", icon: MASCOT });
-    if (workspace.terminalID) entries.push({ url: `about:lima?terminal=${workspace.terminalID}`, title: "Terminal", icon: TERMINAL_ICON });
     for (const tab of workspace.tabs.filter(t => t.url.startsWith("about:lima") && !imageWorkspaceForURL(t.url))) {
       entries.push({ url: tab.url, title: tab.title, icon: NOTE_ICON });
     }
@@ -467,7 +466,6 @@ class Workspaces {
     const map = this.#map();
     const urls = new Set([`about:lima?workspace=${id}`]);
     if (workspace?.conversationID) urls.add(`about:lima?chat=${workspace.conversationID}`);
-    if (workspace?.terminalID) urls.add(`about:lima?terminal=${workspace.terminalID}`);
     for (const win of lazy.BrowserWindowTracker.orderedWindows) {
       if (!win.gBrowser || lazy.PrivateBrowsingUtils.isWindowPrivate(win)) continue;
       const folder = this.folderFor(id, "folder", win);

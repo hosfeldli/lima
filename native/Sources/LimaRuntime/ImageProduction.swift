@@ -49,6 +49,7 @@ extension Runtime {
             return .array(try await ComfyImageProvider(port: port).checkpoints().map(JSONValue.string))
         }
         register("image.generate") { [unowned self] params, context in
+            Task { await self.usage.count("image.generated") }
             let workspace = try await self.studioWorkspace(params, context)
             let settings = try await self.generationSettings()
             guard context.origin == .browser || settings.allowAgents else {

@@ -31,7 +31,7 @@ func call(_ runtime: Runtime, _ method: String, _ params: [String: JSONValue] = 
     await runtime.handle(BridgeRequest(id: "t", method: method, params: .object(params)), context: CallContext(client: nil, origin: origin, workspaceID: workspace))
 }
 
-@Test(.timeLimit(.minutes(1))) func workspaceBindsFolderTerminalAndAgent() async throws {
+@Test(.timeLimit(.minutes(1))) func workspaceBindsFolderAndAgent() async throws {
     let (runtime, dir) = try await workspaceRuntime()
     defer { try? FileManager.default.removeItem(at: dir) }
     let created = await call(runtime, "workspace.create", ["name": .string("Launch Research")])
@@ -42,9 +42,7 @@ func call(_ runtime: Runtime, _ method: String, _ params: [String: JSONValue] = 
     #expect(created.result?["token"]?.stringValue == "", "token must never reach the browser")
 
     let workspace = try await runtime.workspaces.get(id)
-    let terminal = try await runtime.terminals.info(workspace.terminalID!)
-    #expect(terminal.cwd == directory)
-    #expect(terminal.owner == "user")
+    #expect(workspace.terminalID == nil, "agents use their own shell tools")
     let conversation = try await runtime.conversations.get(workspace.conversationID!)
     #expect(conversation.workspaceID == id && conversation.workingDirectory == directory)
 
@@ -54,7 +52,6 @@ func call(_ runtime: Runtime, _ method: String, _ params: [String: JSONValue] = 
     #expect(mcp.contains(workspace.token) && mcp.contains("\"mcp\""))
     #expect(config.arguments.contains("bypassPermissions"))
     #expect(await runtime.workspaces.id(forToken: workspace.token) == id)
-    try await runtime.terminals.close(workspace.terminalID!)
 }
 
 @Test(.timeLimit(.minutes(1))) func agentIsConfinedToItsWorkspace() async throws {
@@ -81,80 +78,6 @@ func call(_ runtime: Runtime, _ method: String, _ params: [String: JSONValue] = 
     #expect(deleteByAgent.error?.code == .notAuthorized)
     for id in [a, b] { if let t = try await runtime.workspaces.get(id).terminalID { try? await runtime.terminals.close(t) } }
 }
-
-@Test(.timeLimit(.minutes(1))) func workspaceAgentRunsWithoutApprovalWhenThePromptIsClear() async throws {
-    let (runtime, dir) = try await workspaceRuntime()
-    defer { try? FileManager.default.removeItem(at: dir) }
-    let id = try #require(await call(runtime, "workspace.create", ["name": .string("Build")]).result?["id"]?.stringValue)
-    let workspace = try await runtime.workspaces.get(id)
-    _ = try await runtime.terminals.waitForPrompt(workspace.terminalID!, timeout: 15)
-
-    let ran = await call(runtime, "workspace.run", ["command": .string("pwd && echo built > out.txt")], origin: .chat, workspace: id)
-    #expect(ran.ok, "\(String(describing: ran.error))")
-    #expect(ran.result?["output"]?.stringValue?.contains(workspace.directory) == true)
-    #expect(FileManager.default.fileExists(atPath: workspace.directory + "/out.txt"))
-    let files = await call(runtime, "workspace.files", [:], origin: .chat, workspace: id)
-    #expect(files.result?.arrayValue?.contains { $0["name"]?.stringValue == "out.txt" } == true)
-
-    let cleanup = await call(runtime, "workspace.run", ["command": .string("rm -f out.txt")], origin: .chat, workspace: id)
-    #expect(cleanup.ok)
-    #expect(!FileManager.default.fileExists(atPath: workspace.directory + "/out.txt"))
-
-    try await runtime.terminals.userWrite(workspace.terminalID!, data: Data(" ".utf8))
-    let afterTakeover = await call(runtime, "workspace.run", ["command": .string("ls")], origin: .chat, workspace: id)
-    #expect(afterTakeover.error?.code == .badRequest)
-    #expect(try await runtime.terminals.info(workspace.terminalID!).pendingRequests.isEmpty)
-    try await runtime.terminals.userWrite(workspace.terminalID!, data: Data([0x03]))
-    _ = try await runtime.terminals.waitForPrompt(workspace.terminalID!, timeout: 5)
-    let resumed = await call(runtime, "workspace.run", ["command": .string("mkdir Sources && cd Sources")], origin: .chat, workspace: id)
-    #expect(resumed.ok)
-    let actualDirectory = try await runtime.terminals.info(workspace.terminalID!).cwd
-    let expectedDirectory = URL(fileURLWithPath: workspace.directory + "/Sources").resolvingSymlinksInPath().path
-    #expect(URL(fileURLWithPath: actualDirectory).resolvingSymlinksInPath().path == expectedDirectory)
-    try await runtime.terminals.close(workspace.terminalID!)
-}
-
-@Test(.timeLimit(.minutes(1))) func backgroundJobUsesTheWorkspaceShellAndLeavesItAvailable() async throws {
-    let (runtime, dir) = try await workspaceRuntime()
-    defer { try? FileManager.default.removeItem(at: dir) }
-    let id = try #require(await call(runtime, "workspace.create", ["name": .string("Background test")]).result?["id"]?.stringValue)
-    let workspace = try await runtime.workspaces.get(id)
-    let terminalID = try #require(workspace.terminalID)
-    let background = await call(runtime, "workspace.run", [
-        "command": .string("printf 'starting server'; sleep 8"), "background": .bool(true), "timeout": .number(5),
-    ], origin: .chat, workspace: id)
-    #expect(background.ok)
-    #expect(background.result?["timedOut"]?.boolValue == false)
-    #expect(background.result?["output"]?.stringValue?.contains("Background PID") == true)
-    let log = try #require(background.result?["logPath"]?.stringValue)
-    for _ in 0..<150 {
-        if (try? String(contentsOfFile: log, encoding: .utf8)) == "starting server" { break }
-        try await Task.sleep(for: .milliseconds(20))
-    }
-    let foreground = await call(runtime, "workspace.run", [
-        "command": .string("cat '\(log)' && cd /tmp"), "timeout": .number(3),
-    ], origin: .chat, workspace: id)
-    #expect(foreground.result?["exitStatus"]?.doubleValue == 0, "\(String(describing: foreground.result))")
-    #expect(foreground.result?["output"]?.stringValue?.contains("starting server") == true)
-    #expect(try await runtime.terminals.info(terminalID).cwd.hasSuffix("/tmp"))
-    try await runtime.terminals.close(terminalID)
-}
-
-@Test(.timeLimit(.minutes(1))) func workspaceTerminalIsRecreatedAfterItEnds() async throws {
-    let (runtime, dir) = try await workspaceRuntime()
-    defer { try? FileManager.default.removeItem(at: dir) }
-    let id = try #require(await call(runtime, "workspace.create", ["name": .string("Heal")]).result?["id"]?.stringValue)
-    let original = try await runtime.workspaces.get(id).terminalID!
-    try await runtime.terminals.close(original) // simulate a runtime restart losing the shell
-    let ran = await call(runtime, "workspace.run", ["command": .string("echo healed")], origin: .chat, workspace: id)
-    #expect(ran.ok, "\(String(describing: ran.error))")
-    #expect(ran.result?["output"]?.stringValue?.contains("healed") == true)
-    let replacement = try await runtime.workspaces.get(id).terminalID!
-    #expect(replacement != original)
-    #expect(try await runtime.terminals.info(replacement).cwd == (try await runtime.workspaces.get(id).directory))
-    try await runtime.terminals.close(replacement)
-}
-
 
 @Test(.timeLimit(.minutes(1))) func workspaceNamingAndDeletionStayInSyncWithChat() async throws {
     let (runtime, dir) = try await workspaceRuntime()
@@ -202,7 +125,7 @@ func call(_ runtime: Runtime, _ method: String, _ params: [String: JSONValue] = 
     #expect(helper.directory != parent.directory)
     #expect(helper.tabs.map(\.url) == [scope])
     // Reaching beyond its tab asks the user; declined, the call fails.
-    for method in ["workspace.run", "workspace.files", "workspace.readTab", "workspace.openTab", "terminal.list", "notes.list", "capabilities.list"] {
+    for method in ["workspace.files", "workspace.readTab", "workspace.openTab", "notes.list", "capabilities.list"] {
         let (result, card) = try await answeringApproval(runtime, approve: false) { await call(runtime, method, origin: .chat, workspace: helper.id) }
         #expect(card?["question"]?.stringValue == "Let Tester go beyond its browser tab?")
         #expect(result.error?.code == .notAuthorized)
@@ -212,30 +135,7 @@ func call(_ runtime: Runtime, _ method: String, _ params: [String: JSONValue] = 
     #expect(config.arguments.contains("--strict-mcp-config"))
     #expect(config.arguments.contains("--tools"))
     #expect(config.arguments.contains(""))
-    try await runtime.terminals.close(parent.terminalID!)
 }
-
-@Test func gitReviewShowsAndStagesTheSelectedFile() async throws {
-    let (runtime, dir) = try await workspaceRuntime()
-    defer { try? FileManager.default.removeItem(at: dir) }
-    let workspace = try await runtime.createWorkspace(name: "Git Review", directory: nil, provider: .claude, parentID: nil, task: nil, startTask: false)
-    let id = try #require(workspace.terminalID)
-    let initResult = await call(runtime, "workspace.run", ["command": .string("git init -q && printf 'patch test\n' > review.txt")], origin: .chat, workspace: workspace.id)
-    #expect(initResult.result?["exitStatus"]?.doubleValue == 0)
-    let changes = await call(runtime, "fs.changes", ["path": .string(workspace.directory), "terminalId": .string(id)])
-    let file = try #require(changes.result?["files"]?.arrayValue?.first?["path"]?.stringValue)
-    let args: [String: JSONValue] = ["path": .string(file), "terminalId": .string(id)]
-    let diff = await call(runtime, "fs.gitFile", args)
-    #expect(diff.result?["unstaged"]?.stringValue?.contains("+patch test") == true)
-    let stage = await call(runtime, "fs.gitFile", args.merging(["action": .string("stage")]) { _, next in next })
-    #expect(stage.ok)
-    let staged = await call(runtime, "fs.gitFile", args)
-    #expect(staged.result?["staged"]?.stringValue?.contains("+patch test") == true)
-    let unstage = await call(runtime, "fs.gitFile", args.merging(["action": .string("unstage")]) { _, next in next })
-    #expect(unstage.ok)
-    try await runtime.terminals.close(id)
-}
-
 
 @Test func workspaceArchivePreservesLinkedFolderAndHidesItsHelper() async throws {
     let (runtime, dir) = try await workspaceRuntime()
@@ -262,7 +162,6 @@ func call(_ runtime: Runtime, _ method: String, _ params: [String: JSONValue] = 
     defer { try? FileManager.default.removeItem(at: dir) }
     let workspace = try await runtime.createWorkspace(name: "Archive Failure", directory: nil, provider: .claude,
         parentID: nil, task: nil, startTask: false)
-    try await runtime.terminals.close(try #require(workspace.terminalID))
     try FileManager.default.removeItem(atPath: workspace.directory) // isolated test folder
     let deletion = await call(runtime, "workspace.delete", ["id": .string(workspace.id)])
     #expect(!deletion.ok)
@@ -275,12 +174,10 @@ func call(_ runtime: Runtime, _ method: String, _ params: [String: JSONValue] = 
     defer { try? FileManager.default.removeItem(at: dir) }
     let workspace = try await runtime.createWorkspace(name: "Terminal Archive Guard", directory: nil, provider: .claude,
         parentID: nil, task: nil, startTask: false)
-    let terminalID = try #require(workspace.terminalID)
     let other = try await runtime.terminals.create(cwd: workspace.directory, shell: "/bin/zsh")
     let blocked = await call(runtime, "workspace.delete", ["id": .string(workspace.id)])
     #expect(blocked.error?.code == .badRequest)
     #expect(FileManager.default.fileExists(atPath: workspace.directory))
-    #expect(try await runtime.terminals.info(terminalID).id == terminalID)
     try await runtime.workspaces.requireActive(workspace.id)
 
     try await runtime.terminals.close(other.id)
@@ -295,7 +192,6 @@ func call(_ runtime: Runtime, _ method: String, _ params: [String: JSONValue] = 
     defer { try? FileManager.default.removeItem(at: dir) }
     let workspace = try await runtime.createWorkspace(name: "Archive Reservation", directory: nil, provider: .claude,
         parentID: nil, task: nil, startTask: false)
-    try await runtime.terminals.close(try #require(workspace.terminalID))
     let original = URL(fileURLWithPath: workspace.directory, isDirectory: true)
     let staging = WorkspaceArchive.stagingDirectory(for: workspace)
     let staged = staging.appendingPathComponent(original.lastPathComponent, isDirectory: true)

@@ -54,5 +54,6 @@ import LimaAgentSupervisor
     let expired = try await service.refresh(store: runtime.store, force: true)
     #expect(expired.mailReconnect && expired.calendarReconnect)
     #expect(expired.unread == nil && expired.meeting == nil)
-    #expect(await call(runtime, "integrations.google.refresh", origin: .mcp).error?.code == .notAuthorized)
+    let (refreshed, _) = try await answeringApproval(runtime, approve: false) { await call(runtime, "integrations.google.refresh", origin: .mcp) }
+    #expect(refreshed.error?.code == .notAuthorized)
 }

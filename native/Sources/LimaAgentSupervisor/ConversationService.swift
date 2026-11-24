@@ -15,6 +15,31 @@ public struct ChatMessage: Codable, Equatable, Sendable {
     public var progress: AgentProgress? = nil
     /// A short note shown above the reply, e.g. that Lima switched providers.
     public var notice: String? = nil
+    /// The reply's tool steps with what they changed: one per `tools` entry.
+    public var steps: [ChatStep]? = nil
+    /// Files the user attached to this message.
+    public var attachments: [ChatAttachment]? = nil
+}
+
+/// One tool call in a reply, with lines it added/removed and images it saw.
+public struct ChatStep: Codable, Equatable, Sendable {
+    public var tool: String
+    public var added: Int? = nil
+    public var removed: Int? = nil
+    /// Media IDs, read with `media(_:id:)`.
+    public var images: [String]? = nil
+}
+
+/// A file the user dropped or pasted into the composer.
+public struct ChatAttachment: Codable, Equatable, Sendable {
+    public var name: String
+    public var path: String
+    public var size: Int
+    public var type: String
+
+    public init(name: String, path: String, size: Int, type: String) {
+        self.name = name; self.path = path; self.size = size; self.type = type
+    }
 }
 
 public struct Conversation: Codable, Equatable, Sendable {
@@ -94,9 +119,14 @@ public enum ConversationError: Error, CustomStringConvertible {
 ///
 /// A CLI failure becomes an error on the affected assistant message only;
 /// the conversation, drafts and earlier messages stay intact and the turn
-/// can be retried or edited (spec v1 §3.5, v2 §5.5). Messages sent while a
-/// turn is running are queued rather than interrupting it.
+/// can be retried or edited (spec v1 §3.5, v2 §5.5). A message sent while a
+/// turn is running is queued (runs next, in order) unless it's sent to
+/// interrupt: then the running reply stops, keeps what it wrote, and the new
+/// message runs at once, ahead of anything still queued.
 public actor ConversationService {
+    /// How a message sent during a reply is handled.
+    public enum SendMode: String, Sendable { case queue, interrupt }
+
     public static let collection = "conversations"
 
     private let store: EncryptedStore
@@ -104,7 +134,11 @@ public actor ConversationService {
     private var conversations: [String: Conversation] = [:]
     private var running: [String: AgentRun] = [:]
     private var queues: [String: [String]] = [:] // conversationID → queued user message IDs
+    private var activeReply: [String: String] = [:] // conversationID → the reply the running CLI writes to
     private let emit: @Sendable (ConversationEvent) -> Void
+    /// Where tool images are kept, per conversation (set by the runtime).
+    private var mediaDirectory: URL?
+    public func setMediaDirectory(_ url: URL) { mediaDirectory = url }
     /// Supplies per-conversation CLI extras (workspace MCP config, preamble).
     public typealias RunConfigurator = @Sendable (Conversation) async -> (arguments: [String], environment: [String: String], preamble: String?)
     private var configurator: RunConfigurator?
@@ -215,16 +249,64 @@ public actor ConversationService {
         return conversation
     }
 
-    public func send(_ id: String, text: String) async throws -> Conversation {
+    public func send(_ id: String, text: String, mode: SendMode = .queue, attachments: [ChatAttachment] = []) async throws -> Conversation {
         var conversation = try get(id)
         if conversation.mascot == nil { conversation.mascot = ChatMascot.suggested(for: text) }
-        let message = ChatMessage(id: UUID().uuidString, role: .user, text: text, createdAt: Self.now(),
+        var message = ChatMessage(id: UUID().uuidString, role: .user, text: text, createdAt: Self.now(),
                                   status: running[id] == nil ? .complete : .queued, error: nil, tools: [])
+        if !attachments.isEmpty { message.attachments = attachments }
         conversation.messages.append(message)
         if conversation.title == "New conversation" { conversation.title = Self.title(from: text) }
         try await save(conversation)
-        if running[id] == nil { try await startTurn(id, userMessageID: message.id) } else { queues[id, default: []].append(message.id) }
+        if running[id] == nil { try await startTurn(id, userMessageID: message.id) }
+        else if mode == .interrupt { return try await interrupt(id, messageID: message.id) }
+        else { queues[id, default: []].append(message.id) }
         return try get(id)
+    }
+
+    /// Runs a queued message now. A reply in progress stops and keeps its
+    /// partial text, marked interrupted; the message moves ahead of anything
+    /// else still queued, so the transcript reads in the order things ran.
+    public func interrupt(_ id: String, messageID: String) async throws -> Conversation {
+        var conversation = try get(id)
+        guard conversation.messages.contains(where: { $0.id == messageID && $0.role == .user && $0.status == .queued }) else {
+            throw ConversationError.messageNotFound(messageID)
+        }
+        queues[id]?.removeAll { $0 == messageID }
+        if let run = running[id] {
+            // The stopped run's late events find no active reply and are dropped.
+            running[id] = nil
+            if let replyID = activeReply.removeValue(forKey: id),
+               let replyIndex = conversation.messages.firstIndex(where: { $0.id == replyID }) {
+                if conversation.messages[replyIndex].text.isEmpty && conversation.messages[replyIndex].tools.isEmpty {
+                    conversation.messages.remove(at: replyIndex) // nothing written yet
+                } else {
+                    conversation.messages[replyIndex].status = .failed
+                    conversation.messages[replyIndex].progress = nil
+                    conversation.messages[replyIndex].error = AgentFailure(.cancelled, "Interrupted by your next message.")
+                }
+            }
+            run.cancel()
+        }
+        guard let index = conversation.messages.firstIndex(where: { $0.id == messageID }) else { throw ConversationError.messageNotFound(messageID) }
+        let message = conversation.messages.remove(at: index)
+        let position = conversation.messages.firstIndex { $0.role == .user && $0.status == .queued } ?? conversation.messages.endIndex
+        conversation.messages.insert(message, at: position)
+        try await save(conversation)
+        try await startTurn(id, userMessageID: messageID)
+        return try get(id)
+    }
+
+    /// Takes a queued message back out before it runs.
+    public func unqueue(_ id: String, messageID: String) async throws -> Conversation {
+        var conversation = try get(id)
+        guard let index = conversation.messages.firstIndex(where: { $0.id == messageID && $0.role == .user && $0.status == .queued }) else {
+            throw ConversationError.messageNotFound(messageID)
+        }
+        conversation.messages.remove(at: index)
+        queues[id]?.removeAll { $0 == messageID }
+        try await save(conversation)
+        return conversation
     }
 
     /// Adds a finished message without running a turn: a Companion thread
@@ -276,9 +358,18 @@ public actor ConversationService {
         return try get(id)
     }
 
-    public func cancel(_ id: String) {
+    /// Stops the reply. Queued messages leave the transcript unsent and are
+    /// returned, so the interface can put them back in the composer.
+    @discardableResult
+    public func cancel(_ id: String) async -> [String] {
         queues[id] = nil
         running[id]?.cancel()
+        guard var conversation = conversations[id] else { return [] }
+        let queued = conversation.messages.filter { $0.role == .user && $0.status == .queued }
+        guard !queued.isEmpty else { return [] }
+        conversation.messages.removeAll { $0.role == .user && $0.status == .queued }
+        try? await save(conversation)
+        return queued.map(\.text)
     }
 
     /// One-shot Quick Ask: no conversation, no tools, low effort.
@@ -319,6 +410,51 @@ public actor ConversationService {
         return text.isEmpty ? .failure(AgentFailure(.unknown, "no response")) : .success(text)
     }
 
+    // MARK: Media and attachments
+
+    static let mediaTypes = ["image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp"]
+
+    private func saveMedia(_ data: Data, type: String, conversationID: String) -> String? {
+        guard let mediaDirectory, let ext = Self.mediaTypes[type], data.count <= 12_000_000 else { return nil }
+        let folder = mediaDirectory.appendingPathComponent(conversationID, isDirectory: true)
+        let id = "\(UUID().uuidString).\(ext)"
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            try data.write(to: folder.appendingPathComponent(id), options: [.atomic])
+            return id
+        } catch { return nil }
+    }
+
+    /// A tool image's bytes and type, for the chat view and the viewer.
+    public func media(_ conversationID: String, id: String) throws -> (data: Data, type: String) {
+        _ = try get(conversationID)
+        guard let mediaDirectory, id.range(of: #"^[0-9A-F-]{36}\.(png|jpg|gif|webp)$"#, options: .regularExpression) != nil else {
+            throw ConversationError.messageNotFound(id)
+        }
+        let url = mediaDirectory.appendingPathComponent(conversationID).appendingPathComponent(id)
+        guard let data = try? Data(contentsOf: url) else { throw ConversationError.messageNotFound(id) }
+        let ext = url.pathExtension
+        return (data, Self.mediaTypes.first { $0.value == ext }?.key ?? "image/png")
+    }
+
+    /// Where a conversation's attachments go: inside its working directory
+    /// for a workspace (the agent's sandbox), Lima's media folder otherwise.
+    public func attachmentDirectory(_ conversationID: String) throws -> URL {
+        let conversation = try get(conversationID)
+        if conversation.workspaceID != nil {
+            return URL(fileURLWithPath: conversation.workingDirectory).appendingPathComponent(".lima-attachments", isDirectory: true)
+        }
+        guard let mediaDirectory else { throw ConversationError.notEditable("Attachments aren't available.") }
+        return mediaDirectory.appendingPathComponent(conversationID).appendingPathComponent("attachments", isDirectory: true)
+    }
+
+    /// The text a CLI receives for a message with attachments.
+    static func withAttachments(_ text: String, _ attachments: [ChatAttachment]?) -> String {
+        guard let attachments, !attachments.isEmpty else { return text }
+        let list = attachments.map { "- \($0.path) (\($0.type), \($0.size) bytes)" }.joined(separator: "\n")
+        return "\(text)\n\nAttached files (read them from these paths):\n\(list)"
+    }
+
     // MARK: Turn execution
 
     private func startTurn(_ id: String, userMessageID: String, notice: String? = nil) async throws {
@@ -338,12 +474,12 @@ public actor ConversationService {
         }
 
         // Without a resumable CLI session, give the CLI the transcript.
-        let requestText = Self.providerPrompt(conversation.messages[userIndex].text)
+        let requestText = Self.withAttachments(Self.providerPrompt(conversation.messages[userIndex].text), conversation.messages[userIndex].attachments)
         let prompt: String
         if conversation.cliSessionID == nil, userIndex > 0 {
             let transcript = conversation.messages[..<userIndex]
-                .filter { $0.status == .complete && !$0.text.isEmpty }
-                .map { "\($0.role == .user ? "User" : "Assistant"): \($0.text)" }
+                .filter { !$0.text.isEmpty && ($0.status == .complete || $0.error?.kind == .cancelled) }
+                .map { "\($0.role == .user ? "User" : $0.status == .complete ? "Assistant" : "Assistant (interrupted)"): \($0.text)" }
                 .joined(separator: "\n\n")
             prompt = "Conversation so far:\n\n\(transcript)\n\nUser: \(requestText)"
         } else {
@@ -363,6 +499,7 @@ public actor ConversationService {
         }
         let run = AgentRun(request: request, executable: executable, searchPath: discovery.searchPaths)
         running[id] = run
+        activeReply[id] = reply.id
 
         Task { [weak self] in
             for await event in run.events { await self?.handle(event, conversationID: id, replyID: reply.id) }
@@ -370,7 +507,7 @@ public actor ConversationService {
     }
 
     private func handle(_ event: AgentStreamEvent, conversationID id: String, replyID: String) async {
-        guard var conversation = conversations[id], let index = conversation.messages.firstIndex(where: { $0.id == replyID }) else { return }
+        guard activeReply[id] == replyID, var conversation = conversations[id], let index = conversation.messages.firstIndex(where: { $0.id == replyID }) else { return }
         switch event {
         case .session(let session):
             conversation.cliSessionID = session
@@ -386,8 +523,25 @@ public actor ConversationService {
             conversation.messages[index].text += text
             conversations[id] = conversation
             emit(.delta(conversationID: id, messageID: replyID, text: text))
+        case .change(let added, let removed):
+            guard var steps = conversation.messages[index].steps, !steps.isEmpty else { return }
+            steps[steps.count - 1].added = (steps[steps.count - 1].added ?? 0) + added
+            steps[steps.count - 1].removed = (steps[steps.count - 1].removed ?? 0) + removed
+            conversation.messages[index].steps = steps
+            conversations[id] = conversation
+            emit(.updated(conversation))
+        case .image(let data, let type):
+            guard let mediaID = saveMedia(data, type: type, conversationID: id) else { return }
+            var steps = conversation.messages[index].steps ?? []
+            if steps.isEmpty { steps.append(ChatStep(tool: "Image")) }
+            steps[steps.count - 1].images = Array(((steps[steps.count - 1].images ?? []) + [mediaID]).suffix(12))
+            conversation.messages[index].steps = steps
+            conversations[id] = conversation
+            emit(.updated(conversation))
         case .tool(let name, let detail):
-            conversation.messages[index].tools.append(detail.isEmpty ? name : "\(name): \(detail)")
+            let entry = detail.isEmpty ? name : "\(name): \(detail)"
+            conversation.messages[index].tools.append(entry)
+            conversation.messages[index].steps = (conversation.messages[index].steps ?? []) + [ChatStep(tool: entry)]
             conversations[id] = conversation
             emit(.updated(conversation))
         case .completed, .failed:
@@ -396,7 +550,10 @@ public actor ConversationService {
     }
 
     private func finishTurn(_ id: String, replyID: String, result: AgentStreamEvent) async throws {
-        guard var conversation = conversations[id], let index = conversation.messages.firstIndex(where: { $0.id == replyID }) else { return }
+        guard var conversation = conversations[id], let index = conversation.messages.firstIndex(where: { $0.id == replyID }) else {
+            if activeReply[id] == replyID { activeReply[id] = nil; running[id] = nil }
+            return
+        }
         switch result {
         case .completed(let text):
             if !text.isEmpty { conversation.messages[index].text = text }
@@ -411,6 +568,7 @@ public actor ConversationService {
             break
         }
         running[id] = nil
+        activeReply[id] = nil
         conversation.messages[index].progress = nil
         try await save(conversation)
 

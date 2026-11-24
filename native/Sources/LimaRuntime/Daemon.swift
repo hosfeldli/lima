@@ -49,15 +49,6 @@ public enum Daemon {
             if requested == .browser { runtime.connect(client) } else { runtime.disconnect(client) }
             return .object(["origin": .string(requested.rawValue), "workspace": workspaceID.map(JSONValue.string) ?? .null])
         }
-        runtime.register("terminal.lease.handle") { [unowned runtime] params, _ in
-            let id = try params.string("id")
-            let agent = try params.string("agentId")
-            guard let handle = try await runtime.terminals.currentHandle(id, agentID: agent) else {
-                throw BridgeError(.notAuthorized, "the user has not granted keyboard control to \(agent)")
-            }
-            return try JSONValue.from(handle)
-        }
-
         let server = SocketServer(path: paths.socket,
             onConnect: { _ in },
             onDisconnect: { client in runtime.disconnect(client); origins.remove(client) },
@@ -68,17 +59,6 @@ public enum Daemon {
                 }
                 Task {
                     let (origin, workspaceID) = origins.binding(client)
-                    if origin == .mcp, request.method == "terminal.agentRun" {
-                        // Asks the user when terminal control hasn't been granted.
-                        do {
-                            try await runtime.requireMCPScope("terminal:control", context: CallContext(client: client, origin: origin, workspaceID: workspaceID),
-                                                              action: "type commands into your terminal")
-                        } catch {
-                            let denied = BridgeResponse.failure(id: request.id, (error as? BridgeError) ?? BridgeError(.internalError, String(describing: error)))
-                            if let data = try? JSONEncoder().encode(denied) { client.send(data) }
-                            return
-                        }
-                    }
                     let response = await runtime.handle(request, context: CallContext(client: client, origin: origin, workspaceID: workspaceID))
                     if let data = try? JSONEncoder().encode(response) { client.send(data) }
                 }

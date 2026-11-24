@@ -150,6 +150,10 @@ public enum AgentStreamEvent: Equatable, Sendable {
     case progress(AgentProgress)
     case delta(String)
     case tool(name: String, detail: String)
+    /// Lines the latest tool added and removed (file edits).
+    case change(added: Int, removed: Int)
+    /// An image a tool returned (a screenshot, a picture it read).
+    case image(data: Data, type: String)
     case completed(text: String)
     case failed(AgentFailure)
 }
@@ -234,12 +238,19 @@ public struct AgentEventParser: Sendable {
             for block in content {
                 if block["type"] as? String == "tool_use", let name = block["name"] as? String {
                     events.append(.tool(name: name, detail: Self.toolDetail(block["input"])))
+                    if let change = Self.lineChange(tool: name, input: block["input"] as? [String: Any]) { events.append(change) }
                 } else if !sawDelta, block["type"] as? String == "text", let text = block["text"] as? String {
                     finalText += text
                     events.append(.delta(text))
                 }
             }
             return events
+        case "user":
+            // Tool results: keep the images (screenshots, pictures read).
+            let content = (object["message"] as? [String: Any])?["content"] as? [[String: Any]] ?? []
+            return content.filter { $0["type"] as? String == "tool_result" }.flatMap { result in
+                (result["content"] as? [[String: Any]] ?? []).compactMap(Self.image)
+            }
         case "result":
             let text = object["result"] as? String ?? finalText
             if object["is_error"] as? Bool == true || (object["subtype"] as? String).map({ $0 != "success" }) == true {
@@ -282,8 +293,15 @@ public struct AgentEventParser: Sendable {
             case "command_execution":
                 return [.tool(name: "shell", detail: item["command"] as? String ?? "")]
             case "file_change":
-                let paths = (item["changes"] as? [[String: Any]] ?? []).compactMap { $0["path"] as? String }
-                return [.tool(name: type, detail: paths.joined(separator: ", "))]
+                let changes = item["changes"] as? [[String: Any]] ?? []
+                let paths = changes.compactMap { $0["path"] as? String }
+                var events: [AgentStreamEvent] = [.tool(name: type, detail: paths.joined(separator: ", "))]
+                let diffs = changes.compactMap { $0["diff"] as? String ?? $0["unified_diff"] as? String }
+                if !diffs.isEmpty {
+                    let counts = diffs.map(Self.diffCounts).reduce((0, 0)) { ($0.0 + $1.0, $0.1 + $1.1) }
+                    events.append(.change(added: counts.0, removed: counts.1))
+                }
+                return events
             case "web_search":
                 return [.tool(name: type, detail: item["query"] as? String ?? "")]
             default:
@@ -322,7 +340,9 @@ public struct AgentEventParser: Sendable {
             let state = part?["state"] as? [String: Any]
             if let id = part?["callID"] as? String ?? part?["id"] as? String,
                !startedTools.insert(id).inserted { break }
-            events.append(.tool(name: part?["tool"] as? String ?? "tool", detail: Self.toolDetail(state?["input"] ?? part?["input"])))
+            let tool = part?["tool"] as? String ?? "tool"
+            events.append(.tool(name: tool, detail: Self.toolDetail(state?["input"] ?? part?["input"])))
+            if let change = Self.lineChange(tool: tool, input: (state?["input"] ?? part?["input"]) as? [String: Any]) { events.append(change) }
         case "error":
             let error = object["error"] as? [String: Any]
             let message = (error?["data"] as? [String: Any])?["message"] as? String ?? error?["name"] as? String ?? "OpenCode reported an error"
@@ -331,6 +351,51 @@ public struct AgentEventParser: Sendable {
             break
         }
         return events
+    }
+
+    static func lines(_ text: String?) -> Int {
+        guard let text, !text.isEmpty else { return 0 }
+        return text.split(separator: "\n", omittingEmptySubsequences: false).count - (text.hasSuffix("\n") ? 1 : 0)
+    }
+
+    /// +/- lines for edit tools (Claude Edit/MultiEdit/Write, OpenCode edit/write).
+    static func lineChange(tool: String, input: [String: Any]?) -> AgentStreamEvent? {
+        guard let input else { return nil }
+        switch tool.lowercased() {
+        case "edit", "str_replace_editor":
+            let old = input["old_string"] as? String ?? input["oldString"] as? String
+            let new = input["new_string"] as? String ?? input["newString"] as? String
+            guard old != nil || new != nil else { return nil }
+            return .change(added: lines(new), removed: lines(old))
+        case "multiedit":
+            let edits = input["edits"] as? [[String: Any]] ?? []
+            guard !edits.isEmpty else { return nil }
+            return .change(added: edits.reduce(0) { $0 + lines($1["new_string"] as? String) },
+                           removed: edits.reduce(0) { $0 + lines($1["old_string"] as? String) })
+        case "write":
+            guard let content = input["content"] as? String else { return nil }
+            return .change(added: lines(content), removed: 0)
+        default:
+            return nil
+        }
+    }
+
+    /// Counts +/- lines in a unified diff (headers excluded).
+    static func diffCounts(_ diff: String) -> (Int, Int) {
+        var added = 0, removed = 0
+        for line in diff.split(separator: "\n", omittingEmptySubsequences: false) {
+            if line.hasPrefix("+++") || line.hasPrefix("---") { continue }
+            if line.hasPrefix("+") { added += 1 } else if line.hasPrefix("-") { removed += 1 }
+        }
+        return (added, removed)
+    }
+
+    static func image(_ block: [String: Any]) -> AgentStreamEvent? {
+        guard block["type"] as? String == "image", let source = block["source"] as? [String: Any],
+              source["type"] as? String == "base64", let text = source["data"] as? String,
+              let type = source["media_type"] as? String, ["image/png", "image/jpeg", "image/gif", "image/webp"].contains(type),
+              text.count < 16_000_000, let data = Data(base64Encoded: text) else { return nil }
+        return .image(data: data, type: type)
     }
 
     private static func toolDetail(_ value: Any?) -> String {

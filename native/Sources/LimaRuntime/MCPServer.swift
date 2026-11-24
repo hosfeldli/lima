@@ -20,10 +20,10 @@ public enum MCPServer {
     /// Content tools (read/append data). Actions come from the capability
     /// manifest below, so there is no second list of Lima functions here.
     static let contentTools: [Tool] = [
-        Tool(name: "lima_search", description: "Search Lima notes, conversations, reports, terminal history and tools.",
+        Tool(name: "lima_search", description: "Search Lima notes, conversations, reports and tools.",
              properties: ["query": ["type": "string"]], required: ["query"]) { args, client in
             let response = try client.call("search.query", params: .object(["query": args?["query"] ?? .string("")]))
-            let results = (response["results"]?.arrayValue ?? []).filter { ["note", "conversation", "report", "terminal", "context", "tool"].contains($0["source"]?.stringValue ?? "") }
+            let results = (response["results"]?.arrayValue ?? []).filter { ["note", "conversation", "report", "context", "tool"].contains($0["source"]?.stringValue ?? "") }
             return .array(results)
         },
         Tool(name: "notes_list", description: "List notes (id, title, excerpt).", properties: [:], required: []) { _, client in
@@ -47,33 +47,6 @@ public enum MCPServer {
         },
         Tool(name: "reports_list", description: "Weekly activity reports.", properties: [:], required: []) { _, client in
             try client.call("context.reports")
-        },
-        Tool(name: "terminal_list", description: "List Lima terminal sessions and their state and input owner.", properties: [:], required: []) { _, client in
-            try client.call("terminal.list")
-        },
-        Tool(name: "terminal_read", description: "Read the recent output of a terminal session.",
-             properties: ["id": ["type": "string"]], required: ["id"]) { args, client in
-            let attached = try client.call("terminal.attach", params: .object(["id": args?["id"] ?? .null]))
-            let data = Data(base64Encoded: attached["scrollback"]?.stringValue ?? "") ?? Data()
-            return .string(ANSI.strip(String(decoding: data.suffix(16 * 1024), as: UTF8.self)))
-        },
-        Tool(name: "terminal_request_control", description: "Ask the user for keyboard control of a terminal. The user approves in Lima.",
-             properties: ["id": ["type": "string"], "agentId": ["type": "string"]], required: ["id", "agentId"]) { args, client in
-            try client.call("terminal.lease.request", params: .object(["id": args?["id"] ?? .null, "agentId": args?["agentId"] ?? .null]))
-            return .string("Requested. Call terminal_run once the user grants control.")
-        },
-        Tool(name: "terminal_run", description: "Type a command into a terminal you control and wait for the prompt. Requires a granted lease and the terminal:control grant; risky commands need user approval.",
-             properties: ["id": ["type": "string"], "agentId": ["type": "string"], "command": ["type": "string"], "timeout": ["type": "number"]],
-             required: ["id", "agentId", "command"]) { args, client in
-            let handle = try client.call("terminal.lease.handle", params: .object(["id": args?["id"] ?? .null, "agentId": args?["agentId"] ?? .null]))
-            var result = try client.call("terminal.agentRun", params: .object([
-                "id": args?["id"] ?? .null, "handle": handle, "command": args?["command"] ?? .null, "timeout": args?["timeout"] ?? .number(120)
-            ]))
-            if case .object(var object) = result, let output = object["output"]?.stringValue {
-                object["output"] = .string(ANSI.strip(output))
-                result = .object(object)
-            }
-            return result
         }
     ]
 
@@ -189,8 +162,30 @@ extension MCPServer {
              properties: ["purpose": ["type": "string"]], required: ["purpose"]) { args, client in
             try client.call("workspace.location", params: args)
         },
-        Tool(name: "workspace_info", description: "This workspace: name, directory, tabs, bookmarks, terminal and conversation.", properties: [:], required: []) { _, client in
+        Tool(name: "workspace_info", description: "This workspace: name, directory, tabs, bookmarks and conversation.", properties: [:], required: []) { _, client in
             try client.call("workspace.get")
+        },
+        Tool(name: "workspace_schedule", description: """
+            Schedule work for later in this workspace, once or on repeat, when the user asks for something at a future time or regularly \
+            ("every day at 8:00 AM", "book it when reservations open 60 days ahead"). At each run Lima sends `instruction` to this workspace's \
+            agent, so write it as a complete standalone instruction (site, what to do, what to report) without timing words. Work out the \
+            date yourself (run `date` for today): a booking window that opens N days ahead is a one-time task on the opening day, a little \
+            after it opens (9:00 AM if unknown, and say you assumed it). Times are the user's local time. The user approves it in Lima; \
+            the result has the next run so you can confirm it in your reply.
+            """,
+             properties: ["title": ["type": "string", "description": "Short name, e.g. “Check Nopa reservations”"],
+                          "instruction": ["type": "string"]],
+             required: ["instruction", "when"],
+             structuredProperties: ["when": TaskSchedule.schema]) { args, client in
+            try client.call("schedule.create", params: args)
+        },
+        Tool(name: "workspace_schedules", description: "This workspace's scheduled tasks: when each runs next and how recent runs went.",
+             properties: [:], required: []) { _, client in
+            try client.call("schedule.list")
+        },
+        Tool(name: "workspace_unschedule", description: "Delete one of this workspace's scheduled tasks by id (the user approves it).",
+             properties: ["id": ["type": "string"]], required: ["id"]) { args, client in
+            try client.call("schedule.delete", params: args)
         },
         Tool(name: "workspace_name", description: "Give an unnamed workspace its short, descriptive title. An existing title is kept.",
              properties: ["name": ["type": "string"]], required: ["name"]) { args, client in
@@ -206,15 +201,6 @@ extension MCPServer {
         Tool(name: "workspace_bookmark", description: "File a bookmark in this workspace's bookmark folder. Use folder paths like \"Research/Docs\" to build structure.",
              properties: ["url": ["type": "string"], "title": ["type": "string"], "folder": ["type": "string"]], required: ["url", "title"]) { args, client in
             try client.call("workspace.bookmark", params: .object(["url": args?["url"] ?? .null, "title": args?["title"] ?? .null, "folder": args?["folder"] ?? .string("")]))
-        },
-        Tool(name: "workspace_run", description: "Run a shell command in this workspace's terminal (in its directory) and wait for it to finish. The user watches and can take over the keyboard. Set background for a long-lived process. Returns a launch receipt and logPath. Run a separate command to inspect the log and verify the service is ready.",
-             properties: ["command": ["type": "string"], "timeout": ["type": "number"], "background": ["type": "boolean"]], required: ["command"]) { args, client in
-            var result = try client.call("workspace.run", params: .object(["command": args?["command"] ?? .null, "timeout": args?["timeout"] ?? .number(120), "background": args?["background"] ?? .bool(false)]))
-            if case .object(var object) = result, let output = object["output"]?.stringValue {
-                object["output"] = .string(ANSI.strip(output))
-                result = .object(object)
-            }
-            return result
         },
         Tool(name: "workspace_files", description: "List files in this workspace's directory (or a sub-folder via path).", properties: ["path": ["type": "string"]], required: []) { args, client in
             try client.call("workspace.files", params: .object(["path": args?["path"] ?? .string("")]))
@@ -242,7 +228,7 @@ extension MCPServer {
         Tool(name: "agent_dismiss", description: "Close a finished helper's sidebar folder and tabs after reading its results from agents_status. Pass the helper workspace id.", properties: ["id": ["type": "string"]], required: ["id"]) { args, client in
             try client.call("agent.dismiss", params: args)
         },
-        Tool(name: "workspace_new", description: "Create a new AI workspace (its own folder, terminal, agent and tab folder) when the user asks for one.",
+        Tool(name: "workspace_new", description: "Create a new AI workspace (its own folder, agent and tab folder) when the user asks for one.",
              properties: ["name": ["type": "string"], "task": ["type": "string", "description": "first instruction for the new workspace's agent"]], required: ["name"]) { args, client in
             try client.call("workspace.create", params: .object(["name": args?["name"] ?? .null, "task": args?["task"] ?? .null]))
         },

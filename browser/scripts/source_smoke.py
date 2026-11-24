@@ -155,7 +155,7 @@ const compiled = COMPILED;
       || { uuidRuns, rendered, status: stored?.status, directRuns, recorded },
     search: (question[0] === "web" && question[1] === "ask" && question.length <= 9 && aria && moved && back &&
       url === "nav:https://example.com" && plain[0] === "web" && !plain.some(key => ["ask", "delegate"].includes(key)) &&
-      kept && closed && /AI Chat/.test(footer) && !document.querySelector("#lima-search button:not(.lima-s-chip-remove, .lima-s-button)"))
+      kept && closed && /AI Chat/.test(footer) && !document.querySelector("#lima-search button:not(.lima-s-chip-remove, .lima-s-button, #lima-search-where)"))
       || { question, aria, moved, back, url, plain, kept, closed, footer },
     searchSpeed: metrics.open < 100 || metrics,
     // macOS light/dark comes from the runtime; windows carry the resolved
@@ -173,6 +173,50 @@ const compiled = COMPILED;
       Services.prefs.setStringPref("lima.theme", before);
       return (dark === "dark" && light === "light") || { dark, light };
     })(),
+    // Lima's graphite tab icons (Terminal, Notes…) turn light in the dark
+    // theme, whether set on a sleeping tab or as a loaded page's favicon.
+    darkTabIcons: await (async () => {
+      const win = Services.wm.getMostRecentWindow("navigator:browser");
+      const before = Services.prefs.getStringPref("lima.theme", "system");
+      Services.prefs.setStringPref("lima.theme", "dark");
+      const principal = Services.scriptSecurityManager.getSystemPrincipal();
+      const sleeping = win.gBrowser.addTab("about:lima?note=smoke", { triggeringPrincipal: principal, inBackground: true, createLazyBrowser: true });
+      win.gBrowser.setIcon(sleeping, "resource://lima-ui/icons/note.svg");
+      const loaded = win.gBrowser.addTab("about:lima?view=notes", { triggeringPrincipal: principal, inBackground: true });
+      for (let i = 0; i < 50 && !loaded.getAttribute("image"); i++) await new Promise(resolve => win.setTimeout(resolve, 100));
+      const filter = tab => win.getComputedStyle(tab.querySelector(".tab-icon-image")).filter;
+      const result = { sleeping: filter(sleeping), loaded: filter(loaded), image: loaded.getAttribute("image") };
+      win.gBrowser.removeTab(sleeping);
+      win.gBrowser.removeTab(loaded);
+      Services.prefs.setStringPref("lima.theme", before);
+      return (/invert/.test(result.sleeping) && /invert/.test(result.loaded)) || result;
+    })(),
+    // Downloads live in the sidebar rail; Zen's animation and Firefox's panel are off.
+    downloadsRail: (() => {
+      const button = document.getElementById("lima-downloads");
+      const animation = Services.prefs.getBoolPref("zen.downloads.download-animation", true);
+      const panel = Services.prefs.getBoolPref("browser.download.alwaysOpenPanel", true);
+      return (!!button && !animation && !panel) || { button: !!button, animation, panel };
+    })(),
+    // Search results without AI answers or ads; Lima Search stands in for the address bar.
+    searchCleanup: (() => {
+      const { engineFor, stylesheet } = ChromeUtils.importESModule("resource://lima/actors/LimaSearchCleanChild.sys.mjs");
+      const css = stylesheet("google", { ai: true, ads: true });
+      return (engineFor("https://www.google.com/search?q=x") === "google" && engineFor("https://example.com/search") === null &&
+        css.includes("#tads") && css.includes("udm=50")) || { css };
+    })(),
+    addressBar: window.limaAddressBar === true || "not installed",
+    shortsHidden: (() => {
+      const { engineFor, shortsWatchURL, stylesheet } = ChromeUtils.importESModule("resource://lima/actors/LimaSearchCleanChild.sys.mjs");
+      return (engineFor("https://www.youtube.com/") === "youtube" && shortsWatchURL("https://www.youtube.com/shorts/abcDEF12345") === "https://www.youtube.com/watch?v=abcDEF12345"
+        && stylesheet("youtube", { shorts: true }).includes("ytd-reel-shelf-renderer") && stylesheet("youtube", { shorts: false }) === "") || "shorts rules";
+    })(),
+    usageOffByDefault: await (async () => {
+      const state = await LimaBridge.request("usage.get");
+      return (state.enabled === false) || state;
+    })(),
+    terminalGone: !(await LimaBridge.request("host.hello")).methods.some(method => method.startsWith("terminal.") || method === "workspace.run")
+      || "terminal methods still registered",
     // Zen's own site never opens in Lima.
     zenBlocked: await (async () => {
       const { isBlockedURL } = ChromeUtils.importESModule("resource://lima/LimaBlockedSites.sys.mjs");

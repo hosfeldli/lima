@@ -14,6 +14,8 @@ const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.sys.mjs",
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
+  LimaDownloads: "resource://lima/LimaDownloads.sys.mjs",
+  LimaUsage: "resource://lima/LimaUsage.sys.mjs",
   LimaNotesBookmarks: "resource://lima/LimaNotesBookmarks.sys.mjs",
   LimaSearchPanel: "resource://lima/LimaSearchPanel.sys.mjs",
   LimaTabs: "resource://lima/LimaTabs.sys.mjs",
@@ -74,7 +76,7 @@ export function showSidebarNotice(win, { title, detail = "", tone = "ok", action
         el(doc, "button", { onclick: () => { hide(); Promise.resolve().then(run).catch(error => failed(win, label, error, run)); } }, label))) : null),
     el(doc, "button", { class: "lima-action-close", title: "Dismiss", "aria-label": "Dismiss", onclick: hide }, glyph(doc, "close")));
   notice.hidden = false;
-  if (tone !== "bad") notice.limaTimer = win.setTimeout(hide, 6000);
+  if (tone !== "bad" && tone !== "ask") notice.limaTimer = win.setTimeout(hide, 6000);
 }
 
 /** A sidebar action failed: say which one and why, and offer a retry. */
@@ -105,14 +107,6 @@ export const LimaCreate = {
     const tab = win.gBrowser.addTab(`about:lima?note=${encodeURIComponent(note.id)}`, { triggeringPrincipal: system() });
     this.place(win, tab, folder);
     return note;
-  },
-
-  async terminal(win, folder = null) {
-    const workspaceId = folder?.closest?.("zen-folder[lima-workspace]")?.getAttribute("lima-workspace");
-    const cwd = workspaceId ? lazy.LimaWorkspaces.workspace(workspaceId)?.directory : null;
-    const info = await lazy.LimaBridge.request("terminal.create", { cols: 100, rows: 30, ...(cwd ? { cwd } : {}) });
-    const tab = win.gBrowser.addTab(`about:lima?terminal=${encodeURIComponent(info.id)}`, { triggeringPrincipal: system() });
-    this.place(win, tab, folder);
   },
 
   async workspace(win, { pickFolder = false } = {}) {
@@ -176,7 +170,6 @@ function installMenus(win) {
       item("lima-create-workspace", "New AI Workspace", "star", () => LimaCreate.workspace(win)),
       item("lima-create-workspace-folder", "New AI Workspace from Folder…", "folder", () => LimaCreate.workspace(win, { pickFolder: true })),
       item("lima-create-note", "New Note", "note", () => LimaCreate.note(win)),
-      item("lima-create-terminal", "New Terminal", "terminal", () => LimaCreate.terminal(win)),
       separator("lima-create-sep"));
   }
 
@@ -187,7 +180,6 @@ function installMenus(win) {
     const items = [
       item("lima-ctx-workspace", "New AI Workspace", "star", () => LimaCreate.workspace(win)),
       item("lima-ctx-note", "New Note", "note", () => LimaCreate.note(win)),
-      item("lima-ctx-terminal", "New Terminal", "terminal", () => LimaCreate.terminal(win)),
     ];
     if (anchor) anchor.after(...items); else toolbar.prepend(...items, separator("lima-ctx-sep"));
   }
@@ -201,7 +193,6 @@ function installMenus(win) {
       inFolder("lima-folder-chat", "Open Agent", "star", f => lazy.LimaWorkspaces.openChat(win, f.getAttribute("lima-workspace"))),
       inFolder("lima-folder-tab", "New Tab Here", "tab", f => { const tab = win.gBrowser.addTab("about:blank", { triggeringPrincipal: system() }); LimaCreate.place(win, tab, f); lazy.LimaSearchPanel.open(win); }),
       inFolder("lima-folder-note", "New Note Here", "note", f => LimaCreate.note(win, f)),
-      inFolder("lima-folder-terminal", "New Terminal Here", "terminal", f => LimaCreate.terminal(win, f)),
       inFolder("lima-folder-image", "Open Image Studio", "image", f => lazy.LimaWorkspaces.openImageStudio(win, f.getAttribute("lima-workspace"))),
       inFolder("lima-folder-rename", "Rename Workspace", "file", f => f.rename()),
       inFolder("lima-folder-reveal", "Reveal Project Folder", "folder", f => lazy.LimaBridge.request("workspace.reveal", { id: f.getAttribute("lima-workspace") })),
@@ -217,7 +208,6 @@ function installMenus(win) {
       const agent = target?.hasAttribute("lima-agent");
       doc.getElementById("lima-folder-chat").hidden = !workspace;
       doc.getElementById("lima-folder-tab").hidden = !target;
-      doc.getElementById("lima-folder-terminal").hidden = !target;
       doc.getElementById("lima-folder-note").hidden = !target;
       doc.getElementById("lima-folder-image").hidden = !workspace;
       doc.getElementById("lima-folder-dismiss").hidden = !agent;
@@ -248,7 +238,6 @@ function installMenus(win) {
       item("lima-tabctx-send", "Send Page to Agent", "workspace", () => sendPageToAgent(win, pageOf(contextTab()?.linkedBrowser))),
       separator("lima-tabctx-page-sep"),
       item("lima-tabctx-note", "New Note", "note", () => LimaCreate.note(win, folderOfTab())),
-      item("lima-tabctx-terminal", "New Terminal", "terminal", () => LimaCreate.terminal(win, folderOfTab())),
       item("lima-tabctx-workspace", "New AI Workspace", "star", () => LimaCreate.workspace(win)),
       separator("lima-tabctx-sep"));
     tabMenu.addEventListener("popupshowing", event => {
@@ -350,7 +339,8 @@ function attachDock(win) {
     controlBusy = true;
     music.dataset.gesture = action === "next" || action === "previous" ? "skip" : action === "playpause" ? "tap" : "cue";
     try {
-      await lazy.LimaBridge.request("media.control", { action, player: "Spotify", ...parameters() });
+      if (source === "browser") browserControl(action, parameters());
+      else await lazy.LimaBridge.request("media.control", { action, player: source, ...parameters() });
       await refresh(true);
       win.setTimeout(() => { if (music.hasAttribute("data-open")) refresh(true); }, 850);
     } catch (error) { flash(error.message); }
@@ -370,21 +360,25 @@ function attachDock(win) {
   const djMascot = el(doc, "img", { class: "lima-dj-mascot", src: "resource://lima-ui/marks/companion.svg#dj", alt: "" });
   const djScene = el(doc, "span", { class: "lima-dj-scene", "aria-hidden": "true" }, djMascot,
     el(doc, "i", { class: "lima-dj-record" }));
+  // Spotify DJ exists only for Spotify; a tab playing media gets "Show Tab".
+  const dj = el(doc, "button", { class: "lima-music-dj", title: "Play Spotify DJ", "aria-label": "Play Spotify DJ", onclick: control("dj") },
+    el(doc, "img", { src: "resource://lima-ui/marks/spotify-dj.svg", alt: "" }));
+  const showTab = el(doc, "button", { class: "lima-music-btn", title: "Show the tab that's playing", "aria-label": "Show the tab that's playing", hidden: true,
+    onclick: event => { event.stopPropagation(); if (browserTab?.isConnected) win.gBrowser.selectedTab = browserTab; } }, glyph(doc, "tab"));
   const expanded = el(doc, "div", { class: "lima-music-expanded" }, timeline,
     el(doc, "div", { class: "lima-music-transport" },
       el(doc, "button", { class: "lima-music-btn", title: "Previous", onclick: control("previous") }, glyph(doc, "previous")),
       el(doc, "button", { class: "lima-music-btn big", title: "Play / pause", onclick: control("playpause") }, glyph(doc, "play")),
       el(doc, "button", { class: "lima-music-btn", title: "Next", onclick: control("next") }, glyph(doc, "next")),
-      el(doc, "button", { class: "lima-music-dj", title: "Play Spotify DJ", "aria-label": "Play Spotify DJ", onclick: control("dj") },
-        el(doc, "img", { src: "resource://lima-ui/marks/spotify-dj.svg", alt: "" }))),
+      dj, showTab),
     el(doc, "div", { class: "lima-music-audio" }, volume, output), outputs);
   expanded.inert = true;
   const playerHeader = el(doc, "button", { class: "lima-music-row", title: "Expand music controls", "aria-expanded": "false", onclick: toggleSpotify },
     djScene, el(doc, "span", { class: "lima-music-text" }, title, artist),
     el(doc, "span", { class: "lima-music-notes", "aria-hidden": "true" }, el(doc, "i", {}, "♪"), el(doc, "i", {}, "♫")));
-  const music = el(doc, "div", { id: "lima-music", hidden: true, "aria-label": "Spotify playback" },
+  const music = el(doc, "div", { id: "lima-music", hidden: true, "aria-label": "Now playing" },
     playerHeader, el(doc, "div", { class: "lima-music-reveal" }, expanded));
-  const spotify = el(doc, "button", { id: "lima-spotify", title: "Spotify", "aria-label": "Spotify", "aria-expanded": "false", onclick: toggleSpotify },
+  const spotify = el(doc, "button", { id: "lima-spotify", title: "Music", "aria-label": "Music", "aria-expanded": "false", onclick: toggleSpotify },
     el(doc, "span", { class: "lima-spotify-icon" }));
 
   const level = el(doc, "div", { class: "lima-dict-level" }, ...Array.from({ length: 5 }, () => el(doc, "i")));
@@ -409,8 +403,26 @@ function attachDock(win) {
     (doc.getElementById("navigator-toolbox") ?? doc.documentElement).append(dock);
   }
 
-  // Now playing.
+  // Now playing: Spotify, Apple Music (both reported by the runtime) or a
+  // tab playing media (YouTube and any other site), whichever played last.
   let track = null;
+  let source = "Spotify";
+  const tracks = {};
+  let browserTab = null;
+  let browserController = null;
+  const NAMES = { Spotify: "Spotify", Music: "Music", browser: "Browser audio" };
+  let countedSource;
+  function choose() {
+    const candidates = Object.values(tracks).filter(item => item?.title || item?.player === "browser");
+    const playing = candidates.filter(item => item.state === "Playing").sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    const next = playing ?? tracks[source] ?? candidates.sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    if (next) { source = next.player; track = next; }
+    if (track?.state === "Playing" && countedSource !== source) {
+      countedSource = source;
+      lazy.LimaUsage.count({ Spotify: "music.spotify", Music: "music.appleMusic", browser: "music.tab" }[source], win);
+    }
+    else track = null;
+  }
   let flashTimer = null;
   let controlBusy = false;
   let gestureTimer = null;
@@ -429,12 +441,16 @@ function attachDock(win) {
   }
   function paintTrack() {
     const open = music.hasAttribute("data-open");
-    music.hidden = !musicVisible;
+    music.hidden = !musicVisible && source !== "browser";
+    music.dataset.source = source;
+    spotify.dataset.source = source;
+    dj.hidden = source !== "Spotify";
+    showTab.hidden = source !== "browser";
     expanded.inert = !open;
     playerHeader.setAttribute("aria-expanded", String(open));
     spotify.setAttribute("aria-expanded", String(open));
-    title.textContent = track?.title || "Spotify";
-    artist.textContent = track?.title ? track.artist : "Spotify is idle";
+    title.textContent = track?.title || NAMES[source];
+    artist.textContent = track?.title ? track.artist : `${NAMES[source]} is idle`;
     const icon = track?.state === "Playing" ? "pause" : "play";
     for (const node of music.querySelectorAll('.lima-glyph[data-role="pp"], .lima-music-btn[title="Play / pause"] .lima-glyph')) node.style.maskImage = `url("${ICON(icon)}")`;
     music.toggleAttribute("data-playing", track?.state === "Playing");
@@ -500,10 +516,73 @@ function attachDock(win) {
   win.addEventListener("unload", () => { win.clearInterval(ticker); win.clearTimeout(inactivity); }, { once: true });
   const refresh = (update = false) => {
     const request = ++revision;
-    return lazy.LimaBridge.request("media.nowPlaying", { player: "Spotify", refresh: update }).then(item => {
-      if (request === revision) { track = item; paintTrack(); }
+    if (source === "browser") { readBrowser(); return Promise.resolve(); }
+    const player = source;
+    return lazy.LimaBridge.request("media.nowPlaying", { player, refresh: update }).then(item => {
+      if (request !== revision) return;
+      if (item) tracks[player] = item; else delete tracks[player];
+      choose();
+      paintTrack();
     }).catch(error => { if (update) flash(error.message); });
   };
+
+  // MARK: Media in tabs
+  function readBrowser() {
+    const controller = browserController;
+    if (!controller || !browserTab?.isConnected) { delete tracks.browser; return; }
+    let metadata = {};
+    try { metadata = controller.getMetadata() ?? {}; } catch {}
+    let host = "";
+    try { host = browserTab.linkedBrowser.currentURI.host.replace(/^www\./, ""); } catch {}
+    const previous = tracks.browser;
+    tracks.browser = {
+      player: "browser",
+      title: metadata.title || browserTab.label || host,
+      artist: metadata.artist || host,
+      state: controller.isPlaying ? "Playing" : "Paused",
+      durationMs: previous?.durationMs, positionMs: previous?.positionMs,
+      updatedAt: controller.isPlaying || !previous ? Date.now() : previous.updatedAt,
+    };
+  }
+  function browserControl(action, parameters) {
+    const controller = browserController;
+    if (!controller) throw new Error("Nothing is playing in a tab.");
+    if (action === "playpause") controller.isPlaying ? controller.pause("user") : controller.play();
+    else if (action === "next") controller.nextTrack();
+    else if (action === "previous") controller.prevTrack();
+    else if (action === "seek") controller.seekTo(parameters.seconds);
+  }
+  const onBrowserChange = () => { readBrowser(); choose(); paintTrack(); };
+  function onPosition(event) {
+    if (!tracks.browser || !Number.isFinite(event.duration) || event.duration <= 0) return;
+    tracks.browser.durationMs = event.duration * 1000;
+    tracks.browser.positionMs = (event.position ?? 0) * 1000;
+    tracks.browser.updatedAt = Date.now();
+    if (source === "browser") paintTrack();
+  }
+  function watchTab(tab) {
+    if (browserController) {
+      for (const name of ["metadatachange", "playbackstatechange", "deactivated"]) browserController.removeEventListener(name, onBrowserChange);
+      browserController.removeEventListener("positionstatechange", onPosition);
+    }
+    browserTab = tab;
+    browserController = tab?.linkedBrowser?.browsingContext?.mediaController ?? null;
+    if (browserController) {
+      for (const name of ["metadatachange", "playbackstatechange", "deactivated"]) browserController.addEventListener(name, onBrowserChange);
+      browserController.addEventListener("positionstatechange", onPosition);
+    }
+    onBrowserChange();
+  }
+  // The tab that most recently started playing sound; private windows don't share theirs.
+  if (!lazy.PrivateBrowsingUtils.isWindowPrivate(win)) {
+    win.gBrowser.tabContainer.addEventListener("TabAttrModified", event => {
+      if (!event.detail?.changed?.includes("soundplaying")) return;
+      const tab = event.target;
+      if (tab.hasAttribute("soundplaying")) { if (tab !== browserTab) watchTab(tab); else onBrowserChange(); }
+      else if (tab === browserTab) onBrowserChange();
+    });
+    win.gBrowser.tabContainer.addEventListener("TabClose", event => { if (event.target === browserTab) watchTab(null); });
+  }
   function toggleSpotify() {
     music.toggleAttribute("data-open");
     paintTrack();
@@ -561,11 +640,20 @@ function attachDock(win) {
   }
 
   lazy.LimaBridge.onEvent(message => {
-    if (message.event === "media.nowPlaying" && message.data?.player === "Spotify") { revision++; track = message.data; paintTrack(); }
+    if (message.event === "media.nowPlaying" && ["Spotify", "Music"].includes(message.data?.player)) {
+      revision++;
+      tracks[message.data.player] = message.data;
+      choose();
+      paintTrack();
+    }
     else if (message.event === "dictation.state") paintDictation(message.data);
     else if (message.event === "dictation.result") deliverDictation(win, message.data).catch(error => showDictationError(win, error));
   });
-  refresh();
+  for (const player of ["Spotify", "Music"]) {
+    lazy.LimaBridge.request("media.nowPlaying", { player }).then(item => {
+      if (item && !tracks[player]) { tracks[player] = item; choose(); paintTrack(); }
+    }).catch(() => {});
+  }
   lazy.LimaBridge.request("dictation.status").then(paintDictation).catch(() => {});
   attachServices(win, dock, rail, spotify, mic, visible => {
     musicVisible = visible;
@@ -579,7 +667,7 @@ function attachServices(win, dock, rail, spotify, mic, hideSpotify) {
   const main = dock.querySelector("#lima-dock-main");
   const privateMode = lazy.PrivateBrowsingUtils.isWindowPrivate(win);
   const pref = "lima.sidebar.shortcuts";
-  const definitions = { inbox: "Gmail", calendar: "Google Calendar", spotify: "Spotify", mic: "Dictation", grammar: "Grammar settings" };
+  const definitions = { inbox: "Gmail", calendar: "Google Calendar", spotify: "Music", downloads: "Downloads", mic: "Dictation", grammar: "Grammar settings" };
   const settingsURL = section => `about:lima?view=integrations&section=${section}`;
   const gmailURL = "https://mail.google.com/mail/u/0/#inbox";
   const calendarURL = "https://calendar.google.com/calendar/u/0/r";
@@ -613,7 +701,8 @@ function attachServices(win, dock, rail, spotify, mic, hideSpotify) {
   const inbox = control("Gmail", "inbox", () => jump("inbox"));
   const calendar = control("Google Calendar", "calendar", () => jump("calendar"));
   const grammar = control("Grammar settings", "grammar", () => launch(settingsURL("grammar")));
-  const buttons = { inbox, calendar, spotify, mic, grammar };
+  const downloads = lazy.LimaDownloads.attach(win, dock);
+  const buttons = { inbox, calendar, spotify, downloads, mic, grammar };
   const settings = control("Settings", "sliders", () => launch("about:lima?view=integrations"));
   settings.id = "lima-settings-button";
   (doc.getElementById("zen-sidebar-foot-buttons") ?? dock).append(settings);
@@ -890,5 +979,7 @@ export const LimaSidebar = {
     try { attachFolderBehaviour(win); } catch (error) { log(`folders: ${error}\n${error.stack}`); }
     try { attachKeys(win); } catch (error) { log(`keys: ${error}`); }
     try { lazy.LimaSearchPanel.install(win); } catch (error) { log(`search: ${error}`); }
+    // The one-time usage-sharing question, once the window has settled.
+    win.setTimeout(() => lazy.LimaUsage.maybeAsk(win, showSidebarNotice).catch(() => {}), 20000);
   },
 };

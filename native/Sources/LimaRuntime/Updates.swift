@@ -82,7 +82,8 @@ enum UpdateVerifier {
 
     /// The candidate app is intact (every nested binary included) and meets
     /// the installed app's designated requirement: same bundle identifier,
-    /// signed by the same pinned certificate.
+    /// signed by the same pinned certificate, or by Lima's Developer ID
+    /// (the team in Info.plist), which carries installs across that switch.
     static func appSatisfiesInstalledRequirement(_ candidate: URL, installed: URL) throws {
         try verifyApp(candidate, requirement: installedRequirement(installed))
     }
@@ -96,7 +97,13 @@ enum UpdateVerifier {
         guard CodeTrust.leafCertificate(installedCode) != nil else {
             throw BridgeError(.notAuthorized, "Development builds don't install updates.")
         }
-        return requirement
+        return CodeTrust.trusted(requirement, code: installedCode, team: teamOf(installed) ?? CodeTrust.trustedTeam)
+    }
+
+    /// The team the installed app was built to trust.
+    static func teamOf(_ app: URL) -> String? {
+        guard let team = NSDictionary(contentsOf: app.appendingPathComponent("Contents/Info.plist"))?["LimaTrustedTeam"] as? String else { return nil }
+        return CodeTrust.isTeamID(team) ? team : nil
     }
 
     static func verifyApp(_ candidate: URL, requirement: SecRequirement) throws {
@@ -371,7 +378,10 @@ public enum UpdateApplier {
         let overrides = ["LIMA_DATA_DIR", "LIMA_KEY_FILE", "LIMA_WORKSPACES_ROOT"].flatMap { name in
             environment[name].map { ["--env", "\(name)=\($0)"] } ?? []
         }
-        return ["-n", "-a", target.path] + overrides + ["--args", "-profile", profile.path]
+        // No `-n`: if Lima is already open again (the user clicked it during
+        // the install), bring that one forward instead of starting a second
+        // copy on the same profile.
+        return ["-a", target.path] + overrides + ["--args", "-profile", profile.path]
     }
 
     public static func run(_ arguments: [String]) -> Never {
@@ -391,6 +401,9 @@ public enum UpdateApplier {
             FileHandle.standardError.write(Data("lima-host apply-update is started by the Lima runtime.\n".utf8))
             exit(77)
         }
+        // The runtime that started this install runs the old code from the
+        // old bundle; it's replaced once the new app is in place.
+        let runtimePID = getppid()
         setsid()
         let keepBackup = arguments.contains("--keep-backup")
         let requirement = try? UpdateVerifier.installedRequirement(target)
@@ -407,6 +420,8 @@ public enum UpdateApplier {
         // Installed because the user quit: Lima opens updated next time.
         if arguments.contains("--no-relaunch") { exit(result == nil ? 0 : 1) }
         guard kill(pid, 0) != 0, let requirement, (try? UpdateVerifier.verifyApp(target, requirement: requirement)) != nil else { exit(1) }
+        if result == nil { retireOldProcesses(target: target, runtimePID: runtimePID) }
+        forgetStaleCopies(source: source, state: state, target: target)
         let relaunch = Process()
         relaunch.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         relaunch.arguments = relaunchArguments(target: target, profile: profile, environment: ProcessInfo.processInfo.environment)
@@ -420,6 +435,59 @@ public enum UpdateApplier {
     }
 
     /// Returns nil on success, otherwise why the install was rolled back.
+    /// Before reopening: the old runtime (still running the old code) exits,
+    /// so macOS sees one Lima rather than an old copy beside the new one.
+    /// The new browser starts a new runtime.
+    static func retireOldProcesses(target: URL, runtimePID: pid_t) {
+        guard runtimePID > 1, let code = CodeTrust.code(pid: runtimePID),
+              CodeTrust.path(of: code).map({ $0.hasSuffix("/Contents/MacOS/lima-host") }) == true else { return }
+        kill(runtimePID, SIGTERM)
+        for _ in 0..<50 where kill(runtimePID, 0) == 0 { usleep(100_000) }
+    }
+
+    /// The old app's processes other than lima-host (this installer and the runtime).
+    static func lingeringHelpers(in target: URL) -> [pid_t] {
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+        return processes(inside: target).filter { pid in
+            guard pid != getpid(), proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return false }
+            return !String(cString: buffer).hasSuffix("/Contents/MacOS/lima-host")
+        }
+    }
+
+    /// PIDs whose executable is inside `bundle` (or a copy swapped out of it).
+    static func processes(inside bundle: URL) -> [pid_t] {
+        let prefix = bundle.resolvingSymlinksInPath().path + "/"
+        let count = proc_listallpids(nil, 0)
+        guard count > 0 else { return [] }
+        var pids = [pid_t](repeating: 0, count: Int(count) + 32)
+        let filled = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.size))
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+        return pids.prefix(Int(max(0, filled))).filter { pid in
+            guard pid > 0, proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return false }
+            return String(cString: buffer).hasPrefix(prefix)
+        }
+    }
+
+    /// Launch Services forgets the downloaded and rollback copies, so a
+    /// later launch can't pick (or ask about) an older Lima.
+    static func forgetStaleCopies(source: URL, state: URL, target: URL) {
+        let tool = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+        guard FileManager.default.isExecutableFile(atPath: tool) else { return }
+        func run(_ arguments: [String]) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: tool)
+            process.arguments = arguments
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try? process.run()
+            process.waitUntilExit()
+        }
+        for stale in [source, state.appendingPathComponent("previous/Lima.app"), state.appendingPathComponent("restore/Lima.app")] {
+            run(["-u", stale.path])
+        }
+        run(["-f", target.path])
+    }
+
     static func apply(source: URL, target: URL, state: URL, waitFor pid: pid_t, keepBackup: Bool) -> String? {
         let fm = FileManager.default
         guard source.resolvingSymlinksInPath() != target.resolvingSymlinksInPath() else {
@@ -428,6 +496,9 @@ public enum UpdateApplier {
         // Wait (up to two minutes) for the browser to quit.
         for _ in 0..<1200 where kill(pid, 0) == 0 { usleep(100_000) }
         guard kill(pid, 0) != 0 else { return "Lima didn't quit, so the update wasn't installed." }
+        // Web content, GPU and media helpers can outlive the browser for a
+        // moment; swap only once they're gone (the runtime is retired after).
+        for _ in 0..<100 where !lingeringHelpers(in: target).isEmpty { usleep(100_000) }
 
         do { try UpdateVerifier.appSatisfiesInstalledRequirement(source, installed: target) } catch {
             return (error as? BridgeError)?.message ?? "\(error)"

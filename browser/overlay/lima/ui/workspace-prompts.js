@@ -8,6 +8,7 @@ const RISK = {
   system: ["warning", "Affects your Mac"],
   // New reach: an ungranted scope, a folder outside the workspace.
   access: ["key", "Needs new access"],
+  schedule: ["calendar", "Runs on its own later"],
 };
 
 export function workspacePrompts({ workspace = () => null, signal } = {}) {

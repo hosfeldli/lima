@@ -312,3 +312,59 @@ func waitIdle(_ service: ConversationService, _ id: String) async throws -> Conv
     #expect(result.messages.map(\.text) == ["Hello", "from codex"])
     #expect(result.messages.last?.notice == "Restarted this reply on Codex.")
 }
+
+@Test(.timeLimit(.minutes(1))) func messagesSentDuringAReplyQueueOrInterrupt() async throws {
+    // A request ending in "slow" writes a little and then hangs; others
+    // answer at once. (Earlier turns arrive as transcript above it.)
+    let cli = try fakeCLI("claude", script: """
+    prompt=$(cat | tail -n 1)
+    case "$prompt" in
+      *slow)
+        echo '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"partial"}}}'
+        sleep 30 ;;
+      *) echo '{"type":"result","subtype":"success","is_error":false,"result":"done"}' ;;
+    esac
+    """)
+    let (service, dir) = try await makeConversations(cliDir: cli)
+    defer {
+        try? FileManager.default.removeItem(at: cli)
+        try? FileManager.default.removeItem(at: dir)
+    }
+    let conversation = try await service.create(provider: .claude, model: nil, workingDirectory: NSTemporaryDirectory())
+    let id = conversation.id
+    _ = try await service.send(id, text: "one slow")
+    for _ in 0..<100 where try await service.get(id).messages.last?.text.isEmpty != false { try await Task.sleep(for: .milliseconds(20)) }
+
+    // Queued: waits behind the reply; can be taken back.
+    let queued = try await service.send(id, text: "later")
+    #expect(queued.messages.last?.status == .queued)
+    let taken = try await service.unqueue(id, messageID: try #require(queued.messages.last?.id))
+    #expect(!taken.messages.contains { $0.text == "later" })
+
+    // Queued, then a second message interrupts: the reply stops and keeps
+    // its text, the interrupting message runs first, the queued one after.
+    _ = try await service.send(id, text: "afterwards")
+    _ = try await service.send(id, text: "now please", mode: .interrupt)
+    let result = try await waitIdle(service, id)
+    #expect(result.messages.map(\.text) == ["one slow", "partial", "now please", "done", "afterwards", "done"])
+    #expect(result.messages[1].error?.kind == .cancelled)
+    #expect(result.messages.allSatisfy { $0.status != .queued })
+
+    // Stopping hands back what never ran.
+    _ = try await service.send(id, text: "again slow")
+    _ = try await service.send(id, text: "never sent")
+    #expect(await service.cancel(id) == ["never sent"])
+    #expect(try await waitIdle(service, id).messages.contains { $0.text == "never sent" } == false)
+}
+
+@Test func stepsCountChangedLinesAndKeepToolImages() throws {
+    var parser = AgentEventParser(provider: .claude)
+    let edit = #"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/w/a.swift","old_string":"a\nb","new_string":"a\nb\nc\nd"}}]}}"#
+    #expect(parser.parse(line: edit).last == .change(added: 4, removed: 2))
+    let write = #"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/w/b.txt","content":"one\ntwo\n"}}]}}"#
+    #expect(parser.parse(line: write).last == .change(added: 2, removed: 0))
+    let png = Data([0x89, 0x50, 0x4E, 0x47]).base64EncodedString()
+    let shot = #"{"type":"user","message":{"content":[{"type":"tool_result","content":[{"type":"text","text":"ok"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"\#(png)"}}]}]}}"#
+    #expect(parser.parse(line: shot) == [.image(data: Data([0x89, 0x50, 0x4E, 0x47]), type: "image/png")])
+    #expect(AgentEventParser.diffCounts("--- a/x\n+++ b/x\n@@\n-old\n+new\n+more\n context") == (2, 1))
+}

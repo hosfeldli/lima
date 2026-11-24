@@ -33,18 +33,12 @@ import LimaAuthorization
     let config = await runtime.workspaceAgentConfiguration(conversation)
     #expect(config.arguments.joined(separator: " ").contains("helper agent"))
 
-    // First command creates its terminal in the shared directory.
-    let ran = await call(runtime, "workspace.run", ["command": .string("pwd")], origin: .chat, workspace: helper.id)
-    #expect(ran.result?["output"]?.stringValue?.contains(parent.directory) == true)
-    let withTerminal = try await runtime.workspaces.get(helper.id)
-    #expect(withTerminal.terminalID != nil)
-
     // Removing the workspace removes its helpers.
     _ = await call(runtime, "workspace.delete", ["id": .string(parentID)])
     #expect(await runtime.workspaces.list().isEmpty)
 }
 
-@Test(.timeLimit(.minutes(1))) func focusFollowsTheAgentAcrossTabTerminalChatAndIdle() async throws {
+@Test(.timeLimit(.minutes(1))) func focusFollowsTheAgentAcrossTabChatAndIdle() async throws {
     let (runtime, dir) = try await workspaceRuntime()
     defer { try? FileManager.default.removeItem(at: dir) }
     let id = try #require(await call(runtime, "workspace.create", ["name": .string("Focus")]).result?["id"]?.stringValue)
@@ -54,21 +48,9 @@ import LimaAuthorization
     _ = await call(runtime, "workspace.openTab", ["url": .string("https://swift.org")], origin: .chat, workspace: id)
     #expect(runtime.focus.state(id) == .init(surface: .tab, url: "https://swift.org"))
 
-    _ = try await runtime.terminals.waitForPrompt(workspace.terminalID!, timeout: 15)
-    let command = Task { await call(runtime, "workspace.run", ["command": .string("sleep 0.4\npwd")], origin: .chat, workspace: id) }
-    for _ in 0..<30 {
-        if runtime.focus.state(id).surface == .terminal { break }
-        try await Task.sleep(for: .milliseconds(10))
-    }
-    #expect(runtime.focus.state(id).surface == .terminal)
-
     // Streamed text brings it back to chat; whitespace alone doesn't.
     runtime.trackConversation(.delta(conversationID: workspace.conversationID!, messageID: "m", text: "  "))
-    #expect(runtime.focus.state(id).surface == .terminal)
-    let executed = await command.value
-    #expect(executed.result?["exitStatus"] == .number(0))
-    #expect(executed.result?["output"]?.stringValue?.contains(workspace.directory) == true)
-    #expect(runtime.focus.state(id).surface == .chat)
+    #expect(runtime.focus.state(id) == .init(surface: .tab, url: "https://swift.org"))
     runtime.trackConversation(.delta(conversationID: workspace.conversationID!, messageID: "m", text: "Here is what I found"))
     #expect(runtime.focus.state(id).surface == .chat)
 
@@ -84,7 +66,6 @@ import LimaAuthorization
     #expect(try await runtime.workspaces.get(id).tabs.contains { $0.url == "about:lima?note=\(noteID)" })
     #expect(runtime.focus.state(id).surface == .tab)
     #expect(try await runtime.notes.get(noteID).markdown.contains("Findings"))
-    try await runtime.terminals.close(workspace.terminalID!)
 }
 
 @Test(.timeLimit(.minutes(1))) func webInteractionRequiresAnApprovedSessionForTheBoundWorkspace() async throws {
@@ -138,7 +119,6 @@ import LimaAuthorization
     let answered = await request.value
     #expect(answered.result?["text"]?.stringValue == "Example Domain")
     #expect(runtime.focus.state(id) == .init(surface: .chat))
-    try await runtime.terminals.close(workspace.terminalID!)
 }
 
 @Test func fileTreeIsLimitedToHomeAndWorkspaces() async throws {

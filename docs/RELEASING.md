@@ -5,6 +5,37 @@ Lima 5 is signed with the self-signed identity Lima 4 used (`RayPlacement Local 
 DMG needs Control-click → Open. Updates after that are installed by Lima itself and verified against the
 installed app's signature.
 
+## The installer DMG
+
+`release.sh` builds the DMG with dmgbuild, pinned with hashes in `browser/scripts/release/dmg-requirements.txt` and installed into a throwaway venv, so no Finder scripting is needed on CI. The window is 640×400 and holds Lima and an Applications shortcut over a drawn background: an arrow, "Drag Lima to Applications" and a line about opening it. The background comes from `browser/branding/dmg/` (regenerate with `swift browser/scripts/release/dmg_background.swift browser/branding/dmg`). Layout is in `dmg_settings.py`; the volume is named "Lima" with Lima's icon, and the image is LZFSE.
+
+## Moving to Developer ID
+
+Lima's Apple Developer team is `575W282638` (`signing.developerTeam`). Release builds stamp it into
+`Info.plist` as `LimaTrustedTeam`. Lima then accepts two signers for the same identifier: its pinned
+certificate, or a Developer ID Application certificate Apple issued to that team. Both the updater and the
+runtime's peer checks use this rule, so a runtime still running from the old build recognizes the newly
+signed browser and lets it replace the runtime. Any other team is refused. The `developerID…` tests in
+`UpdateTests` cover this.
+
+The switch takes two releases:
+1. **Transition** (self-signed, carries `LimaTrustedTeam`). Installs update to it as usual.
+2. **Developer ID.** Set `signing.mode` to `developer-id` and `identity` to the certificate's full name,
+   for example `Developer ID Application: Name (575W282638)`. Pin its `certificateSHA256`. The pipeline
+   then does the following:
+   - signs every binary with a secure timestamp;
+   - notarizes the app (`notarytool`, App Store Connect API key) and staples it, then does the same for
+     the DMG;
+   - verifies with `stapler validate` and `spctl` before staging.
+
+   CI reads `lima-devid-p12`, `lima-devid-p12-password`, `lima-notary-key`, `lima-notary-key-id` and
+   `lima-notary-issuer-id` from Secret Manager. Locally, import the `.p12` into the login keychain and set
+   `LIMA_NOTARY_PROFILE` or the `LIMA_NOTARY_*` variables.
+
+After the switch, macOS treats Lima as a new signer. Users re-approve Privacy & Security permissions once,
+and allow one Keychain prompt for the store key; their data is unchanged. New downloads open without
+Control-click → Open.
+
 ## How a release flows
 
 ```

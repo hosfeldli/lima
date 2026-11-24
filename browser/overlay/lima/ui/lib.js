@@ -279,6 +279,22 @@ export function markdown(source, { onTaskToggle, attachments, embeds = false } =
       const card = noteEmbed(frame[1] ?? frame[2]);
       if (card) { closeList(); root.append(card); i++; continue; }
     }
+    // A section laid out in two or three columns:
+    // :::columns / … / :::column / … / :::end
+    if (/^\s*:::columns\s*$/.test(line)) {
+      closeList();
+      const columns = [[]];
+      i++;
+      while (i < lines.length && !/^\s*:::end\s*$/.test(lines[i])) {
+        if (/^\s*:::column\s*$/.test(lines[i])) { if (columns.length < 3) columns.push([]); else columns.at(-1).push(""); }
+        else columns.at(-1).push(lines[i]);
+        i++;
+      }
+      i++;
+      root.append(el("div", { class: "note-columns", "data-columns": String(columns.length) },
+        columns.map(column => el("div", { class: "note-column" }, ...markdown(column.join("\n"), { onTaskToggle, attachments, embeds }).childNodes))));
+      continue;
+    }
     if (/^\s*```/.test(line)) {
       closeList();
       const kind = line.trim().slice(3).trim().toLowerCase();
@@ -335,7 +351,7 @@ export function markdown(source, { onTaskToggle, attachments, embeds = false } =
     closeList();
     const para = [line];
     i++;
-    while (i < lines.length && lines[i].trim() && !markdownTableAt(lines, i) && !/^(#{1,6}\s|\s*```|\s*[-*+]\s|\s*\d+\.\s|\s*>|\s*::embed\s|\s*<iframe\s)/i.test(lines[i])) para.push(lines[i++]);
+    while (i < lines.length && lines[i].trim() && !markdownTableAt(lines, i) && !/^(#{1,6}\s|\s*```|\s*[-*+]\s|\s*\d+\.\s|\s*>|\s*::embed\s|\s*:::|\s*<iframe\s)/i.test(lines[i])) para.push(lines[i++]);
     root.append(inline(el("p"), para.join(" "), attachments));
   }
   if (embeds) hydrateEmbeds(root);

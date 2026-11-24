@@ -39,6 +39,15 @@ export const LimaWindow = {
     lazy.LimaSidebar.attach(win);
     lazy.LimaAssistant.attach(win);
     lazy.LimaWorkspaces.keepChatFoldersCollapsed(win);
+    // Tab size (Settings → General → Tabs): row height, with the label scaled to match.
+    const applyTabSize = () => {
+      const height = Math.max(22, Math.min(40, Services.prefs.getIntPref("lima.tabs.height", 26)));
+      win.document.documentElement.style.setProperty("--lima-tab-height", `${height}px`);
+      win.document.documentElement.style.setProperty("--lima-tab-font", `${(11.5 + (height - 26) * 0.2).toFixed(2)}px`);
+    };
+    applyTabSize();
+    Services.prefs.addObserver("lima.tabs.height", applyTabSize);
+    win.addEventListener("unload", () => Services.prefs.removeObserver("lima.tabs.height", applyTabSize), { once: true });
     const applyPersonality = () => win.document.documentElement.dataset.limaPersonality =
       Services.prefs.getStringPref("lima.personality", "full");
     applyPersonality();

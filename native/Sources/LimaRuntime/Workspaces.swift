@@ -261,7 +261,7 @@ extension Runtime {
         let tools = """
         Work visibly through the `lima` MCP tools, which the user watches in Lima's sidebar: open web pages as tabs \
         (workspace_open_tab), see and read the pages in your Tabs folder (workspace_list_tabs, workspace_read_tab), run shell \
-        commands in the visible Lima terminal first (workspace_run; use background=true for a development server). Use a provider terminal only if Lima cannot run the command. Use Lima for file links (workspace_bookmark, folder paths like "Research/Docs") and \
+        commands with your own built-in shell tool in your working directory (start long-running servers in the background and check their logs). Use Lima for file links (workspace_bookmark, folder paths like "Research/Docs") and \
         write summaries or findings as notes (workspace_note). Use workspace_ask_user for missing decisions. Prefer labeled fields of the appropriate types for dates, times, numbers or choices. Use workspace_location to request approximate location when needed and workspace_browser_plan before browser interactions. Include the exact same-site paths you will visit and re-inspect live controls when a target moves.
         Use Lima's Studio tools for visual work. image_generate queues local text-to-image generation when configured and allowed. Check the operation ID through image_generation_status before reporting or retrying; reuse the same idempotency key across retries. Open supported files with image_open, inspect the exact revision, and use image_select_subject and image_remove_background for local foreground masks. vector_trace makes editable paths; get exact IDs with vector_inspect before editing. Build and verify animation exports with animation_create, animation_add_frame or animation_tween, then animation_export or animation_export_spritesheet. Give users the returned studio_url and verified workspace paths. Preserve originals and never claim an unsupported result.
         Approvals happen in Lima, not in chat: workspace_browser_plan shows the user a prompt with your goal, site, paths, actions and plan, \
@@ -282,8 +282,8 @@ extension Runtime {
             preamble = """
             You are the agent for the Lima workspace “\(workspace.name)”. Your working directory is \(workspace.directory). \(tools)
             For a parallel subtask with a distinct objective inside a Lima task, use task_delegate (with depends_on for ordering) and task_status; \
-            outside a task, spawn helper agents (agent_spawn) and check on them (agents_status). Each helper gets its own chat, \
-            tabs and terminal in this workspace. After collecting a finished helper’s results, close its tabs with agent_dismiss. For browser-only work, first open the HTTPS or loopback URL in this workspace,
+            outside a task, spawn helper agents (agent_spawn) and check on them (agents_status). Each helper gets its own chat \
+            and tabs in this workspace. After collecting a finished helper’s results, close its tabs with agent_dismiss. For browser-only work, first open the HTTPS or loopback URL in this workspace,
             then call agent_spawn with browser_url and provider "claude" and give the helper its objective. Ask the Lima orchestrator for an explicit path plan. It returns routine permission directly and brings higher-risk plans to the user. Use
             workspace_browser to inspect or interact with a page visibly. Create a separate workspace only if the user asks (workspace_new).
             \(workspace.isUnnamed ? "At the start of this turn, use workspace_name to give this unnamed workspace a concise, descriptive title based on the user's request." : "")
@@ -341,6 +341,7 @@ extension Runtime {
             try await self.ensureTerminal(try await self.workspaces.get(try target(params, context))).publicView
         }
         register("workspace.create") { [unowned self] params, context in
+            Task { await self.usage.count("workspace.created") }
             if context.origin != .browser, context.workspaceID == nil {
                 try await self.requireMCPScope("workspaces:create", context: context, unbound: true,
                                                action: "create the workspace “\(params.optionalString("name") ?? "Workspace")”")
@@ -394,6 +395,7 @@ extension Runtime {
             return workspace.publicView
         }
         register("agent.spawn") { [unowned self] params, context in
+            Task { await self.usage.count("agent.spawned") }
             let parent = try await self.workspaces.get(try target(params, context))
             // Inside a Lima task the Orchestrator owns helpers: it records the
             // assignment, applies dependencies and collects the result.
@@ -639,58 +641,6 @@ extension Runtime {
             changed(workspace)
             return .object(["filed": .string(folder.isEmpty ? workspace.name : "\(workspace.name)/\(folder)")])
         }
-        register("workspace.run") { [unowned self] params, context in
-            let workspace = try await self.ensureTerminal(try await self.workspaces.get(try target(params, context)))
-            let terminalID = workspace.terminalID!
-            if context.workspaceID == workspace.id {
-                do {
-                    let command = try params.string("command")
-                    guard !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                          !command.unicodeScalars.contains(where: { $0.value < 32 && ![9, 10, 13].contains($0.value) }) else {
-                        throw BridgeError(.badRequest, "Provide a shell command without terminal control characters.")
-                    }
-                    let shell = try await self.terminals.info(terminalID)
-                    try await self.authorizeTerminalCommand(command, cwd: shell.cwd, context: context, approvalDigest: params.optionalString("approvalDigest"))
-                    self.setFocus(workspace.id, .terminal)
-                    defer { self.setFocus(workspace.id, .chat, replacing: .init(surface: .terminal)) }
-                    let background = params?["background"]?.boolValue == true
-                    if background {
-                        let logs = self.paths.data.appendingPathComponent("terminal-jobs", isDirectory: true)
-                        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true,
-                                                                attributes: [.posixPermissions: 0o700])
-                        let log = logs.appendingPathComponent(UUID().uuidString + ".log").path
-                        guard FileManager.default.createFile(atPath: log, contents: nil, attributes: [.posixPermissions: 0o600]) else {
-                            throw BridgeError(.internalError, "Lima could not open a log for the background command.")
-                        }
-                        let quotedLog = "'" + log.replacingOccurrences(of: "'", with: "'\\''") + "'"
-                        let script = "(\n\(command)\n) </dev/null >> \(quotedLog) 2>&1 &\nprintf 'Background PID %s\\n' \"$!\""
-                        let result = try await self.terminals.runWorkspaceCommand(terminalID, command: script,
-                            agentID: workspace.agentID, timeout: min(15, params.double("timeout", default: 120)))
-                        var response = Self.terminalCommandResult(result).objectValue ?? [:]
-                        response["logPath"] = .string(log)
-                        return .object(response)
-                    }
-                    let result = try await self.terminals.runWorkspaceCommand(terminalID, command: command,
-                        agentID: workspace.agentID, timeout: params.double("timeout", default: 120))
-                    return Self.terminalCommandResult(result)
-                } catch TerminalServiceError.inputTimedOut {
-                    throw BridgeError(.deadlineExceeded, TerminalServiceError.inputTimedOut.description)
-                } catch TerminalServiceError.busy {
-                    throw BridgeError(.badRequest, TerminalServiceError.busy.description)
-                } catch TerminalServiceError.shellNotReady {
-                    throw BridgeError(.deadlineExceeded, TerminalServiceError.shellNotReady.description)
-                }
-            }
-            guard let handle = try await self.terminals.currentHandle(terminalID, agentID: workspace.agentID) else {
-                throw BridgeError(.confirmationRequired, "The workspace agent does not hold the terminal keyboard.")
-            }
-            var forwarded: [String: JSONValue] = ["id": .string(terminalID), "handle": try JSONValue.from(handle),
-                "command": .string(try params.string("command")), "timeout": .number(params.double("timeout", default: 120))]
-            if let digest = params.optionalString("approvalDigest") { forwarded["approvalDigest"] = .string(digest) }
-            let response = await self.handle(BridgeRequest(id: "ws", method: "terminal.agentRun", params: .object(forwarded)), context: context)
-            if let error = response.error { throw error }
-            return response.result ?? .null
-        }
         register("workspace.files") { [unowned self] params, context in
             let workspace = try await self.workspaces.get(try target(params, context))
             let root = URL(fileURLWithPath: workspace.directory).standardizedFileURL
@@ -713,7 +663,8 @@ extension Runtime {
             let workspace = try await self.workspaces.get(try params.string("id"))
             try await self.workspaces.requireActive(workspace.id)
             guard let conversationID = workspace.conversationID else { throw BridgeError(.badRequest, "workspace has no agent") }
-            return try JSONValue.from(try await self.conversations.send(conversationID, text: try params.string("text")))
+            return try JSONValue.from(try await self.conversations.send(conversationID, text: try params.string("text"), mode: Self.sendMode(params),
+                                                                        attachments: try await self.attachments(params, conversationID: conversationID)))
         }
     }
 
@@ -839,12 +790,8 @@ extension Runtime {
             parentID: parentID, temporary: temporary ? true : nil, companionTask: companionTask, task: task, browserTestURL: browserTestURL, token: tokenBytes.map { String(format: "%02x", $0) }.joined()
         )
 
-        // The workspace agent takes the keyboard for the duration of its command.
-        // Helper agents get theirs on first use (ensureTerminal).
-        if !temporary {
-            let terminal = try await terminals.create(cwd: folder.path, shell: "/bin/zsh")
-            workspace.terminalID = terminal.id
-        }
+        // No Lima terminal: agents run commands with their own shell tools
+        // in the workspace directory.
 
         let conversation = try await conversations.create(provider: provider, model: model, workingDirectory: folder.path, workspaceID: workspace.id,
                                                           title: temporary ? cleanName : "✦ \(cleanName)")

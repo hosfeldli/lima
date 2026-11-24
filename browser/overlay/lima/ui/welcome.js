@@ -183,7 +183,7 @@ export function renderWelcome(app) {
       el("div", { class: "row" }, button("Try it now", () => bridge.browser("search", { text: "" }), "primary"),
         el("span", { class: "welcome-shortcut", "aria-hidden": "true" }, el("kbd", { text: "⌘" }), el("kbd", { text: "T" }))));
     if (id === "workspace") content.replaceChildren(
-      paragraph("Point an AI agent at a project folder and give it a goal. It gets its own folder in the sidebar with a chat, a terminal and the pages it opens."),
+      paragraph("Point an AI agent at a project folder and give it a goal. It gets its own folder in the sidebar with a chat and the pages it opens, and works with its own tools."),
       paragraph("Big jobs can split into helpers. You can follow along, or come back when it’s done."),
       el("div", { class: "row" }, button("Create a workspace", async () => {
         if (await bridge.browser("create", { what: "workspace", pickFolder: true })) celebrate("Your first workspace!", ticket);
@@ -442,7 +442,7 @@ const SCENES = {
 
   meet() {
     const orbit = el("div", { class: "scene-orbit" });
-    ["tab", "note", "terminal", "chat", "search", "workspace"].forEach((name, position, all) => {
+    ["tab", "note", "download", "chat", "search", "workspace"].forEach((name, position, all) => {
       const planet = el("span", { class: "scene-planet" }, icon(name));
       planet.style.setProperty("--angle", `${(360 / all.length) * position}deg`);
       orbit.append(planet);
@@ -544,7 +544,7 @@ const SCENES = {
       el("div", { class: "scene-sidebar" },
         row("workspace", "Launch research", 0, 0, "lead"),
         row("chat", "Chat", 1, 0.35),
-        row("terminal", "Terminal", 1, 0.55),
+        row("note", "Findings", 1, 0.55),
         row("folder", "Tabs", 1, 0.75),
         row("agents", "Agents", 1, 0.95),
         row("spark", "pricing-scout", 2, 1.25, "helper")),

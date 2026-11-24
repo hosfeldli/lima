@@ -119,7 +119,7 @@ private let environment = ProcessInfo.processInfo.environment
     }
     let original = try UpdateApplier.profile(path: profile.path, outside: [app, updates])
     #expect(UpdateApplier.relaunchArguments(target: app, profile: original) == [
-        "-n", "-a", app.path, "--args", "-profile", profile.resolvingSymlinksInPath().path,
+        "-a", app.path, "--args", "-profile", profile.resolvingSymlinksInPath().path,
     ])
     #expect(throws: BridgeError.self) { try UpdateApplier.profile(path: updates.path, outside: [app, updates]) }
     #expect(throws: BridgeError.self) { try UpdateApplier.profile(path: app.path, outside: [app, updates]) }
@@ -174,4 +174,38 @@ func installerSwapsVerifiedUpdateAndRollsBackABadOne() throws {
     for name in browserFiles {
         #expect(try Data(contentsOf: profile.appendingPathComponent(name)) == Data(name.utf8))
     }
+}
+
+/// Lima trusts its pinned certificate or, across the move to Developer ID,
+/// the same identifier signed by Lima's team; never another team.
+@Test func developerIDRequirementCompilesAndNamesTheTeam() throws {
+    let base = #"identifier "app.lima" and certificate root = H"0123456789abcdef0123456789abcdef01234567""#
+    let text = try #require(CodeTrust.requirementText(base: base, identifier: "app.lima", team: "575W282638"))
+    var requirement: SecRequirement?
+    #expect(SecRequirementCreateWithString(text as CFString, [], &requirement) == errSecSuccess)
+    #expect(text.contains(#"certificate leaf[subject.OU] = "575W282638""#))
+    #expect(CodeTrust.requirementText(base: base, identifier: "app.lima", team: "not-a-team") == nil)
+    #expect(CodeTrust.requirementText(base: base, identifier: #"x" or anchor apple"#, team: "575W282638") == nil)
+}
+
+/// Set LIMA_TEST_DEVID_APP to any Developer ID app (e.g. /Applications/Claude.app).
+@Test(.enabled(if: environment["LIMA_TEST_DEVID_APP"] != nil))
+func developerIDAppMatchesOnlyItsOwnTeam() throws {
+    let app = URL(fileURLWithPath: environment["LIMA_TEST_DEVID_APP"]!)
+    var code: SecStaticCode?
+    #expect(SecStaticCodeCreateWithPath(app as CFURL, [], &code) == errSecSuccess)
+    var info: CFDictionary?
+    SecCodeCopySigningInformation(try #require(code), SecCSFlags(rawValue: kSecCSSigningInformation), &info)
+    let dictionary = try #require(info as? [String: Any])
+    let identifier = try #require(dictionary[kSecCodeInfoIdentifier as String] as? String)
+    let team = try #require(dictionary[kSecCodeInfoTeamIdentifier as String] as? String)
+    // A base the app can't meet (a self-signed root), so only the Developer ID branch can match.
+    let base = #"identifier "app.lima" and certificate root = H"0123456789abcdef0123456789abcdef01234567""#
+    func check(_ team: String) throws -> OSStatus {
+        var requirement: SecRequirement?
+        SecRequirementCreateWithString(try #require(CodeTrust.requirementText(base: base, identifier: identifier, team: team)) as CFString, [], &requirement)
+        return SecStaticCodeCheckValidity(try #require(code), [], try #require(requirement))
+    }
+    #expect(try check(team) == errSecSuccess)
+    #expect(try check("575W282638") != errSecSuccess)
 }

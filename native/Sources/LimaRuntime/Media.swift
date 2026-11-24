@@ -189,6 +189,10 @@ extension NowPlayingMonitor {
         guard refresh else { return cached }
         let target = player ?? cached?.player ?? (MediaControl.isRunning("Spotify") ? "Spotify" : "Music")
         if target == "Spotify", let playback = MediaControl.spotifySnapshot() { return playback }
+        if target == "Music", let playback = MediaControl.musicSnapshot() {
+            lock.withLock { tracks["Music"] = playback }
+            return playback
+        }
         guard var item = cached, MediaControl.isRunning(target) else { return nil }
         if let seconds = MediaControl.query(item.player, "player position").flatMap({ Double($0.replacingOccurrences(of: ",", with: ".")) }) {
             item.positionMs = seconds * 1000
@@ -245,6 +249,26 @@ enum MediaControl {
         return NowPlaying(player: "Spotify", title: fields[0], artist: fields[1], album: fields[2], state: fields[3].capitalized,
                           durationMs: Double(fields[4]), updatedAt: Date().timeIntervalSince1970 * 1000,
                           artworkURL: artwork, positionMs: position.map { $0 * 1000 })
+    }
+
+    /// Apple Music's current track (Music posts no notification until the
+    /// track changes, so a fresh pill asks).
+    static func musicSnapshot() -> NowPlaying? {
+        guard isRunning("Music"), let response = script("""
+        tell application "Music"
+            if player state is stopped then return ""
+            set t to current track
+            set fields to {name of t, artist of t, album of t, player state as text, duration of t as text, player position as text}
+        end tell
+        set AppleScript's text item delimiters to character id 30
+        return fields as text
+        """) else { return nil }
+        let fields = response.components(separatedBy: "\u{1e}")
+        guard fields.count == 6 else { return nil }
+        let number = { (text: String) in Double(text.replacingOccurrences(of: ",", with: ".")) }
+        return NowPlaying(player: "Music", title: fields[0], artist: fields[1], album: fields[2], state: fields[3].capitalized,
+                          durationMs: number(fields[4]).map { $0 * 1000 }, updatedAt: Date().timeIntervalSince1970 * 1000,
+                          artworkURL: nil, positionMs: number(fields[5]).map { $0 * 1000 })
     }
 
     static func send(_ command: String, player: String? = nil) throws {
@@ -393,12 +417,15 @@ extension Runtime {
             case "previous": try MediaControl.send("previous track", player: player)
             case "dj": try MediaControl.playDJ()
             case "seek":
+                let target = player == "Music" ? "Music" : "Spotify"
                 guard let seconds = params?["seconds"]?.doubleValue, seconds.isFinite, (0...86400).contains(seconds),
-                      MediaControl.isRunning("Spotify") else {
-                    throw BridgeError(.badRequest, "Choose a position in the current Spotify track.")
+                      MediaControl.isRunning(target) else {
+                    throw BridgeError(.badRequest, "Choose a position in the current \(target) track.")
                 }
-                try MediaControl.send("set player position to \(seconds)", player: "Spotify")
-            case "open": try MediaControl.openSpotify()
+                try MediaControl.send("set player position to \(seconds)", player: target)
+            case "open":
+                if player == "Music" { NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Music.app")) }
+                else { try MediaControl.openSpotify() }
             default: throw BridgeError(.badRequest, "unknown media action")
             }
             return .null

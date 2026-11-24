@@ -14,7 +14,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
 });
 
 const ALLOWED_PREFIXES = [
-  "notes.", "chat.", "terminal.", "search.", "context.", "capture.", "audio.", "media.", "tools.",
+  "notes.", "chat.", "schedule.", "search.", "context.", "capture.", "audio.", "media.", "tools.",
   "assistant.", "agents.", "integrations.", "mcp.grants.", "storage.", "background.", "capabilities.", "workspace.", "agent.", "agents.", "fs.", "dictation.", "task.", "image.", "vector.", "animation.",
 ];
 const ALLOWED_METHODS = new Set(["quickAsk", "auth.approve", "auth.evaluate", "system.openApp", "host.hello"]);
@@ -208,6 +208,33 @@ export class LimaParent extends JSWindowActorParent {
         }
         return null;
       }
+      // An agent step's image, full size in Glance over the current tab.
+      case "openGlance": {
+        const url = String(payload?.url ?? "");
+        if (!/^about:lima\?view=media&chat=[\w%-]+&media=[\w%.-]+$/.test(url)) throw new Error("Only Lima media opens in Glance.");
+        const principal = Services.scriptSecurityManager.getSystemPrincipal();
+        if (win.gZenGlanceManager?.openGlance) {
+          const rect = win.gBrowser.selectedBrowser.getBoundingClientRect();
+          win.gZenGlanceManager.openGlance({ url, triggeringPrincipal: principal,
+            x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, width: 10, height: 10 });
+        } else win.gBrowser.addTab(url, { triggeringPrincipal: principal, inBackground: false });
+        return null;
+      }
+      // Browsing preferences set from Settings: tab size and search-result cleanup.
+      case "browsingPrefs": {
+        const ints = { tabHeight: ["lima.tabs.height", 22, 40, 26] };
+        const bools = { hideSearchAI: ["lima.search.hideAI", true], hideSearchAds: ["lima.search.hideAds", true],
+          searchAsAddressBar: ["lima.search.replaceAddressBar", true], hideShorts: ["lima.youtube.hideShorts", true] };
+        const { key, value } = payload ?? {};
+        if (ints[key] && Number.isInteger(value)) {
+          const [pref, min, max] = ints[key];
+          Services.prefs.setIntPref(pref, Math.max(min, Math.min(max, value)));
+        } else if (bools[key] && typeof value === "boolean") Services.prefs.setBoolPref(bools[key][0], value);
+        return Object.fromEntries([
+          ...Object.entries(ints).map(([name, [pref, , , fallback]]) => [name, Services.prefs.getIntPref(pref, fallback)]),
+          ...Object.entries(bools).map(([name, [pref, fallback]]) => [name, Services.prefs.getBoolPref(pref, fallback)]),
+        ]);
+      }
       case "themeChanged": {
         if (["system", "light", "dark"].includes(payload?.value) && !lazy.PrivateBrowsingUtils.isWindowPrivate(win)) {
           Services.prefs.setStringPref("lima.theme", payload.value);
@@ -247,7 +274,7 @@ export class LimaParent extends JSWindowActorParent {
       }
       case "saveSidebarShortcuts": {
         if (lazy.PrivateBrowsingUtils.isWindowPrivate(win)) return null;
-        const ids = ["inbox", "calendar", "spotify", "mic", "grammar"];
+        const ids = ["inbox", "calendar", "spotify", "downloads", "mic", "grammar"];
         const list = key => [...new Set((Array.isArray(payload?.[key]) ? payload[key] : []).filter(value => ids.includes(value)))];
         Services.prefs.setStringPref("lima.sidebar.shortcuts", JSON.stringify({ order: list("order"), hidden: list("hidden") }));
         return null;
@@ -369,7 +396,6 @@ export class LimaParent extends JSWindowActorParent {
         // Awaited so the page that asked shows any failure in place.
         if (payload?.what === "workspace") return await LimaCreate.workspace(win, { pickFolder: payload?.pickFolder === true });
         else if (payload?.what === "note") await LimaCreate.note(win);
-        else if (payload?.what === "terminal") await LimaCreate.terminal(win);
         return null;
       }
       case "dictate": {

@@ -5,7 +5,7 @@ Framing: 4-byte little-endian length + UTF-8 JSON (max 4 MiB). Host exits on std
 
 Request  `{ "v": 1, "id": "7", "method": "agents.discover", "params": {...} }`
 Response `{ "v": 1, "id": "7", "ok": true, "result": ... }` or `{ ..., "ok": false, "error": { "code", "message" } }`
-Event    `{ "v": 1, "event": "terminal.output", "data": ... }`
+Event    `{ "v": 1, "event": "chat.updated", "data": ... }`
 
 | Method | Params | Result |
 |---|---|---|
@@ -23,8 +23,7 @@ Error codes: `bad_request`, `unsupported_protocol_version`, `unknown_method`, `n
 - The browser-side assistantTabs operation lists HTTP(S) tabs from regular browser windows. assistantReadTab validates the chosen tab identifier and URL before reading a bounded excerpt from a loaded page.
 - chat.resources accepts the conversation id from the Lima interface. It returns skill names, configured MCP names, settings locations, and file names. It returns no configuration values.
 - workspace.browserAction accepts an owned URL, an action, and bounded input fields. For a browser-only helper the assigned page takes precedence over tool arguments. The browser validates the loaded origin and returns observations or screenshot data. That helper identity is authorized only for workspace.browserAction and workspace.browserPlan.
-- terminal.attach returns info, base64 scrollback, and its ending byte offset. terminal.output includes the starting offset of that chunk. A frontend can deduplicate output that arrived while it was attaching.
-- fs.gitFile is a browser-origin operation that takes terminalId, path, an optional previous path for renames, and a diff, stage, or unstage action. Paths must belong to the terminal repository.
+- Lima has no terminal. Workspaces get no shell; agents run commands with their CLI's own shell tool in the workspace directory, under the permissions Lima gives that CLI. The `terminal.*`, `workspace.run`, `fs.changes` and `fs.gitFile` methods, the `terminal_*` and `workspace_run` MCP tools and the `terminal:control` grant are gone. Old Terminal tabs open Home.
 
 Live browser events are delivered to identified browser connections. Tool clients receive their own request responses. Each browser connection has a bounded, ordered writer that closes an unresponsive peer independently of runtime work.
 
@@ -56,14 +55,13 @@ Structured questions accept one to eight fields with unique IDs, labels, and a t
 
 No AI action outside the browser is refused outright either. Anything Lima's policy would stop asks the user on the same approval card, with a short brief in its facts. Approved, the call continues; declined, it fails with `not_authorized` and a message telling the agent not to retry. The cases are:
 
-- a shell command the authorization broker flags (`workspace.run`, `terminal.agentRun`), with facts Command, Folder and Why it asks; `risk` is `system` for what used to be blocked and `access` otherwise;
 - a capability above the `allow` level;
-- an outside AI tool (MCP) using a scope it hasn't been granted (`notes:write`, `workspaces:create`, `terminal:control`, capability scopes) or a capability not exposed to MCP; "Allow for this task" grants the scope until Lima quits, and Integrations still grants it permanently;
+- an outside AI tool (MCP) using a scope it hasn't been granted (`notes:write`, `workspaces:create`, capability scopes, and the read grants) or a capability not exposed to MCP; "Allow for this task" grants the scope until Lima quits, and Integrations still grants it permanently;
 - a helper starting another agent, which then joins the lead workspace;
 - a browser-only helper calling beyond its tab;
 - `workspace.files` outside the workspace folder.
 
-Requests from outside tools have no workspace: their `workspaceId` starts with `external-` and `workspaceName` names the caller (for example "Outside AI tool"). They appear in the Companion. A `approvalDigest` from `auth.approve` is still accepted in place of a card. Identity checks are not actions and still refuse: who may answer approvals or grant terminal control, which workspace a token belongs to, and browser-only methods.
+Requests from outside tools have no workspace: their `workspaceId` starts with `external-` and `workspaceName` names the caller (for example "Outside AI tool"). They appear in the Companion. A `approvalDigest` from `auth.approve` is still accepted in place of a card. Identity checks are not actions and still refuse: who may answer approvals, which workspace a token belongs to, and browser-only methods.
 
 `workspace.location` asks the user to share an approximate location for a stated purpose. Approval starts a one-shot browser geolocation request if Location Services are enabled in Lima Settings. The agent receives rounded coordinates and an accuracy estimate. Lima does not save the location to the user's profile.
 
@@ -76,6 +74,23 @@ Companion requests are conversations created with `chat.create { companion: true
 
 `system.appearance` returns `{ dark }` from the macOS setting, and the runtime broadcasts `system.appearance` when it changes, including Auto switching. Lima sets the chrome's color scheme itself, so `prefers-color-scheme` there can't tell. The `lima.theme` preference (`system` by default, or `light` or `dark`; Settings → General → Theme) themes browser windows (`lima-theme` on the window root), Lima pages, Search and the Dock badge. Pages get the resolved theme in `agentPreferences.theme` and the `ui.theme` event, and set it with the `themeChanged` browser message. Private windows keep Zen's look.
 
+`chat.send` and `workspace.instruct` take `mode`. While a reply is running, `queue` (the default) adds the message with status `queued`; queued messages run in order after the reply. `interrupt` stops the reply, which keeps what it wrote with a `cancelled` error ("Interrupted by your next message.", or is removed if it wrote nothing), and runs the message at once, ahead of anything still queued. `chat.interrupt { id, messageId }` does the same for a message already queued, and `chat.unqueue { id, messageId }` takes one back out before it runs. `chat.cancel` stops the reply, drops queued messages and returns `{ unsent: [text] }` for the composer to restore. In AI Chat and Companion chats, ↩ queues and ⌘↩ interrupts; a queued message shows Send Now and Edit.
+
+### Scheduled tasks
+
+A scheduled task hands an instruction to a workspace's agent once or on repeat, as an Orchestrator task each time (`requestId` `schedule:<id>:<run time>`, context "Scheduled · <summary>"). `when` is `{ kind: "once", at: "2027-01-22T09:00" }` (ISO 8601, local unless it carries a zone, or milliseconds) or `{ kind: "daily" | "weekdays" | "weekends", time: "08:00" }`, `{ kind: "weekly", days: ["mon", "thu"], time }`, `{ kind: "monthly", day: 15, time }` (a short month uses its last day). Times are wall-clock in the zone the task was created in. Records carry `summary` ("Every day at 8:00 AM"), `state` (`scheduled`, `paused`, `done`), `repeats`, `nextRunAt`, `nextRunLabel`, `createdBy` and the last 20 `runs` (`at`, `due`, `manual`, `taskID`, `workspaceID`, `error`).
+
+- `schedule.create { title?, instruction, when, workspaceId?, workspaceName?, provider?, model?, mascot? }`. With no workspace, the first run creates one named `workspaceName` and later runs reuse it. A past time or an unparseable `when` is a `bad_request` that says what to fix. From an agent the task belongs to its own top-level workspace and needs an approval card (`risk: "schedule"`, "Runs on its own later") with When, Runs in and Each time; outside tools get the same card.
+- `schedule.list { workspaceId? }`: everything for the browser; an agent sees its workspace's; others ask.
+- `schedule.update { id, title?, instruction?, when?, paused? }`, `schedule.delete { id }` and `schedule.run { id }` (start a run now; the schedule is unchanged) are the user's; an agent asking gets an approval card.
+- Events: `schedule.updated` (the record) and `schedule.deleted` (`{ id }`).
+
+The runtime checks every 20 seconds. Lima must be running for a task to start; an occurrence that came due while it wasn't runs once when it is (missed repeats collapse into one run), and the instruction tells the agent it started late. Each run is claimed before the handoff, so a crash never runs the same occurrence twice. `assistant.plan` returns `schedule` (`title`, `instruction`, `when`, `summary`, `nextRunLabel`, `note`, `workspaceId` or `newName`) for requests that name a later time or a repeat; the Companion shows it for confirmation and creates it with `schedule.create`. The planner gets the current local time to work out dates, such as the day a 60-day booking window opens. Workspace agents get `workspace_schedule`, `workspace_schedules` and `workspace_unschedule`. Scheduled Tasks (`about:lima?view=schedules`, also in Search) lists Repeating, One time, Paused and Finished tasks with Run Now, Pause/Resume, Edit, Open Workspace and Delete, and creates tasks by hand.
+
+Attachments: `chat.attach { id, name, type, data, upload?, done? }` (browser only) uploads a file in base64 chunks of up to 2 MB. The first chunk returns `{ upload }`, and the chunk with `done: true` returns `{ name, path, size, type }`. Files go in the workspace's `.lima-attachments/` folder (inside the agent's sandbox), or in Lima's `chat-media/<chat>/attachments/` for other chats. Names are sanitized, and the limit is 50 MB per file. `chat.send` and `workspace.instruct` take `attachments: [{ path, type }]`, and only files Lima saved for that chat are accepted. The CLI gets the paths after the message. Composers attach dropped and pasted files, and a paste over 4,000 characters or 80 lines becomes `Pasted text.txt`.
+
+Steps: an assistant message's `steps` parallel `tools`, with `added` and `removed` lines for edits and `images` for pictures a tool returned. Edits are Claude Edit, MultiEdit and Write, OpenCode edit and write, and Codex `file_change` diffs. Images come from tool results, such as screenshots and pictures read. Images are stored in `chat-media/<chat>/` and read with `chat.media { id, mediaId }` as `{ type, data }`. Chat shows each step with +/− counts and thumbnails, and a thumbnail opens `about:lima?view=media&chat=…&media=…` in Glance (browser message `openGlance`, Lima media URLs only).
+
 `chat.configure` takes effect at once. A reply that is still streaming is cancelled and restarts on the new provider or model, with the transcript as context; the new reply's `notice` says so ("Restarted this reply on Codex."). Otherwise the next turn uses it. AI Chat tabs and Companion chats both show provider and model pickers.
 
 Lima never opens Zen's own site. Page and frame loads to `zen-browser.app` and its subdomains are cancelled in the parent process before they reach the network. A tab opened only for one of them closes.
@@ -84,7 +99,22 @@ Lima never opens Zen's own site. Page and frame loads to `zen-browser.app` and i
 
 `agents.failover` returns whether provider failover is on (default `true`); `{ "enabled": bool }` changes it from Settings. With failover on, a chat turn or Quick Ask that fails with `rate_limited` before any text arrived continues with another signed-in provider: the user's default first, then Claude Code, Codex, OpenCode. The failed reply is replaced. The new assistant message carries `notice` ("Claude Code reached its usage limit, so Lima switched to Codex.") and the conversation's `provider` changes; a workspace's provider follows its agent conversation. Without another ready provider, the failure stays on the message as before, and the Orchestrator's usage-limit wait applies.
 
+## Usage statistics
+
+Off unless the user turns it on (see `docs/PRIVACY.md`). `usage.get` returns `{ enabled, asked, endpoint, lastSent }`. The browser-only methods are:
+- `usage.set { enabled }`, the one-time question or Settings → Privacy;
+- `usage.count { event }`, for names from a fixed list only, ignored while off;
+- `usage.settings { theme, provider, tabSize, hideAI, hideAds, hideShorts, addressBar }`, where unknown keys and values are dropped;
+- `usage.preview`, which returns the exact report;
+- `usage.delete`, which deletes what was sent under the current ID and starts a new one.
+
+The runtime sends finished days at most hourly to `LimaUsageEndpoint` (stamped from `release.json` → `usage.endpoint`), keeps at most a week unsent, and changes the random ID every month. Turning sharing off discards what wasn't sent.
+
 ## Origins and trust
+
+Every caller that isn't Lima's own interface passes `SecurityPolicy` before a method runs:
+- An outside tool (MCP) reading personal content needs the matching read grant: `notes.list` and `notes.get` need `notes:read`, `search.query` needs `search:read`, `context.recent` and `context.reports` need `context:read`. Without the grant the user is asked, like any other ungranted scope.
+- Some methods belong to the user. Any other caller, a workspace agent included, gets an approval card that names who asked and the method, with risk `access`, `system` or `account`. These are: the recovery-key export, screenshots (`capture.*`), Companion memory, chats (`chat.*`), activity history settings and deletion, Quick Ask, opening apps and System Settings, Messages, integration setup, updates, failover, Search index maintenance, Lima 4 import, MCP grants and the audio output. Declined, the call fails with `not_authorized`. Handlers keep their own narrower checks.
 
 - A client states its origin in `host.identify`. `browser` is granted only to a peer whose code signature
   satisfies the daemon's own designated requirement (checked on the socket's audit token). The `--stdio`

@@ -77,19 +77,19 @@
 :root[lima-window] #zen-library-button,
 :root[lima-window] zen-folder[lima-notebook] { display: none !important; }
 #navigator-toolbox[orient="vertical"], #navigator-toolbox:has(#tabbrowser-tabs[orient="vertical"]) {
-  --tab-min-height: 26px !important;
+  --tab-min-height: var(--lima-tab-height, 26px) !important;
   --tab-margin-block: 1px !important;
 }
 #navigator-toolbox .tab-label,
 #navigator-toolbox .tab-group-label,
-#navigator-toolbox .bookmark-item { font-size: 11.5px; }
+#navigator-toolbox .bookmark-item { font-size: var(--lima-tab-font, 11.5px); }
 /* Agent folders match every other tab. A top-level workspace, where the
    coordinating agent works, is 25% larger. */
 #navigator-toolbox zen-folder[lima-workspace]:not([lima-agent]) > .tab-group-label-container {
   /* A tab row is the min height plus 4px of margin and padding (30px). */
   min-block-size: calc((var(--tab-min-height, 26px) + 4px) * 1.25);
 }
-#navigator-toolbox zen-folder[lima-workspace]:not([lima-agent]) > .tab-group-label-container .tab-group-label { font-size: calc(11.5px * 1.25); }
+#navigator-toolbox zen-folder[lima-workspace]:not([lima-agent]) > .tab-group-label-container .tab-group-label { font-size: calc(var(--lima-tab-font, 11.5px) * 1.25); }
 #navigator-toolbox zen-folder[lima-workspace]:not([lima-agent]) > .tab-group-label-container > .tab-group-folder-icon::after {
   width: calc(16px * 1.25);
   height: calc(16px * 1.25);
@@ -99,6 +99,17 @@
   height: 16px;
 }
 #navigator-toolbox .bookmark-item { padding-block: 2px; }
+/* The shared icon set is drawn in graphite (#383838) for use as favicons,
+   menu images and result icons, where currentColor can't reach. In the dark
+   theme, flip those images to the light foreground so Terminal, Note and
+   Image tabs match the rest of the chrome. Masks already use currentColor. */
+:root[lima-window][lima-theme="dark"]:not([zen-private-window="true"]) :is(
+  .tabbrowser-tab:is([image*="lima-ui/icons/"], [image*="lima-ui%2Ficons%2F"], [lima-icon*="lima-ui/icons/"]) .tab-icon-image,
+  .lima-menuitem[image^="resource://lima-ui/icons/"] > .menu-icon,
+  img.urlbarView-favicon[src*="lima-ui/icons/"]
+) {
+  filter: invert(1) brightness(1.08);
+}
 :root[lima-window]:not([zen-private-window="true"]) zen-folder:is([lima-notebook], [lima-section]) > .tab-group-label-container > .tab-group-folder-icon {
   filter: grayscale(1);
 }
@@ -278,6 +289,8 @@ zen-folder[lima-archiving] > .tab-group-label-container { opacity: .7; }
   background: currentColor;
   mask: url("resource://lima-ui/marks/spotify.svg") center / contain no-repeat;
 }
+#lima-spotify[data-source="Music"] .lima-spotify-icon { border-radius: 0; mask-image: url("resource://lima-ui/marks/music.svg"); }
+#lima-spotify[data-source="browser"] .lima-spotify-icon { border-radius: 0; mask-image: url("resource://lima-ui/icons/audio.svg"); }
 #lima-dock .lima-music-row {
   display: flex; align-items: center; gap: 7px; padding: 4px 8px; width: 100%; text-align: start;
 }
@@ -932,3 +945,83 @@ notification-message[lima-update-notice] {
   .zen-settings-row:has([data-pref="zen.workspaces.continue-where-left-off"], [data-pref="zen.workspaces.separate-essentials"]),
   [data-section="space-routing"] { display: none !important; }
 }
+
+/* Glance controls (close, open in tab, split) follow Lima's light/dark
+   surfaces instead of Zen's accent tint. */
+:root[lima-window]:not([zen-private-window="true"]) .zen-glance-sidebar-container {
+  color-scheme: var(--lima-scheme, light);
+  & toolbarbutton {
+    background: var(--lima-surface) !important;
+    color: var(--lima-fg) !important;
+    fill: var(--lima-fg) !important;
+    -moz-context-properties: fill, fill-opacity, stroke;
+    box-shadow: 0 0 0 1px var(--lima-border), 0 4px 14px rgb(0 0 0 / .14);
+    &:hover { background: var(--lima-elevated) !important; }
+    & image { fill: var(--lima-fg) !important; filter: none !important; }
+  }
+  & .zen-glance-sidebar-close[waitconfirmation] {
+    background: var(--lima-fg) !important;
+    color: var(--lima-bg) !important;
+    fill: var(--lima-bg) !important;
+    & label, & image { color: var(--lima-bg) !important; fill: var(--lima-bg) !important; }
+  }
+}
+
+/* Downloads: rail button with a progress ring, a panel above the rail and a
+   short "downloaded" toast. Zen's own downloads button and animation are off. */
+:root[lima-window] #downloads-button { display: none !important; }
+#lima-downloads { position: relative; }
+.lima-download-ring {
+  position: absolute; inset: 3px; border-radius: 50%; pointer-events: none;
+  background: conic-gradient(currentColor var(--progress, 0%), color-mix(in srgb, currentColor 14%, transparent) 0);
+  mask: radial-gradient(circle, transparent 9.5px, #000 10px);
+}
+.lima-download-ring[data-indeterminate] { animation: lima-download-spin 1.1s linear infinite; }
+@keyframes lima-download-spin { to { rotate: 360deg; } }
+.lima-download-badge {
+  position: absolute; top: 1px; right: 1px; min-width: 13px; height: 13px; padding: 0 3px; border-radius: 7px;
+  background: var(--lima-fg); color: var(--lima-bg); font: 700 8.5px/13px var(--lima-font, system-ui); text-align: center;
+}
+.lima-downloads-panel {
+  display: grid; gap: 4px; max-height: min(420px, 60vh); padding: 8px; border: 1px solid var(--lima-border); border-radius: 12px;
+  background: var(--lima-bg); color: var(--lima-fg); box-shadow: 0 10px 28px rgb(0 0 0 / .16);
+  animation: lima-reminder-pop 200ms cubic-bezier(.2,.8,.25,1) both;
+}
+.lima-downloads-panel[hidden], .lima-download-toast[hidden] { display: none !important; }
+.lima-downloads-panel > header { display: flex; align-items: center; gap: 6px; padding: 0 2px 4px; }
+.lima-downloads-panel > header strong { flex: 1; font-size: 12px; }
+.lima-downloads-panel button { appearance: none; border: 0; background: transparent; color: inherit; font: inherit; border-radius: 6px; padding: 2px 6px; }
+.lima-downloads-panel button:hover { background: var(--lima-hover); }
+.lima-downloads-panel .lima-glyph, .lima-download-toast .lima-glyph { width: 13px; height: 13px; background: currentColor; mask: center / contain no-repeat; display: inline-block; }
+.lima-downloads-clear { font-size: 11px !important; color: var(--lima-secondary) !important; }
+.lima-downloads-list { list-style: none; margin: 0; padding: 0; overflow: auto; display: grid; gap: 2px; }
+.lima-download { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 8px; cursor: default; }
+.lima-download:hover { background: var(--lima-surface); }
+.lima-download-icon { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; background: var(--lima-elevated); color: var(--lima-secondary); }
+.lima-download-main { display: grid; min-width: 0; gap: 1px; }
+.lima-download-name { font-size: 11.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lima-download-status { font-size: 10.5px; color: var(--lima-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lima-download[data-state="failed"] .lima-download-status { color: var(--lima-fg); font-weight: 600; }
+.lima-download[data-state="stopped"], .lima-download[data-state="failed"] { opacity: .75; }
+.lima-download-progress { width: 100%; height: 3px; appearance: none; border: 0; border-radius: 2px; background: var(--lima-elevated); }
+.lima-download-progress::-moz-progress-bar { background: var(--lima-fg); border-radius: 2px; }
+.lima-download-actions { display: flex; gap: 1px; opacity: 0; }
+.lima-download:is(:hover, :focus-within) .lima-download-actions, .lima-download[data-state="running"] .lima-download-actions { opacity: 1; }
+.lima-downloads-empty { margin: 6px 4px 8px; font-size: 11px; color: var(--lima-secondary); }
+.lima-download-toast {
+  display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--lima-border); border-radius: 10px;
+  background: var(--lima-bg); font-size: 11px; animation: lima-reminder-pop 200ms cubic-bezier(.2,.8,.25,1) both;
+}
+.lima-download-toast-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.lima-download-toast button { appearance: none; border: 0; border-radius: 6px; padding: 2px 6px; background: var(--lima-hover); color: inherit; font: inherit; }
+
+/* Lima Search as the address bar: where Enter opens the page. */
+#lima-search-where {
+  appearance: none; flex: none; display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 9px;
+  border: 1px solid var(--lima-border); border-radius: 999px; background: var(--lima-surface); color: var(--lima-ink-2);
+  font: 600 11px/1 var(--lima-font, system-ui); cursor: pointer; white-space: nowrap;
+}
+#lima-search-where:hover { background: var(--lima-elevated); color: var(--lima-fg); }
+#lima-search-where[data-mode="here"] { color: var(--lima-fg); }
+#lima-search-where .lima-s-glyph { width: 11px; height: 11px; }
+#lima-search-where[hidden] { display: none; }

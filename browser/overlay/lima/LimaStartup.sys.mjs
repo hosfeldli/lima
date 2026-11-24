@@ -36,6 +36,7 @@ export const LimaStartup = {
     initialized = true;
     step("sidebar routing", () => lazy.disableSpaceRouting());
     step("blocked sites", () => ChromeUtils.importESModule("resource://lima/LimaBlockedSites.sys.mjs").LimaBlockedSites.start());
+    step("usage", () => ChromeUtils.importESModule("resource://lima/LimaUsage.sys.mjs").LimaUsage.start());
     log("bootstrap loaded");
 
     step("ui substitution", () => {
@@ -54,6 +55,18 @@ export const LimaStartup = {
       ChromeUtils.registerWindowActor("LimaPage", {
         child: { esModuleURI: "resource://lima/actors/LimaPageChild.sys.mjs" },
         matches: ["http://*/*", "https://*/*"],
+        messageManagerGroups: ["browsers"],
+        safeForUntrustedWebProcess: true,
+      });
+      // Search results without AI answers or ads, YouTube without Shorts (Settings → Browsing).
+      ChromeUtils.registerWindowActor("LimaSearchClean", {
+        child: {
+          esModuleURI: "resource://lima/actors/LimaSearchCleanChild.sys.mjs",
+          events: { DOMDocElementInserted: { capture: true }, DOMContentLoaded: {} },
+        },
+        matches: ["*://*.google.com/search*", "*://*.google.co.uk/search*", "*://*.google.ca/search*", "*://*.google.com.au/search*",
+          "*://*.google.de/search*", "*://*.google.fr/search*", "*://*.bing.com/search*", "*://duckduckgo.com/*",
+          "*://*.search.yahoo.com/search*", "*://search.brave.com/search*", "*://*.youtube.com/*", "*://youtube.com/*"],
         messageManagerGroups: ["browsers"],
         safeForUntrustedWebProcess: true,
       });

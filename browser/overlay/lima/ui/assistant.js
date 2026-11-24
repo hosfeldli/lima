@@ -1,5 +1,6 @@
 import { activityStatus, bridge, call, el, errorText, filesPrivacyButton, icon, markdown, onEvent, prefs, relativeTime, setPage } from "./lib.js";
-import { agentControls } from "./composer.js";
+import { agentControls, attachmentTray, QUEUE_HINT, queuedActions, restoreDraft, sendMode, sentAttachments } from "./composer.js";
+import { mediaStrip } from "./chat.js";
 import { companion, cueCompanion, setCompanionState, watchVisualActivity } from "./companion.js";
 import { workspacePrompts } from "./workspace-prompts.js";
 import { failureActivity, isFolderPermissionError } from "./tool-activity.sys.mjs";
@@ -21,6 +22,8 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
   const prompts = workspacePrompts();
   // Each request is an entry; opening one shows its small chat in place.
   const requestList = el("section", { class: "companion-requests", "aria-label": "Chats", hidden: true });
+  const openSchedules = () => bridge.openTab("about:lima?view=schedules");
+  const scheduleStrip = el("button", { type: "button", class: "companion-schedules", hidden: true, onclick: openSchedules });
   const threadView = el("section", { class: "companion-thread", hidden: true });
   const listView = el("div", { class: "companion-list-view" });
   const threads = new Map(); // conversation ID → thread
@@ -48,7 +51,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     el("div", { class: "handoff-composer composer-box" }, input,
       el("div", { class: "composer-row handoff-controls" }, agent.provider, agent.model,
         el("span", { class: "spacer" }), send)),
-    status, prompts.node, requestList, recent, home ? null : providerHelp);
+    status, prompts.node, scheduleStrip, requestList, recent, home ? null : providerHelp);
   app.replaceChildren(el("div", { class: home ? "assistant-page handoff-home" : "assistant-page" },
     head, el("div", { class: "handoff-body" }, listView, threadView)));
 
@@ -159,6 +162,47 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
         el("button", { class: "ghost", onclick: () => { paintTask(task, "complete"); remember(task.thread, "Handoff canceled."); } }, "Cancel")));
   }
 
+  /** Scheduling is confirmed here: what runs, when, and where. */
+  function showSchedule(task, proposal, agentSettings) {
+    const destination = proposal.workspaceId && workspaces.get(proposal.workspaceId);
+    const create = async () => {
+      paintTask(task, "working", "Scheduling…");
+      try {
+        const created = await call("schedule.create", { ...agentSettings, title: proposal.title, instruction: proposal.instruction, when: proposal.when,
+          workspaceId: destination ? proposal.workspaceId : undefined, workspaceName: destination ? undefined : proposal.newName });
+        paintTask(task, "complete", el("strong", { text: `Scheduled · ${created.summary}` }),
+          el("button", { class: "ghost", onclick: openSchedules }, icon("calendar"), "Scheduled Tasks"));
+        await remember(task.thread, `Scheduled “${created.title}”: ${created.summary.toLowerCase()}${created.nextRunLabel ? `. First run ${created.nextRunLabel}` : ""}.` +
+          (proposal.note ? ` ${proposal.note}` : ""));
+        drawSchedules();
+      } catch (error) {
+        paintTask(task, "failed", errorText(error));
+        remember(task.thread, `I couldn't schedule this: ${errorText(error)}`);
+      }
+    };
+    paintTask(task, "approval", el("strong", { text: "Schedule this?" }),
+      el("p", { class: "schedule-proposal-when" }, icon("calendar"), el("span", { text: proposal.summary }),
+        proposal.nextRunLabel ? el("span", { class: "muted", text: ` · first run ${proposal.nextRunLabel}` }) : null),
+      el("p", { class: "schedule-proposal-what", text: proposal.instruction }),
+      proposal.note ? el("p", { class: "muted", text: proposal.note }) : null,
+      el("p", { class: "muted", text: destination ? `Runs in ${destination.name}.` : `Runs in a new workspace, “${proposal.newName}”.` }),
+      el("div", { class: "row" },
+        el("button", { class: "primary", onclick: create }, "Schedule"),
+        el("button", { class: "ghost", onclick: () => { paintTask(task, "complete"); remember(task.thread, "Scheduling canceled."); } }, "Cancel")));
+  }
+
+  /** "3 scheduled · next: …" above the chats; opens Scheduled Tasks. */
+  async function drawSchedules() {
+    const items = await call("schedule.list").catch(() => []);
+    const upcoming = items.filter(item => item.state === "scheduled");
+    scheduleStrip.hidden = !items.length;
+    const next = upcoming[0];
+    scheduleStrip.replaceChildren(icon("calendar"),
+      el("span", { class: "companion-schedules-count", text: upcoming.length ? `${upcoming.length} scheduled` : "Scheduled tasks" }),
+      el("span", { class: "companion-schedules-next", text: next ? `Next: ${next.title} · ${next.nextRunLabel ?? next.summary}` : "None upcoming" }),
+      icon("chevron", "icon companion-entry-open"));
+  }
+
   async function generateArtwork(task, action, agentSettings) {
     const settingsButton = () => el("button", { class: "ghost", onclick: () => bridge.openTab(imageGenerationSettingsURL) }, "Image Generation Settings");
     try {
@@ -262,6 +306,10 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
         const summary = note ? `Created the note “${result.title}”.` : `Created “${result.title}” with ${result.count} ${result.count === 1 ? "tab" : "tabs"}.`;
         paintTask(task, "complete", open);
         await remember(thread, summary);
+        return;
+      }
+      if (plan.schedule) {
+        showSchedule(task, plan.schedule, { ...agentSettings, mascot: plan.mascot });
         return;
       }
       if (plan.answer) {
@@ -412,7 +460,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     const { task, conversation } = thread;
     const last = conversation.messages?.at(-1);
     if (task?.phase === "approval") return ["blocked", "Needs you"];
-    if (last?.role === "assistant" && last.status === "streaming") return ["working", "Replying…"];
+    if (conversation.messages?.some(message => message.role === "assistant" && message.status === "streaming")) return ["working", "Replying…"];
     if (task?.phase === "working") return ["working", "Working…"];
     const records = (task?.taskIds ?? []).map(id => orchestrated.get(id)?.task).filter(Boolean);
     const live = records.find(record => !TERMINAL.has(record.state));
@@ -471,9 +519,26 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
   }
 
   function messageView(message) {
+    if (message.role === "user" && message.status === "queued") {
+      const thread = openThread;
+      const adopt = updated => { if (updated) { thread.conversation = updated; paintEntry(thread); } };
+      return el("div", { class: "companion-msg user queued" }, el("div", { class: "bubble", text: message.text }),
+        queuedActions({
+          interrupt: () => call("chat.interrupt", { id: thread.id, messageId: message.id }).then(adopt, error => threadNotice(errorText(error))),
+          edit: () => call("chat.unqueue", { id: thread.id, messageId: message.id }).then(updated => {
+            adopt(updated);
+            if (view) { restoreDraft(view.field, [message.text]); view.field.focus(); }
+          }, error => threadNotice(errorText(error))),
+        }));
+    }
+    if (message.role === "user" && message.attachments?.length) {
+      return el("div", { class: "companion-msg user" }, sentAttachments(message.attachments), el("div", { class: "bubble", text: message.text }));
+    }
     if (message.role === "user") return el("div", { class: "companion-msg user" }, el("div", { class: "bubble", text: message.text }));
     const node = el("div", { class: "companion-msg assistant", "data-status": message.status });
     if (message.notice) node.append(el("p", { class: "msg-notice" }, icon("redo"), el("span", { text: message.notice })));
+    const images = (message.steps ?? []).flatMap(step => step.images ?? []);
+    if (images.length && openThread) node.append(mediaStrip(openThread.id, images.slice(-6)));
     const body = message.text ? markdown(message.text) : el("p", { class: "muted", text: message.status === "streaming" ? "Thinking…" : "" });
     if (message.status === "streaming") body.classList.add("typing");
     node.append(body);
@@ -496,6 +561,18 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
   function buildThread(thread) {
     const field = el("textarea", { rows: 2, placeholder: "Reply…", "aria-label": "Follow-up" });
     const reply = el("button", { class: "primary companion-thread-send", type: "submit", title: "Send", "aria-label": "Send" }, icon("send"));
+    // While Lima replies: Send queues, Send Now (⌘↩) interrupts, Stop stops.
+    const now = el("button", { type: "button", class: "ghost send-now", title: "Stop the reply and send this now (⌘↩)", hidden: true,
+      onclick: () => followUp(thread, field, "interrupt") }, "Send Now");
+    const stop = el("button", { type: "button", class: "ghost icon-only", title: "Stop the reply", "aria-label": "Stop the reply", hidden: true,
+      onclick: async () => {
+        try {
+          const result = await call("chat.cancel", { id: thread.id });
+          if (result?.unsent?.length) restoreDraft(field, result.unsent);
+        } catch (error) { threadNotice(errorText(error)); }
+      } }, icon("stop"));
+    const hint = el("p", { class: "composer-hint", text: QUEUE_HINT, hidden: true });
+    const tray = attachmentTray({ conversation: () => thread.id, input: field });
     // Provider and model for this chat, switchable at any time: a reply in
     // progress restarts on the new choice.
     const controls = agentControls({
@@ -508,9 +585,9 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     });
     if (!thread.conversation.local && thread.conversation.provider) controls.show(thread.conversation, false);
     const form = el("form", { class: "companion-thread-composer composer-box", onsubmit: event => { event.preventDefault(); followUp(thread, field); } },
-      field, el("div", { class: "composer-row" }, controls.provider, controls.model, el("span", { class: "spacer" }), reply));
+      tray.node, field, el("div", { class: "composer-row" }, controls.provider, controls.model, el("span", { class: "spacer" }), stop, now, reply), hint);
     field.addEventListener("keydown", event => {
-      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); form.requestSubmit(); }
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); followUp(thread, field, sendMode(event)); }
     });
     const title = el("strong", { class: "grow" });
     const state = el("span", { class: "companion-entry-state" });
@@ -521,7 +598,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
         el("button", { type: "button", class: "ghost icon-only", title: "All requests", "aria-label": "All requests", onclick: showList }, icon("arrow", "icon companion-back")),
         title, state),
       log, status, form);
-    view = { thread, field, reply, title, state, log, status, controls };
+    view = { thread, field, reply, now, stop, hint, title, state, log, status, controls, tray };
   }
 
   function paintThread(focus = false) {
@@ -537,20 +614,25 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     view.log.replaceChildren(...(conversation.messages ?? []).map(messageView),
       task?.reply?.childElementCount ? el("div", { class: "companion-thread-live" }, task.reply) : null);
     if (atBottom || focus) view.log.scrollTop = view.log.scrollHeight;
-    const streaming = conversation.messages?.at(-1)?.status === "streaming";
-    view.reply.disabled = streaming || !!conversation.local;
+    const streaming = conversation.messages?.some(message => message.status === "streaming");
+    view.reply.disabled = !!conversation.local;
+    view.reply.title = streaming ? "Send after this reply (↩)" : "Send";
+    view.now.hidden = view.stop.hidden = view.hint.hidden = !streaming || !!conversation.local;
     view.controls.provider.disabled ||= !!conversation.local;
     view.controls.model.disabled ||= !!conversation.local;
-    view.field.placeholder = conversation.local ? "This request couldn't be saved, so it can't be continued." : streaming ? "Lima is replying…" : "Reply…";
+    view.field.placeholder = conversation.local ? "This request couldn't be saved, so it can't be continued." : streaming ? "Lima is replying… add a message for after" : "Reply…";
     if (focus) view.field.focus();
   }
 
   /** A follow-up continues the same thread, with the whole exchange (and the
    * latest status of any handed-off work) as context. Provider usage limits
    * fail over on the runtime; the reply notes the switch. */
-  async function followUp(thread, field) {
-    const text = field.value.trim();
+  async function followUp(thread, field, mode = "queue") {
+    const tray = view?.thread === thread ? view.tray : null;
+    const text = field.value.trim() || (tray?.count ? "See the attached files." : "");
     if (!text || thread.conversation.local) return;
+    let attachments = [];
+    try { attachments = tray?.ready() ?? []; } catch (error) { threadNotice(errorText(error)); return; }
     field.value = "";
     try {
       const records = (thread.task?.taskIds ?? []).map(id => orchestrated.get(id)?.task).filter(Boolean);
@@ -560,7 +642,8 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
         thread.conversation = await call("chat.record", { id: thread.id, role: "assistant", text: `Status of the handed-off work:\n${status}` });
         thread.lastStatus = status;
       }
-      thread.conversation = await call("chat.send", { id: thread.id, text });
+      thread.conversation = await call("chat.send", { id: thread.id, text, mode, attachments });
+      tray?.clear();
       paintEntry(thread);
     } catch (error) {
       field.value = text;
@@ -631,6 +714,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
       }
       return;
     }
+    if (event === "schedule.updated" || event === "schedule.deleted") { drawSchedules(); return; }
     if (event === "assistant.draft" && !home && typeof data?.text === "string") {
       input.value = data.text;
       prefs.set(draftKey, data.text);
@@ -670,6 +754,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     } catch (error) { reportError(error); }
   }
   await load();
+  drawSchedules();
   await restoreThreads();
   await agent.ready;
   draw();
