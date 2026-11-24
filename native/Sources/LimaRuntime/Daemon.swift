@@ -51,7 +51,23 @@ public enum Daemon {
         }
         let server = SocketServer(path: paths.socket,
             onConnect: { _ in },
-            onDisconnect: { client in runtime.disconnect(client); origins.remove(client) },
+            onDisconnect: { client in
+                let wasBrowser = runtime.disconnect(client)
+                origins.remove(client)
+                // Lima quit (or crashed): the runtime stops too, after a pause
+                // that lets an update's relaunch reconnect. Keep running only
+                // when the user turned on background mode (the launch agent).
+                guard wasBrowser, !runtime.hasBrowserClients, !BackgroundAgent.status().installed,
+                      ProcessInfo.processInfo.environment["LIMA_KEEP_DAEMON"] == nil else { return }
+                DispatchQueue.global().asyncAfter(deadline: .now() + 10) {
+                    guard !runtime.hasBrowserClients else { return }
+                    FileHandle.standardError.write(Data("lima-host: Lima quit; stopping the runtime\n".utf8))
+                    Task {
+                        await runtime.terminals.closeAll()
+                        exit(0)
+                    }
+                }
+            },
             handler: { client, payload in
                 guard let request = try? JSONDecoder().decode(BridgeRequest.self, from: payload) else {
                     if let data = try? JSONEncoder().encode(BridgeResponse.failure(id: "", BridgeError(.badRequest, "malformed request"))) { client.send(data) }

@@ -2,10 +2,14 @@
   "comment": "Lima release policy. Public values only: the private signing key and update key live in GCP Secret Manager. See docs/RELEASING.md.",
   "schemaVersion": 1,
   "signing": {
-    "mode": "self-signed",
-    "identity": "RayPlacement Local Code Signing",
-    "certificateSHA256": "3dfe6a7f48bff98946a3b309f733c58b515d026daca0cfe63bf03f6a09142f12",
-    "developerTeam": "575W282638"
+    "mode": "developer-id",
+    "identity": "Developer ID Application: LIAM CHRISTOPHER HOSFELD (575W282638)",
+    "certificateSHA256": "a3d355ed36649ba5f5c5d98dbd0f55b3299302bfce295d98a32b23ab2f46697b",
+    "developerTeam": "575W282638",
+    "previous": {
+      "identity": "RayPlacement Local Code Signing",
+      "certificateSHA256": "3dfe6a7f48bff98946a3b309f733c58b515d026daca0cfe63bf03f6a09142f12"
+    }
   },
   "updates": {
     "channel": "stable",

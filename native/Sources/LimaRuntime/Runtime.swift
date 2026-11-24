@@ -233,8 +233,16 @@ public final class Runtime: @unchecked Sendable {
         clientsLock.lock(); clients.insert(client); clientsLock.unlock()
     }
 
-    public func disconnect(_ client: ClientConnection) {
-        clientsLock.lock(); clients.remove(client); clientsLock.unlock()
+    /// Returns true when `client` was a browser connection.
+    @discardableResult
+    public func disconnect(_ client: ClientConnection) -> Bool {
+        clientsLock.lock(); defer { clientsLock.unlock() }
+        return clients.remove(client) != nil
+    }
+
+    public var hasBrowserClients: Bool {
+        clientsLock.lock(); defer { clientsLock.unlock() }
+        return !clients.isEmpty
     }
 
     public func broadcast(_ event: String, _ data: JSONValue) {

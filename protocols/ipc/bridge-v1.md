@@ -123,6 +123,7 @@ Every caller that isn't Lima's own interface passes `SecurityPolicy` before a me
   `not_authorized`. Debug builds accept any peer when `LIMA_TRUST_ANY_PEER=1`.
 - `host.shutdown` requires the browser origin or a signature-verified lima-host peer (build replacement).
 - The socket directory must be owned by the user with mode 0700, or neither side uses it.
+- The runtime stops 10 seconds after Lima's last browser connection closes (quit or crash), unless the background launch agent is installed or `LIMA_KEEP_DAEMON` is set. Scheduled tasks run only while Lima is open; a missed run starts when it reopens.
 
 ## Updates
 

@@ -1,6 +1,6 @@
 # Releasing Lima
 
-Lima 5 is signed with the self-signed identity Lima 4 used (`RayPlacement Local Code Signing`, SHA-256
+Until 5.0.5, Lima 5 was signed with the self-signed identity Lima 4 used (`RayPlacement Local Code Signing`, SHA-256
 `3dfe6a7f…2f12`, pinned in `browser/release.json`). It is not notarized, so the **first** install from the
 DMG needs Control-click → Open. Updates after that are installed by Lima itself and verified against the
 installed app's signature.
@@ -8,6 +8,8 @@ installed app's signature.
 ## The installer DMG
 
 `release.sh` builds the DMG with dmgbuild, pinned with hashes in `browser/scripts/release/dmg-requirements.txt` and installed into a throwaway venv, so no Finder scripting is needed on CI. The window is 640×400 and holds Lima and an Applications shortcut over a drawn background: an arrow, "Drag Lima to Applications" and a line about opening it. The background comes from `browser/branding/dmg/` (regenerate with `swift browser/scripts/release/dmg_background.swift browser/branding/dmg`). Layout is in `dmg_settings.py`; the volume is named "Lima" with Lima's icon, and the image is LZFSE.
+
+From 5.0.6, releases are signed with Developer ID (team `575W282638`), notarized and stapled, so the DMG opens without Control-click → Open.
 
 ## Moving to Developer ID
 
