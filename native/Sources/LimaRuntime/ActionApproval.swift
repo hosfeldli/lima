@@ -47,11 +47,12 @@ extension Runtime {
     /// `unbound`: also ask callers that are neither MCP nor a workspace agent.
     func requireMCPScope(_ scope: String, context: CallContext, unbound: Bool = false, action: String) async throws {
         let applies = context.origin == .mcp || (unbound && context.origin != .browser && context.workspaceID == nil)
-        guard applies, !(context.origin == .mcp && MCPGrants.shared.allows(scope: scope)) else { return }
+        guard applies, !(context.origin == .mcp && MCPGrants.shared.allows(scope: scope, session: context.session)) else { return }
         let reach = try await approveAction(context, question: "Let \(Self.callerName(context.origin).lowercased().replacingOccurrences(of: "ai", with: "AI")) \(action)?",
             facts: [.init(label: "Permission", value: scope), .init(label: "Always allow", value: "Lima → Integrations → MCP")],
-            risk: "access", allowTask: true)
-        if reach == .task, context.origin == .mcp { MCPGrants.shared.grant(scope) }
+            risk: "access", allowTask: context.session != nil)
+        // Covers this outside tool's session only, never other MCP clients.
+        if reach == .task, context.origin == .mcp, let session = context.session { MCPGrants.shared.grant(scope, session: session) }
     }
 
     /// Shell commands an agent runs: routine ones go straight through;

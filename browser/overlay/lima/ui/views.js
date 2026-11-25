@@ -189,16 +189,14 @@ export async function renderIntegrations(app, section) {
     bridge.browser("browserActionOverlayChanged", { value: event.target.checked }).catch(() => {}) });
   bridge.browser("agentPreferences", {}).then(data => { overlay.checked = data?.browserActionOverlay === true; }).catch(() => {});
   const groups = [
-    ["general", "General", "appearance theme dark light mode animation search index preferences tabs size height compact large ai overview sponsored ads google results youtube shorts browsing", [
+    ["general", "General", "appearance theme dark light mode animation preferences tabs size height compact large", [
       card("Appearance", el("label", { class: "row" }, "Theme", theme),
         el("label", { class: "row" }, "Companion Animations", personality),
         el("p", { class: "muted", text: "Off keeps the mascot still. Lima also respects macOS Reduce Motion." }),
         el("label", { class: "row appearance-checkbox" }, overlay, "Show agent click and typing markers on webpages")),
       card("Tabs", tabSizeSettings()),
-      card("Browsing", searchCleanupSettings()),
-      card("Search", el("button", { onclick: async () => { await call("search.resetLearning"); alert("Learned ranking reset."); } }, "Reset learned ranking"),
-        " ", el("button", { onclick: async () => { const n = await call("search.rebuild", { source: "app" }); alert(`Index rebuilt (${n} items).`); } }, "Rebuild app index")),
     ]],
+    ["search", "Search", "search address bar ai overview answers copilot sponsored ads google bing duckduckgo yahoo brave results youtube shorts ranking index", searchSettings()],
     ["sidebar", "Sidebar", "dock shortcuts edit order spotify music calendar mail dictation", [card("Sidebar shortcuts", sidebarSettings())]],
     ["personal", "Personal Memory", "profile name email phone home address location privacy context companion memory learned daily", [
       card("Your information", personalMemoryForm()), card("What the Companion remembers", companionMemorySettings()),
@@ -219,7 +217,7 @@ export async function renderIntegrations(app, section) {
     ]],
     ["updates", "Updates", "version download release restart stable check", [card(null, updateSettings())]],
   ];
-  const aliases = { google: "connections", grammar: "writing", usage: "privacy" };
+  const aliases = { google: "connections", grammar: "writing", usage: "privacy", browsing: "search" };
   let active = aliases[section] ?? (groups.some(([id]) => id === section) ? section : "general");
   const search = el("input", { type: "search", placeholder: "Search settings", "aria-label": "Search settings" });
   const nav = el("nav", { class: "settings-nav", "aria-label": "Settings categories" });
@@ -316,22 +314,47 @@ function tabSizeSettings() {
     el("p", { class: "muted", text: "Changes every window's sidebar tabs as you drag." }));
 }
 
-/** Hide AI answers and sponsored results on search engines' result pages. */
-function searchCleanupSettings() {
-  const box = (key, label) => {
-    const input = el("input", { type: "checkbox", onchange: () => bridge.browser("browsingPrefs", { key, value: input.checked }).catch(() => {}) });
-    return [input, el("label", { class: "row appearance-checkbox" }, input, label)];
+/** Settings → Search: Lima Search, result-page filters per engine, YouTube. */
+function searchSettings() {
+  const save = (key, value) => bridge.browser("browsingPrefs", { key, value }).catch(() => {});
+  const box = (key, label, detail) => {
+    const input = el("input", { type: "checkbox", onchange: () => { save(key, input.checked); paintEngines(); } });
+    return [input, el("label", { class: "row appearance-checkbox setting-check" }, input,
+      el("span", {}, el("strong", { text: label }), detail ? el("small", { class: "muted", text: detail }) : null))];
   };
-  const [ai, aiRow] = box("hideSearchAI", "Hide AI answers (Google AI Overviews and AI Mode, Bing Copilot, DuckDuckGo Assist, Brave answers)");
-  const [ads, adsRow] = box("hideSearchAds", "Hide sponsored results and shopping ads");
-  const [shorts, shortsRow] = box("hideShorts", "Hide YouTube Shorts (shelves, the Shorts tab, and Shorts links open as normal videos)");
-  const [address, addressRow] = box("searchAsAddressBar", "Use Lima Search as the address bar (⌘L opens it with the current address; pages open in this tab)");
+  const [address, addressRow] = box("searchAsAddressBar", "Use Lima Search as the address bar", "⌘L opens it with the current address; pages open in this tab.");
+  const [ai, aiRow] = box("hideSearchAI", "Hide AI answers", "Google AI Overviews, Bing Copilot answers, DuckDuckGo Assist, Brave and Yahoo AI answers.");
+  const [ads, adsRow] = box("hideSearchAds", "Hide sponsored results", "Ads at the top and bottom of results, and shopping ads.");
+  const [shorts, shortsRow] = box("hideShorts", "Hide YouTube Shorts", "Shelves and the Shorts tab disappear; Shorts links play as normal videos.");
+  const ENGINES = [["google", "Google"], ["bing", "Bing"], ["duckduckgo", "DuckDuckGo"], ["yahoo", "Yahoo"], ["brave", "Brave Search"]];
+  const engines = el("div", { class: "engine-switches", role: "group", "aria-label": "Search engines to filter" });
+  let enabled = new Set(ENGINES.map(([id]) => id));
+  function paintEngines() {
+    const off = !ai.checked && !ads.checked;
+    engines.replaceChildren(...ENGINES.map(([id, name]) => {
+      const input = el("input", { type: "checkbox", checked: enabled.has(id), disabled: off, onchange: () => {
+        if (input.checked) enabled.add(id); else enabled.delete(id);
+        save("cleanEngines", [...enabled]);
+      } });
+      return el("label", { class: "engine-switch" }, input, name);
+    }));
+  }
   bridge.browser("browsingPrefs", {}).then(prefs => {
-    ai.checked = prefs?.hideSearchAI !== false; ads.checked = prefs?.hideSearchAds !== false; address.checked = prefs?.searchAsAddressBar !== false;
-    shorts.checked = prefs?.hideShorts !== false;
-  }).catch(() => {});
-  return el("div", {}, addressRow, aiRow, adsRow, shortsRow,
-    el("p", { class: "muted", text: "AI answers and ads are hidden on Google, Bing, DuckDuckGo, Yahoo and Brave result pages; Shorts on YouTube. Lima only hides these blocks on your Mac: your searches and results are unchanged and nothing is sent anywhere. Reload a page to see a change." }));
+    ai.checked = prefs?.hideSearchAI !== false; ads.checked = prefs?.hideSearchAds !== false;
+    address.checked = prefs?.searchAsAddressBar !== false; shorts.checked = prefs?.hideShorts !== false;
+    if (Array.isArray(prefs?.cleanEngines)) enabled = new Set(prefs.cleanEngines);
+    paintEngines();
+  }).catch(() => paintEngines());
+  return [
+    card("Lima Search", addressRow,
+      el("div", { class: "row" },
+        el("button", { onclick: async () => { await call("search.resetLearning"); alert("Learned ranking reset."); } }, "Reset learned ranking"),
+        el("button", { onclick: async () => { const n = await call("search.rebuild", { source: "app" }); alert(`Index rebuilt (${n} items).`); } }, "Rebuild app index"))),
+    card("Search result pages", aiRow, adsRow,
+      el("p", { class: "settings-subhead", text: "Filter results on" }), engines,
+      el("p", { class: "muted", text: "Lima only hides these blocks on your Mac. Your searches and results are unchanged and nothing is sent anywhere. If a results page ever looks wrong, turn its engine off here and reload the page." })),
+    card("YouTube", shortsRow),
+  ];
 }
 
 /** What Lima keeps and where: plain facts, first. */

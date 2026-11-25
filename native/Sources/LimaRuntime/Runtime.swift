@@ -31,6 +31,9 @@ public struct CallContext: Sendable {
     /// Set when the caller is a workspace's agent (token-authenticated);
     /// such callers can act only on that workspace.
     public var workspaceID: String? = nil
+    /// An MCP server process (one per outside AI tool session). Its calls
+    /// use separate connections; "Allow for this task" grants are per session.
+    public var session: String? = nil
 }
 
 public typealias MethodHandler = @Sendable (JSONValue?, CallContext) async throws -> JSONValue
@@ -55,6 +58,7 @@ public final class Runtime: @unchecked Sendable {
     public let focus = WorkspaceFocus()
     let browserCalls = BrowserCalls()
     let workspacePrompts = WorkspacePrompts()
+    let blockedCards = BlockedTaskCards()
     let googleWorkspace = GoogleWorkspace()
     let setup = SetupSessions()
     let grammar = GrammarProcess()
@@ -324,6 +328,7 @@ final class EventSink: @unchecked Sendable {
 
     func task(_ task: OrchestratedTask) {
         runtime?.broadcast("task.updated", task.publicView)
+        runtime?.cardBlockedTask(task)
     }
 
     func schedule(_ task: ScheduledTask?, id: String) {
@@ -356,6 +361,9 @@ final class EventSink: @unchecked Sendable {
             runtime.broadcast("chat.updated", (try? JSONValue.from(conversation)) ?? .null)
             let id = conversation.id
             Task { await runtime.orchestrator.observe(conversationID: id) }
+            if let workspaceID = conversation.workspaceID, !conversation.messages.contains(where: { $0.status == .streaming }) {
+                Task { await runtime.workspacePrompts.replyEnded(runtime, workspace: workspaceID) }
+            }
             Task {
                 if conversation.companion == true { return }
                 if let id = conversation.workspaceID, (try? await runtime.workspaces.get(id)) == nil { return }

@@ -155,7 +155,7 @@ const compiled = COMPILED;
       || { uuidRuns, rendered, status: stored?.status, directRuns, recorded },
     search: (question[0] === "web" && question[1] === "ask" && question.length <= 9 && aria && moved && back &&
       url === "nav:https://example.com" && plain[0] === "web" && !plain.some(key => ["ask", "delegate"].includes(key)) &&
-      kept && closed && /AI Chat/.test(footer) && !document.querySelector("#lima-search button:not(.lima-s-chip-remove, .lima-s-button, #lima-search-where)"))
+      kept && closed && /AI Chat/.test(footer) && !document.querySelector("#lima-search button:not(.lima-s-chip-remove, .lima-s-button, #lima-search-where, .lima-s-scope, .lima-s-close)"))
       || { question, aria, moved, back, url, plain, kept, closed, footer },
     searchSpeed: metrics.open < 100 || metrics,
     // macOS light/dark comes from the runtime; windows carry the resolved
@@ -200,10 +200,16 @@ const compiled = COMPILED;
     })(),
     // Search results without AI answers or ads; Lima Search stands in for the address bar.
     searchCleanup: (() => {
-      const { engineFor, stylesheet } = ChromeUtils.importESModule("resource://lima/actors/LimaSearchCleanChild.sys.mjs");
+      const { engineFor, stylesheet, safeToHide } = ChromeUtils.importESModule("resource://lima/actors/LimaSearchCleanChild.sys.mjs");
       const css = stylesheet("google", { ai: true, ads: true });
+      // A filter must never hide the results themselves.
+      const page = new DOMParser().parseFromString(`<body><div id="rcnt"><div id="center_col">
+        <div id="ai"><h2>AI Overview</h2><a href="/x"><h3>One source</h3></a></div>
+        <div id="rso"><div id="wrap"><a href="/a"><h3>A</h3></a><a href="/b"><h3>B</h3></a></div></div></div></div></body>`, "text/html");
+      const guarded = safeToHide(page.getElementById("ai")) && !safeToHide(page.getElementById("center_col"))
+        && !safeToHide(page.getElementById("rcnt")) && !safeToHide(page.getElementById("wrap")) && !safeToHide(page.body);
       return (engineFor("https://www.google.com/search?q=x") === "google" && engineFor("https://example.com/search") === null &&
-        css.includes("#tads") && css.includes("udm=50")) || { css };
+        css.includes("#tads") && css.includes(":not(:has(#rso") && guarded) || { css, guarded };
     })(),
     addressBar: window.limaAddressBar === true || "not installed",
     shortsHidden: (() => {
@@ -279,6 +285,10 @@ def check_bundle(app):
             problems.append(str(path.relative_to(app)))
     if problems:
         raise RuntimeError("Zen identity remains in the bundle: " + ", ".join(problems[:20]))
+    # Agents' build output (SwiftPM manifests, test binaries) must not be
+    # quarantined, or Gatekeeper refuses to run it.
+    if info.get("LSFileQuarantineEnabled"):
+        raise RuntimeError("Info.plist still quarantines every file Lima and its agents write (LSFileQuarantineEnabled)")
 
 
 def main(app):

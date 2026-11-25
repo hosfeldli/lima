@@ -56,9 +56,9 @@ enum ModelCatalog {
 /// Answers computed locally as you type (calculator, unit-free math).
 enum InstantAnswers {
     static func answer(for query: String) -> SearchResult? {
-        let trimmed = query.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "×", with: "*").replacingOccurrences(of: "÷", with: "/")
-        guard trimmed.count >= 3, trimmed.range(of: #"^[0-9\.\s\+\-\*/\(\)%^]+$"#, options: .regularExpression) != nil,
-              trimmed.range(of: #"[\+\-\*/%^]"#, options: .regularExpression) != nil,
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        guard trimmed.count >= 3, trimmed.range(of: #"^[0-9\.\s\+\-\*/\(\)%^−–×·÷]+$"#, options: .regularExpression) != nil,
+              trimmed.range(of: #"[\+\-\*/%^−–×·÷]"#, options: .regularExpression) != nil,
               let value = Calculator.evaluate(trimmed), value.isFinite else { return nil }
         let formatted = value.rounded() == value && abs(value) < 1e15 ? String(Int64(value)) : String(format: "%.10g", value)
         return SearchResult(key: "calc", source: "tool", title: "= \(formatted)", subtitle: trimmed, score: 1000,
@@ -67,20 +67,52 @@ enum InstantAnswers {
 }
 
 /// Recursive-descent arithmetic (no NSExpression: it can raise ObjC exceptions).
+///
+/// Accepts + − × ÷ * / % ^ and parentheses, in ASCII or the Unicode signs.
+/// Precedence follows math notation: ^ binds tighter than a leading minus
+/// (−2^2 = −4) and is right-associative; spaces never join numbers ("1 2" is
+/// an error, not 12). Anything it can't read exactly returns nil.
 enum Calculator {
+    enum Token: Equatable { case number(Double), op(Character), open, close }
+
+    static let signs: [Character: Character] = ["−": "-", "–": "-", "—": "-", "×": "*", "·": "*", "∗": "*", "÷": "/", "⁄": "/", "∕": "/"]
+
+    static func tokens(_ text: String) -> [Token]? {
+        var result: [Token] = []
+        let chars = Array(text.map { signs[$0] ?? $0 })
+        var index = 0
+        while index < chars.count {
+            let c = chars[index]
+            if c.isWhitespace { index += 1; continue }
+            if "+-*/%^".contains(c) { result.append(.op(c)); index += 1; continue }
+            if c == "(" { result.append(.open); index += 1; continue }
+            if c == ")" { result.append(.close); index += 1; continue }
+            guard c.isASCII, c.isNumber || c == "." else { return nil }
+            let start = index
+            while index < chars.count, chars[index].isASCII, chars[index].isNumber || chars[index] == "." { index += 1 }
+            guard let value = Double(String(chars[start..<index])) else { return nil } // "1.2.3", "."
+            // Two numbers in a row ("1 2") don't mean anything.
+            if case .number = result.last { return nil }
+            result.append(.number(value))
+        }
+        return result
+    }
+
     static func evaluate(_ text: String) -> Double? {
-        var parser = Parser(chars: Array(text.filter { !$0.isWhitespace }))
-        guard let value = parser.expression(), parser.index == parser.chars.count else { return nil }
+        guard let tokens = tokens(text), !tokens.isEmpty else { return nil }
+        var parser = Parser(tokens: tokens)
+        guard let value = parser.expression(), parser.index == tokens.count, value.isFinite else { return nil }
         return value
     }
 
     struct Parser {
-        let chars: [Character]
+        let tokens: [Token]
         var index = 0
-        mutating func peek() -> Character? { index < chars.count ? chars[index] : nil }
+        var depth = 0
+        func peek() -> Token? { index < tokens.count ? tokens[index] : nil }
         mutating func expression() -> Double? {
             guard var value = term() else { return nil }
-            while let op = peek(), op == "+" || op == "-" {
+            while case .op(let op) = peek(), op == "+" || op == "-" {
                 index += 1
                 guard let rhs = term() else { return nil }
                 value = op == "+" ? value + rhs : value - rhs
@@ -88,31 +120,45 @@ enum Calculator {
             return value
         }
         mutating func term() -> Double? {
-            guard var value = power() else { return nil }
-            while let op = peek(), op == "*" || op == "/" || op == "%" {
+            guard var value = unary() else { return nil }
+            while case .op(let op) = peek(), op == "*" || op == "/" || op == "%" {
                 index += 1
-                guard let rhs = power() else { return nil }
+                guard let rhs = unary(), op == "*" || rhs != 0 else { return nil } // no division by zero
                 value = op == "*" ? value * rhs : op == "/" ? value / rhs : value.truncatingRemainder(dividingBy: rhs)
             }
             return value
         }
-        mutating func power() -> Double? {
-            guard let base = unary() else { return nil }
-            if peek() == "^" { index += 1; guard let exponent = power() else { return nil }; return pow(base, exponent) }
-            return base
-        }
+        /// A leading sign applies to the whole power: −2^2 = −(2^2).
         mutating func unary() -> Double? {
-            if peek() == "-" { index += 1; return unary().map { -$0 } }
-            if peek() == "(" {
+            if case .op(let op) = peek(), op == "-" || op == "+" {
                 index += 1
-                let value = expression()
-                guard peek() == ")" else { return nil }
+                guard depth < 64 else { return nil }
+                depth += 1; defer { depth -= 1 }
+                return unary().map { op == "-" ? -$0 : $0 }
+            }
+            return power()
+        }
+        mutating func power() -> Double? {
+            guard let base = primary() else { return nil }
+            guard case .op("^") = peek() else { return base }
+            index += 1
+            guard depth < 64 else { return nil }
+            depth += 1; defer { depth -= 1 }
+            guard let exponent = unary() else { return nil } // right-associative; 2^-1 allowed
+            return pow(base, exponent)
+        }
+        mutating func primary() -> Double? {
+            switch peek() {
+            case .number(let value): index += 1; return value
+            case .open:
+                index += 1
+                guard depth < 64 else { return nil }
+                depth += 1; defer { depth -= 1 }
+                guard let value = expression(), peek() == .close else { return nil }
                 index += 1
                 return value
+            default: return nil
             }
-            let start = index
-            while let c = peek(), c.isNumber || c == "." { index += 1 }
-            return start == index ? nil : Double(String(chars[start..<index]))
         }
     }
 }

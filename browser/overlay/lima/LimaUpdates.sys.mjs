@@ -54,27 +54,67 @@ function whatsNew(win) {
   lazy.LimaTabs.openOrFocus(win, state?.notesUrl || RELEASES);
 }
 
+const HTML = "http://www.w3.org/1999/xhtml";
+function el(doc, tag, props = {}, ...children) {
+  const node = doc.createElementNS(HTML, tag);
+  for (const [key, value] of Object.entries(props)) {
+    if (value == null || value === false) continue;
+    if (key === "text") node.textContent = value;
+    else if (key === "class") node.className = value;
+    else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+    else node.setAttribute(key, value === true ? "" : value);
+  }
+  for (const child of children.flat()) if (child) node.append(child);
+  return node;
+}
+
+/** Sits in the window's bottom-left corner, above the sidebar's dock. */
+function place(win, card) {
+  const dock = win.document.getElementById("lima-dock");
+  const rect = dock?.getBoundingClientRect();
+  const visible = rect && rect.width > 0 && rect.height > 0;
+  card.style.left = `${visible ? Math.max(8, rect.left + 8) : 12}px`;
+  card.style.bottom = `${visible ? Math.max(12, win.innerHeight - rect.top + 8) : 12}px`;
+  if (visible) card.style.maxWidth = `${Math.max(260, rect.width - 16)}px`;
+}
+
+/** A Lima card, not Firefox's notification bar: what's ready, when it
+ * installs, and Restart / What's New / Later. Later hides it for this
+ * build; the update still installs on quit. */
+function showCard(win, status) {
+  const doc = win.document;
+  doc.getElementById(NOTIFICATION_ID)?.remove();
+  const onQuit = Services.prefs.getBoolPref(INSTALL_ON_QUIT, true);
+  const close = () => { card.remove(); win.removeEventListener("resize", reposition); };
+  const reposition = () => place(win, card);
+  const restart = el(doc, "button", { type: "button", class: "lima-update-primary", onclick: () => {
+    restart.disabled = true;
+    restart.textContent = "Restarting…";
+    restartToUpdate().catch(error => { restart.disabled = false; restart.textContent = "Restart to Update"; failedInstall(win, error); });
+  } }, "Restart to Update");
+  const card = el(doc, "div", { id: NOTIFICATION_ID, class: "lima-update-card", role: "status", "aria-live": "polite",
+    "data-critical": status.critical ? "true" : null },
+    el(doc, "div", { class: "lima-update-head" },
+      el(doc, "span", { class: "lima-update-icon", "aria-hidden": "true" }),
+      el(doc, "div", { class: "lima-update-copy" },
+        el(doc, "strong", { text: status.critical ? `Security update: Lima ${status.version}` : `Lima ${status.version} is ready` }),
+        el(doc, "span", { text: status.critical ? "Includes security fixes. Restart now to install it."
+          : onQuit ? "Installs when you quit, or restart now." : "Restart to install it." })),
+      el(doc, "button", { type: "button", class: "lima-update-close", title: "Later", "aria-label": "Remind me later", onclick: close }, "×")),
+    el(doc, "div", { class: "lima-update-actions" },
+      el(doc, "button", { type: "button", class: "lima-update-secondary", onclick: () => whatsNew(win) }, "What's New"), restart));
+  doc.documentElement.append(card);
+  place(win, card);
+  win.addEventListener("resize", reposition);
+}
+
 function notify(status) {
   const key = `${status.build}`;
   if (shown === key) return;
   shown = key;
   for (const win of windows()) {
-    const box = win.gNotificationBox;
-    box.getNotificationWithValue(NOTIFICATION_ID)?.close();
-    const when = Services.prefs.getBoolPref(INSTALL_ON_QUIT, true) ? " It installs when you quit Lima." : "";
-    box.appendNotification(
-      NOTIFICATION_ID,
-      {
-        label: status.critical
-          ? `Lima ${status.version} includes security fixes. Restart to install it now.${when}`
-          : `Lima ${status.version} is ready.${when}`,
-        priority: status.critical ? box.PRIORITY_WARNING_HIGH : box.PRIORITY_INFO_MEDIUM,
-      },
-      [
-        { label: "Restart to Update", accessKey: "R", callback: () => { restartToUpdate().catch(error => failedInstall(win, error)); return false; } },
-        { label: "View What's New", accessKey: "W", callback: () => { whatsNew(win); return true; } },
-      ]
-    ).then(notification => notification?.setAttribute("lima-update-notice", "true")).catch(() => {});
+    win.gNotificationBox.getNotificationWithValue(NOTIFICATION_ID)?.close();
+    try { showCard(win, status); } catch (error) { dump(`[lima] update card: ${error}\n`); }
   }
 }
 
@@ -228,4 +268,6 @@ export const LimaUpdates = {
   },
   check,
   restartToUpdate,
+  /** Shows the update card for a status (tests and screenshots). */
+  previewCard(win, status) { showCard(win, status); },
 };

@@ -365,19 +365,30 @@ function attachDock(win) {
     el(doc, "img", { src: "resource://lima-ui/marks/spotify-dj.svg", alt: "" }));
   const showTab = el(doc, "button", { class: "lima-music-btn", title: "Show the tab that's playing", "aria-label": "Show the tab that's playing", hidden: true,
     onclick: event => { event.stopPropagation(); if (browserTab?.isConnected) win.gBrowser.selectedTab = browserTab; } }, glyph(doc, "tab"));
-  const expanded = el(doc, "div", { class: "lima-music-expanded" }, timeline,
-    el(doc, "div", { class: "lima-music-transport" },
-      el(doc, "button", { class: "lima-music-btn", title: "Previous", onclick: control("previous") }, glyph(doc, "previous")),
-      el(doc, "button", { class: "lima-music-btn big", title: "Play / pause", onclick: control("playpause") }, glyph(doc, "play")),
-      el(doc, "button", { class: "lima-music-btn", title: "Next", onclick: control("next") }, glyph(doc, "next")),
-      dj, showTab),
-    el(doc, "div", { class: "lima-music-audio" }, volume, output), outputs);
-  expanded.inert = true;
-  const playerHeader = el(doc, "button", { class: "lima-music-row", title: "Expand music controls", "aria-expanded": "false", onclick: toggleSpotify },
+  // One player in Zen's compact media-card shape: an icon per source that's
+  // playing (Spotify shows the DJ mark, a tab its own icon), transport and
+  // mute. Clicking the bar, or the selected source's icon, expands Lima's
+  // controls: the DJ, the track, its timeline, Spotify DJ or Show Tab,
+  // volume and output.
+  const sources = el(doc, "span", { class: "lima-music-sources", role: "group", "aria-label": "Playing now" });
+  const mute = el(doc, "button", { class: "lima-music-btn", title: "Mute", "aria-label": "Mute", onclick: toggleMute }, glyph(doc, "volume"));
+  const bar = el(doc, "div", { class: "lima-music-bar", title: "Expand music controls",
+    // Buttons stop their own clicks; anywhere else on the bar expands.
+    onclick: () => toggleSpotify() },
+    sources,
+    el(doc, "span", { class: "lima-music-transport" },
+      el(doc, "button", { class: "lima-music-btn", title: "Previous", "aria-label": "Previous", onclick: control("previous") }, glyph(doc, "previous")),
+      el(doc, "button", { class: "lima-music-btn big", title: "Play / pause", "aria-label": "Play / pause", onclick: control("playpause") }, glyph(doc, "play")),
+      el(doc, "button", { class: "lima-music-btn", title: "Next", "aria-label": "Next", onclick: control("next") }, glyph(doc, "next"))),
+    mute);
+  const playerHeader = el(doc, "div", { class: "lima-music-row" },
     djScene, el(doc, "span", { class: "lima-music-text" }, title, artist),
     el(doc, "span", { class: "lima-music-notes", "aria-hidden": "true" }, el(doc, "i", {}, "♪"), el(doc, "i", {}, "♫")));
+  const expanded = el(doc, "div", { class: "lima-music-expanded" }, playerHeader, timeline,
+    el(doc, "div", { class: "lima-music-audio" }, dj, showTab, volume, output), outputs);
+  expanded.inert = true;
   const music = el(doc, "div", { id: "lima-music", hidden: true, "aria-label": "Now playing" },
-    playerHeader, el(doc, "div", { class: "lima-music-reveal" }, expanded));
+    bar, el(doc, "div", { class: "lima-music-reveal" }, expanded));
   const spotify = el(doc, "button", { id: "lima-spotify", title: "Music", "aria-label": "Music", "aria-expanded": "false", onclick: toggleSpotify },
     el(doc, "span", { class: "lima-spotify-icon" }));
 
@@ -412,16 +423,71 @@ function attachDock(win) {
   let browserController = null;
   const NAMES = { Spotify: "Spotify", Music: "Music", browser: "Browser audio" };
   let countedSource;
+  // A source the user picked from the icons stays selected while it plays.
+  let pinned = null;
   function choose() {
-    const candidates = Object.values(tracks).filter(item => item?.title || item?.player === "browser");
-    const playing = candidates.filter(item => item.state === "Playing").sort((a, b) => b.updatedAt - a.updatedAt)[0];
-    const next = playing ?? tracks[source] ?? candidates.sort((a, b) => b.updatedAt - a.updatedAt)[0];
-    if (next) { source = next.player; track = next; }
+    if (pinned && tracks[pinned]?.state === "Playing") {
+      source = pinned;
+      track = tracks[pinned];
+    } else {
+      pinned = null;
+      const candidates = Object.values(tracks).filter(item => item?.title || item?.player === "browser");
+      const playing = candidates.filter(item => item.state === "Playing").sort((a, b) => b.updatedAt - a.updatedAt)[0];
+      const next = playing ?? tracks[source] ?? candidates.sort((a, b) => b.updatedAt - a.updatedAt)[0];
+      if (next) { source = next.player; track = next; } else track = null;
+    }
     if (track?.state === "Playing" && countedSource !== source) {
       countedSource = source;
       lazy.LimaUsage.count({ Spotify: "music.spotify", Music: "music.appleMusic", browser: "music.tab" }[source], win);
     }
-    else track = null;
+  }
+
+  const privateWindow = lazy.PrivateBrowsingUtils.isWindowPrivate(win);
+  const playingTabs = () => privateWindow ? [] : [...win.gBrowser.tabs].filter(tab => !tab.closing && tab.hasAttribute("soundplaying"));
+  function sourceIcon(entry) {
+    if (entry.player === "Spotify") return el(doc, "img", { src: "resource://lima-ui/marks/spotify-dj.svg", alt: "" });
+    if (entry.player === "Music") return el(doc, "span", { class: "lima-glyph lima-music-mark" });
+    const image = entry.tab?.getAttribute("image");
+    return image ? el(doc, "img", { src: image, alt: "" }) : glyph(doc, "audio");
+  }
+  /** One icon per source that's playing; the selected one controls the bar. */
+  function paintSources() {
+    const open = music.hasAttribute("data-open");
+    const entries = [];
+    for (const player of ["Spotify", "Music"]) {
+      const item = tracks[player];
+      if (item?.title && (item.state === "Playing" || source === player)) entries.push({ player, label: `${NAMES[player]}: ${item.title}`, playing: item.state === "Playing" });
+    }
+    const tabs = playingTabs();
+    if (source === "browser" && browserTab?.isConnected && !tabs.includes(browserTab)) tabs.unshift(browserTab);
+    for (const tab of tabs) entries.push({ player: "browser", tab, label: tab.label, playing: tab.hasAttribute("soundplaying") });
+    if (!entries.length) entries.push({ player: source, tab: source === "browser" ? browserTab : null, label: NAMES[source], playing: false });
+    sources.replaceChildren(...entries.map(entry => {
+      const selected = entry.player === source && (entry.player !== "browser" || !entry.tab || entry.tab === browserTab);
+      const label = selected ? `${entry.label} — ${open ? "collapse" : "expand"} controls` : `Control ${entry.label}`;
+      return el(doc, "button", { class: "lima-music-source", "data-player": entry.player, title: label, "aria-label": label,
+        "aria-pressed": String(selected), ...(selected ? { "aria-expanded": String(open) } : {}), ...(entry.playing ? { "data-playing": "" } : {}),
+        onclick: event => { event.stopPropagation(); if (selected) toggleSpotify(); else select(entry); } }, sourceIcon(entry));
+    }));
+  }
+  function select(entry) {
+    pinned = entry.player;
+    if (entry.player === "browser" && entry.tab !== browserTab) watchTab(entry.tab);
+    source = entry.player;
+    track = tracks[source] ?? null;
+    paintTrack();
+    refresh(true);
+  }
+  function toggleMute(event) {
+    event.stopPropagation();
+    if (source === "browser" && browserTab?.isConnected) {
+      browserTab.toggleMuteAudio();
+      paintTrack();
+      return;
+    }
+    // Spotify and Music: the volume slider is in the expanded controls.
+    if (!music.hasAttribute("data-open")) toggleSpotify();
+    volume.focus();
   }
   let flashTimer = null;
   let controlBusy = false;
@@ -447,8 +513,14 @@ function attachDock(win) {
     dj.hidden = source !== "Spotify";
     showTab.hidden = source !== "browser";
     expanded.inert = !open;
-    playerHeader.setAttribute("aria-expanded", String(open));
     spotify.setAttribute("aria-expanded", String(open));
+    const muted = source === "browser" && browserTab?.hasAttribute("muted");
+    mute.firstChild.style.maskImage = `url("${ICON(muted ? "mute" : "volume")}")`;
+    const muteLabel = source === "browser" ? (muted ? "Unmute tab" : "Mute tab") : "Volume";
+    mute.title = muteLabel;
+    mute.setAttribute("aria-label", muteLabel);
+    bar.title = open ? "Collapse music controls" : "Expand music controls";
+    paintSources();
     title.textContent = track?.title || NAMES[source];
     artist.textContent = track?.title ? track.artist : `${NAMES[source]} is idle`;
     const icon = track?.state === "Playing" ? "pause" : "play";
@@ -574,14 +646,25 @@ function attachDock(win) {
     onBrowserChange();
   }
   // The tab that most recently started playing sound; private windows don't share theirs.
-  if (!lazy.PrivateBrowsingUtils.isWindowPrivate(win)) {
+  if (!privateWindow) {
     win.gBrowser.tabContainer.addEventListener("TabAttrModified", event => {
-      if (!event.detail?.changed?.includes("soundplaying")) return;
+      const changed = event.detail?.changed ?? [];
+      if (changed.includes("muted") && event.target === browserTab) { paintTrack(); return; }
+      if (!changed.includes("soundplaying")) return;
       const tab = event.target;
-      if (tab.hasAttribute("soundplaying")) { if (tab !== browserTab) watchTab(tab); else onBrowserChange(); }
-      else if (tab === browserTab) onBrowserChange();
+      // A user-picked tab keeps the controls while it plays; otherwise the
+      // controls follow the tab that started last.
+      const keep = pinned === "browser" && browserTab?.hasAttribute("soundplaying") && tab !== browserTab;
+      if (tab.hasAttribute("soundplaying")) { if (keep) paintTrack(); else if (tab !== browserTab) watchTab(tab); else onBrowserChange(); }
+      else if (tab === browserTab) {
+        const other = playingTabs().find(candidate => candidate !== tab);
+        if (other) watchTab(other); else onBrowserChange();
+      } else paintTrack();
     });
-    win.gBrowser.tabContainer.addEventListener("TabClose", event => { if (event.target === browserTab) watchTab(null); });
+    win.gBrowser.tabContainer.addEventListener("TabClose", event => {
+      if (event.target === browserTab) watchTab(playingTabs().find(tab => tab !== event.target) ?? null);
+      else if (event.target.hasAttribute("soundplaying")) win.setTimeout(paintTrack, 0);
+    });
   }
   function toggleSpotify() {
     music.toggleAttribute("data-open");

@@ -19,6 +19,17 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
   const recovery = el("div", { class: "row", hidden: true });
   const status = el("div", { class: "handoff" }, el("div", { class: "grow" }, target, activity.node, recovery), openAgent);
   const recent = el("div", { class: "handoff-recent" });
+  // At a glance: what's working, what needs you, what's scheduled.
+  const overview = el("div", { class: "companion-overview", role: "group", "aria-label": "At a glance", hidden: true });
+  // The sidebar's layout: each workspace's own folders, in sidebar order.
+  let layout = [];
+  const lastActive = new Map(); // workspace ID → when its chat last changed
+  let upcoming = 0;
+  let onlyActive = false;
+  let drawTimer = null;
+  let lastSignature = "";
+  const expandedGroups = new Set();
+  const collapsedGroups = new Set((() => { try { return JSON.parse(prefs.get("companion.collapsedGroups", "[]")); } catch { return []; } })());
   const prompts = workspacePrompts();
   // Each request is an entry; opening one shows its small chat in place.
   const requestList = el("section", { class: "companion-requests", "aria-label": "Chats", hidden: true });
@@ -51,7 +62,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     el("div", { class: "handoff-composer composer-box" }, input,
       el("div", { class: "composer-row handoff-controls" }, agent.provider, agent.model,
         el("span", { class: "spacer" }), send)),
-    status, prompts.node, scheduleStrip, requestList, recent, home ? null : providerHelp);
+    status, overview, prompts.node, scheduleStrip, recent, requestList, home ? null : providerHelp);
   app.replaceChildren(el("div", { class: home ? "assistant-page handoff-home" : "assistant-page" },
     head, el("div", { class: "handoff-body" }, listView, threadView)));
 
@@ -109,8 +120,11 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
   }
 
   function paintActivity() {
-    shownWorkspace = workspaces.get(handedOff) ?? [...workspaces.values()].find(workspace =>
-      !workspace.parentID && ["starting", "working", "blocked"].includes(describe(workspace).state));
+    // The workspace the latest request went to. Before any request, the one
+    // that's busy; after one that went nowhere (an answer, a schedule), none,
+    // so an unrelated workspace never reads as that request's.
+    shownWorkspace = workspaces.get(handedOff) ?? (tasks.length ? undefined : [...workspaces.values()].find(workspace =>
+      !workspace.parentID && ["starting", "working", "blocked"].includes(describe(workspace).state)));
     const pending = tasks.some(task => task.phase === "working");
     const shared = visualSnapshot?.companion;
     const next = requestError ? failureActivity(requestError, ready ? "Workspace request failed" : "Workspaces unavailable")
@@ -119,7 +133,8 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
       : ["blocked", "failed", "disconnected"].includes(shared?.state) ? shared
       : pending ? { state: "starting", label: "Planning task…", icon: "notebook", motion: "planning" }
       : (shared ?? { state: "idle", label: "Ready to delegate" });
-    status.hidden = home && ready && !pending && !requestError && !shownWorkspace;
+    // The band speaks only when something is happening (or went wrong).
+    status.hidden = ready && !pending && !requestError && !shownWorkspace && !["blocked", "failed", "disconnected", "working", "starting"].includes(next.state);
     target.hidden = openAgent.hidden = !shownWorkspace || pending || !!requestError;
     target.textContent = shownWorkspace?.name ?? "";
     activity.update(next);
@@ -131,15 +146,85 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     send.disabled = !ready || !agent.settings().provider;
   }
 
+  const ACTIVE = new Set(["working", "starting"]);
+  function paintOverview(roots) {
+    const states = roots.map(workspace => describe(workspace).state);
+    const working = states.filter(state => ACTIVE.has(state)).length;
+    const blocked = roots.filter(workspace => describe(workspace).state === "blocked");
+    const chip = (kind, text, onclick, pressed) => el("button", { type: "button", class: "companion-chip", "data-kind": kind,
+      "aria-pressed": pressed === undefined ? null : String(pressed), onclick }, el("i", { "aria-hidden": "true" }), text);
+    const chips = [
+      blocked.length ? chip("blocked", `${blocked.length} need${blocked.length === 1 ? "s" : ""} you`, () => {
+        if (prompts.node.hidden) openWorkspace(blocked[0]); else prompts.node.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }) : null,
+      working ? chip("working", `${working} working`, () => { onlyActive = !onlyActive; draw(); }, onlyActive) : null,
+      upcoming ? chip("scheduled", `${upcoming} scheduled`, openSchedules) : null,
+    ].filter(Boolean);
+    if (!working && onlyActive) onlyActive = false;
+    overview.replaceChildren(...chips);
+    overview.hidden = !chips.length;
+  }
+
+  /** One row: live state, name, what it's doing or when it last moved. */
+  function workspaceRow(workspace) {
+    const { label, state, detail } = describe(workspace);
+    const when = lastActive.get(workspace.id);
+    const busy = state !== "idle" && state !== "complete";
+    return el("button", { class: "ghost handoff-workspace", "data-workspace-id": workspace.id, "data-state": state,
+      title: detail || `Open ${workspace.name}`, onclick: () => openWorkspace(workspace) },
+      el("span", { class: "handoff-dot", "aria-hidden": "true" }),
+      el("span", { class: "handoff-name" }, el("span", { class: "grow", text: workspace.name }),
+        el("small", { class: "handoff-meta", text: busy ? "" : when ? relativeTime(when) : "" })),
+      // Idle rows stay quiet: a state shows only when something is happening.
+      el("span", { class: "handoff-state", "data-state": state, text: busy ? label : "", title: detail }));
+  }
+
   function draw() {
     const roots = [...workspaces.values()].filter(workspace => !workspace.parentID);
-    const rows = roots.slice(0, home ? 6 : 10).map(workspace => {
-      const { label, state, detail } = describe(workspace);
-      return el("button", { class: "ghost handoff-workspace", "data-workspace-id": workspace.id, onclick: () => openWorkspace(workspace) },
-        icon("workspace"), el("span", { class: "grow", text: workspace.name }),
-        el("span", { class: "handoff-state", "data-state": state, text: label, title: detail }));
+    const position = new Map(layout.map((row, index) => [row.id, index]));
+    const folders = new Map(layout.map(row => [row.id, row.folders ?? []]));
+    // Sidebar order; any not placed in the sidebar yet go last, newest first.
+    roots.sort((a, b) => (position.get(a.id) ?? 1e9) - (position.get(b.id) ?? 1e9) || (b.createdAt ?? 0) - (a.createdAt ?? 0));
+    paintOverview(roots);
+    const shown = onlyActive ? roots.filter(workspace => ACTIVE.has(describe(workspace).state) || describe(workspace).state === "blocked") : roots;
+    // One group per sidebar folder, in the order they appear there.
+    const groups = new Map();
+    for (const workspace of shown) {
+      const path = folders.get(workspace.id) ?? [];
+      const key = path.map(folder => folder.id).join("/");
+      if (!groups.has(key)) groups.set(key, { key, title: path.map(folder => folder.label || "Folder").join(" › "), items: [] });
+      groups.get(key).items.push(workspace);
+    }
+    const foldered = [...groups.values()].some(group => group.key);
+    const cap = home ? 4 : 6;
+    const sections = [...groups.values()].map(group => {
+      const collapsed = collapsedGroups.has(group.key);
+      const expanded = expandedGroups.has(group.key);
+      const items = expanded ? group.items : group.items.slice(0, cap);
+      const active = group.items.filter(workspace => ACTIVE.has(describe(workspace).state)).length;
+      const needs = group.items.filter(workspace => describe(workspace).state === "blocked").length;
+      const title = group.key ? group.title : foldered ? "Not in a folder" : (home ? "Continue" : "Workspaces");
+      const toggle = () => {
+        if (collapsed) collapsedGroups.delete(group.key); else collapsedGroups.add(group.key);
+        prefs.set("companion.collapsedGroups", JSON.stringify([...collapsedGroups]));
+        draw();
+      };
+      return el("section", { class: "handoff-group", "data-folder": group.key ? "true" : null, "data-collapsed": collapsed ? "true" : null },
+        el("button", { type: "button", class: "handoff-group-head", "aria-expanded": String(!collapsed), onclick: toggle },
+          icon(group.key ? "folder" : "workspace", "icon handoff-group-icon"), el("span", { class: "grow", text: title }),
+          needs ? el("span", { class: "handoff-badge", "data-state": "blocked", text: `${needs} need${needs === 1 ? "s" : ""} you` }) : null,
+          active ? el("span", { class: "handoff-badge", "data-state": "working", text: `${active} working` }) : null,
+          el("span", { class: "handoff-count", text: String(group.items.length) }),
+          icon("chevron", "icon handoff-group-chevron")),
+        collapsed ? null : el("div", { class: "handoff-group-rows" }, items.map(workspaceRow),
+          group.items.length > items.length || expanded && group.items.length > cap
+            ? el("button", { type: "button", class: "ghost handoff-more", onclick: () => {
+              if (expanded) expandedGroups.delete(group.key); else expandedGroups.add(group.key);
+              draw();
+            } }, expanded ? "Show less" : `Show ${group.items.length - items.length} more`) : null));
     });
-    recent.replaceChildren(...(rows.length ? [el("h2", { text: home ? "Continue" : "Workspaces" }), ...rows] : []));
+    recent.replaceChildren(...(sections.length ? sections
+      : onlyActive ? [el("p", { class: "muted", text: "Nothing is running right now." })] : []));
     paintActivity();
   }
 
@@ -180,6 +265,10 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
         remember(task.thread, `I couldn't schedule this: ${errorText(error)}`);
       }
     };
+    // Kept in the chat too, so the proposal survives closing the Companion.
+    remember(task.thread, `I can schedule “${proposal.title}”: ${proposal.summary.toLowerCase()}` +
+      `${proposal.nextRunLabel ? `, first run ${proposal.nextRunLabel}` : ""}, in ` +
+      `${destination ? destination.name : `a new workspace, “${proposal.newName}”`}. Confirm it below.`);
     paintTask(task, "approval", el("strong", { text: "Schedule this?" }),
       el("p", { class: "schedule-proposal-when" }, icon("calendar"), el("span", { text: proposal.summary }),
         proposal.nextRunLabel ? el("span", { class: "muted", text: ` · first run ${proposal.nextRunLabel}` }) : null),
@@ -194,13 +283,15 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
   /** "3 scheduled · next: …" above the chats; opens Scheduled Tasks. */
   async function drawSchedules() {
     const items = await call("schedule.list").catch(() => []);
-    const upcoming = items.filter(item => item.state === "scheduled");
+    const upcomingItems = items.filter(item => item.state === "scheduled");
+    upcoming = upcomingItems.length;
     scheduleStrip.hidden = !items.length;
-    const next = upcoming[0];
+    const next = upcomingItems[0];
     scheduleStrip.replaceChildren(icon("calendar"),
-      el("span", { class: "companion-schedules-count", text: upcoming.length ? `${upcoming.length} scheduled` : "Scheduled tasks" }),
+      el("span", { class: "companion-schedules-count", text: upcomingItems.length ? `${upcomingItems.length} scheduled` : "Scheduled tasks" }),
       el("span", { class: "companion-schedules-next", text: next ? `Next: ${next.title} · ${next.nextRunLabel ?? next.summary}` : "None upcoming" }),
       icon("chevron", "icon companion-entry-open"));
+    if (ready) drawSoon();
   }
 
   async function generateArtwork(task, action, agentSettings) {
@@ -255,6 +346,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     const reply = el("div", { class: "companion-task-reply" });
     const task = { reply, requestId: crypto.randomUUID(), taskIds: [] };
     tasks.push(task);
+    handedOff = undefined;
     input.value = "";
     prefs.set(draftKey, "");
     requestError = undefined;
@@ -539,7 +631,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     if (message.notice) node.append(el("p", { class: "msg-notice" }, icon("redo"), el("span", { text: message.notice })));
     const images = (message.steps ?? []).flatMap(step => step.images ?? []);
     if (images.length && openThread) node.append(mediaStrip(openThread.id, images.slice(-6)));
-    const body = message.text ? markdown(message.text) : el("p", { class: "muted", text: message.status === "streaming" ? "Thinking…" : "" });
+    const body = message.text ? markdown(message.text, { breaks: true }) : el("p", { class: "muted", text: message.status === "streaming" ? "Thinking…" : "" });
     if (message.status === "streaming") body.classList.add("typing");
     node.append(body);
     if (message.status === "failed" && message.error) {
@@ -642,6 +734,10 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
         thread.conversation = await call("chat.record", { id: thread.id, role: "assistant", text: `Status of the handed-off work:\n${status}` });
         thread.lastStatus = status;
       }
+      // "…every day at 8", "remind me tomorrow at 5": a follow-up that asks
+      // for later goes to the planner, which can propose a schedule; the chat
+      // model alone can't schedule anything.
+      if (!attachments.length && SCHEDULE_WORDS.test(text) && await scheduleFollowUp(thread, text)) { tray?.clear(); return; }
       thread.conversation = await call("chat.send", { id: thread.id, text, mode, attachments });
       tray?.clear();
       paintEntry(thread);
@@ -649,6 +745,27 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
       field.value = text;
       threadNotice(errorText(error));
     }
+  }
+
+  const SCHEDULE_WORDS = /\b(schedule|remind me|recurring|daily|weekly|monthly|every\s+(day|morning|evening|night|week|weekday|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|tomorrow|tonight)\b|\bat\s+\d{1,2}(:\d{2})?\s*(am|pm)\b|\b\d+\s+days?\s+(out|ahead|in advance)\b/i;
+
+  /** Plans a follow-up with the earlier request as context; true if it
+   * became a schedule proposal in this thread. */
+  async function scheduleFollowUp(thread, text) {
+    const earlier = (thread.conversation.messages ?? []).filter(message => message.role === "user" && message.text).map(message => message.text).slice(-3);
+    const agentSettings = agent.settings();
+    let plan;
+    try {
+      plan = await call("assistant.plan", { text: earlier.length ? `${earlier.join("\n")}\n\nFollow-up: ${text}` : text, ...agentSettings, tabs: [], folders: [] });
+    } catch { return false; }
+    if (!plan?.schedule) return false;
+    thread.conversation = await call("chat.record", { id: thread.id, role: "user", text });
+    const task = { reply: el("div", { class: "companion-task-reply" }), requestId: crypto.randomUUID(), taskIds: [...(thread.task?.taskIds ?? [])], thread };
+    tasks.push(task);
+    thread.task = task;
+    handedOff = undefined;
+    showSchedule(task, plan.schedule, { ...agentSettings, mascot: plan.mascot });
+    return true;
   }
 
   /** Reopening the Companion lists recent requests with their status. */
@@ -704,7 +821,10 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     }
     else workspaces.set(data.id, data);
   }
+  function drawSoon() { if (!drawTimer) drawTimer = setTimeout(() => { drawTimer = null; draw(); }, 250); }
   const unsubscribe = onEvent(({ event, data }) => {
+    if (event === "workspace.layout" && Array.isArray(data)) { layout = data; drawSoon(); return; }
+    if (event === "chat.updated" && data?.workspaceID && data.updatedAt) lastActive.set(data.workspaceID, data.updatedAt);
     if (chatEvent(event, data)) return;
     if (event === "task.updated" && data) {
       const root = data.parentID ?? data.id;
@@ -735,10 +855,15 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     for (const row of recent.querySelectorAll("[data-workspace-id]")) {
       const next = describe(workspaces.get(row.dataset.workspaceId) ?? { id: row.dataset.workspaceId });
       const label = row.querySelector(".handoff-state");
-      if (label.textContent !== next.label) label.textContent = next.label;
+      const text = next.state !== "idle" && next.state !== "complete" ? next.label : "";
+      if (label.textContent !== text) label.textContent = text;
       label.dataset.state = next.state;
       label.title = next.detail ?? "";
+      row.dataset.state = next.state;
     }
+    // Counts and group badges follow live states (redrawn only when a state changes).
+    const signature = [...workspaces.values()].map(workspace => `${workspace.id}:${describe(workspace).state}`).join();
+    if (ready && signature !== lastSignature) { lastSignature = signature; drawSoon(); }
   });
   window.addEventListener("pagehide", () => { generationLifetime.abort(); unsubscribe(); unwatch(); }, { once: true });
 
@@ -746,8 +871,11 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     requestError = undefined;
     paintActivity();
     try {
-      const all = await call("workspace.list");
+      const [all, sidebar, chats] = await Promise.all([call("workspace.list"),
+        bridge.browser("workspaceLayout", {}).catch(() => []), call("chat.list").catch(() => [])]);
       for (const workspace of all) workspaces.set(workspace.id, workspace);
+      layout = Array.isArray(sidebar) ? sidebar : [];
+      for (const chat of chats) if (chat.workspaceID && chat.updatedAt) lastActive.set(chat.workspaceID, chat.updatedAt);
       for (const [event, data] of queued.splice(0)) update(event, data);
       ready = true;
       draw();

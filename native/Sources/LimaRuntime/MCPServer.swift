@@ -41,8 +41,9 @@ public enum MCPServer {
             let edits: JSONValue = .array([.object(["setMarkdown": .object(["_0": .string(existing.isEmpty ? addition : existing + "\n\n" + addition)])])])
             return try client.call("notes.apply", params: .object(["id": id, "edits": edits, "baseRevision": note["revision"] ?? .null, "author": .string("agent:mcp")]))
         },
-        Tool(name: "context_recent", description: "Recent activity metadata (no keystrokes or screen content).",
-             properties: ["limit": ["type": "number"]], required: []) { args, client in
+        Tool(name: "context_recent", description: "Recent activity metadata (no keystrokes or screen content). limit: 1–1000, default 50.",
+             properties: [:], required: [],
+             structuredProperties: ["limit": .object(["type": .string("integer"), "minimum": .number(1), "maximum": .number(1000)])]) { args, client in
             try client.call("context.recent", params: .object(["limit": args?["limit"] ?? .number(50)]))
         },
         Tool(name: "reports_list", description: "Weekly activity reports.", properties: [:], required: []) { _, client in
@@ -50,16 +51,53 @@ public enum MCPServer {
         }
     ]
 
+    /// Protocol versions this server implements, newest first. A client
+    /// asking for another gets the newest (MCP lifecycle: version negotiation).
+    static let protocolVersions = ["2025-06-18", "2025-03-26", "2024-11-05"]
+
+    static func negotiate(_ requested: String?) -> String {
+        requested.flatMap { protocolVersions.contains($0) ? $0 : nil } ?? protocolVersions[0]
+    }
+
+    /// Checks arguments against the tool's schema before anything runs: a
+    /// missing required argument or a wrong type is the caller's error, not
+    /// an empty success.
+    static func validate(_ arguments: JSONValue?, for tool: Tool) -> String? {
+        if let arguments, arguments != .null, arguments.objectValue == nil { return "arguments must be an object" }
+        let values = arguments?.objectValue ?? [:]
+        for name in tool.required {
+            guard let value = values[name], value != .null else { return "missing required argument '\(name)'" }
+            if value.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true { return "argument '\(name)' is empty" }
+        }
+        for (name, value) in values where value != .null {
+            let expected = tool.properties[name]?["type"] ?? tool.structuredProperties[name]?["type"]?.stringValue
+            switch expected {
+            case "string": if value.stringValue == nil { return "argument '\(name)' must be a string" }
+            case "number": if value.doubleValue?.isFinite != true { return "argument '\(name)' must be a number" }
+            case "integer":
+                guard let number = value.doubleValue, number.isFinite, number == number.rounded() else { return "argument '\(name)' must be a whole number" }
+                if let minimum = tool.structuredProperties[name]?["minimum"]?.doubleValue, number < minimum { return "argument '\(name)' must be at least \(Int(minimum))" }
+                if let maximum = tool.structuredProperties[name]?["maximum"]?.doubleValue, number > maximum { return "argument '\(name)' must be at most \(Int(maximum))" }
+            case "boolean": if value.boolValue == nil { return "argument '\(name)' must be true or false" }
+            default: break
+            }
+        }
+        return nil
+    }
+
     public static func run() -> Never {
+        let token = ProcessInfo.processInfo.environment["LIMA_WORKSPACE_TOKEN"].flatMap { $0.isEmpty ? nil : $0 }
+        // One session for this process: approvals "for this task" cover it alone.
+        let session = UUID().uuidString
+        let connect: @Sendable () throws -> RuntimeClient = { try RuntimeClient.connect(origin: .mcp, workspaceToken: token, session: session) }
         let client: RuntimeClient
         do {
-            let token = ProcessInfo.processInfo.environment["LIMA_WORKSPACE_TOKEN"]
-            client = try RuntimeClient.connect(origin: .mcp, workspaceToken: token?.isEmpty == false ? token : nil)
+            client = try connect()
         } catch {
             FileHandle.standardError.write(Data("lima mcp: \(error)\n".utf8))
             exit(1)
         }
-        let bound = ProcessInfo.processInfo.environment["LIMA_WORKSPACE_TOKEN"].map { !$0.isEmpty } ?? false
+        let bound = token != nil
         let browserOnly = ProcessInfo.processInfo.environment["LIMA_BROWSER_ONLY"] == "1"
         let tools: [Tool]
         if browserOnly {
@@ -75,24 +113,39 @@ public enum MCPServer {
             catalog.append(contentsOf: capabilityTools(client))
             tools = catalog
         }
+        // Tool calls run concurrently, each on its own runtime connection,
+        // so one waiting on the user (an approval card) doesn't hold up
+        // ping, other calls, or a cancellation.
+        let output = NSLock()
+        let inflight = Inflight()
+        let calls = DispatchQueue(label: "lima.mcp.calls", attributes: .concurrent)
+        @Sendable func respond(_ id: JSONValue, result: JSONValue? = nil, error: JSONValue? = nil) {
+            var response: [String: JSONValue] = ["jsonrpc": .string("2.0"), "id": id]
+            if let error { response["error"] = error } else { response["result"] = result ?? .object([:]) }
+            guard let encoded = try? JSONEncoder().encode(JSONValue.object(response)) else { return }
+            output.lock(); FileHandle.standardOutput.write(encoded + Data("\n".utf8)); output.unlock()
+        }
+        func failure(_ code: Int, _ message: String) -> JSONValue { .object(["code": .number(Double(code)), "message": .string(message)]) }
+
         while let line = readLine(strippingNewline: true) {
             guard let data = line.data(using: .utf8), let message = try? JSONDecoder().decode(JSONValue.self, from: data) else { continue }
             guard let method = message["method"]?.stringValue else { continue }
-            let id = message["id"]
-            guard id != nil else { continue } // notification
-            let result: JSONValue
-            var error: JSONValue?
+            guard let id = message["id"], id != .null else {
+                // Notifications. A cancelled call stops and gets no response.
+                if method == "notifications/cancelled", let target = message["params"]?["requestId"] { inflight.cancel(target) }
+                continue
+            }
             switch method {
             case "initialize":
-                result = .object([
-                    "protocolVersion": message["params"]?["protocolVersion"] ?? .string("2025-06-18"),
+                respond(id, result: .object([
+                    "protocolVersion": .string(negotiate(message["params"]?["protocolVersion"]?.stringValue)),
                     "capabilities": .object(["tools": .object([:])]),
                     "serverInfo": .object(["name": .string("lima"), "version": .string(limaRuntimeVersion)])
-                ])
+                ]))
             case "ping":
-                result = .object([:])
+                respond(id, result: .object([:]))
             case "tools/list":
-                result = .object(["tools": .array(tools.map { tool in
+                respond(id, result: .object(["tools": .array(tools.map { tool in
                     .object([
                         "name": .string(tool.name),
                         "description": .string(tool.description),
@@ -102,12 +155,27 @@ public enum MCPServer {
                             "required": .array(tool.required.map(JSONValue.string))
                         ])
                     ])
-                })])
+                })]))
             case "tools/call":
                 let name = message["params"]?["name"]?.stringValue ?? ""
-                if let tool = tools.first(where: { $0.name == name }) {
+                let arguments = message["params"]?["arguments"]
+                guard let tool = tools.first(where: { $0.name == name }) else {
+                    respond(id, error: failure(-32602, "unknown tool \(name)")); continue
+                }
+                if let problem = validate(arguments, for: tool) {
+                    respond(id, error: failure(-32602, "invalid arguments for \(name): \(problem)")); continue
+                }
+                calls.async {
+                    let connection: RuntimeClient
+                    do { connection = try connect() } catch {
+                        respond(id, result: .object(["isError": .bool(true), "content": .array([.object(["type": .string("text"), "text": .string("Lima's runtime is unavailable: \(error)")])])]))
+                        return
+                    }
+                    inflight.start(id, connection)
+                    defer { connection.disconnect() }
+                    let result: JSONValue
                     do {
-                        let output = try tool.call(message["params"]?["arguments"], client)
+                        let output = try tool.call(arguments, connection)
                         if name == "workspace_browser", let screenshot = output["jpeg"]?.stringValue {
                             result = .object(["content": .array([.object([
                                 "type": .string("image"), "data": .string(screenshot), "mimeType": .string("image/jpeg")
@@ -121,21 +189,38 @@ public enum MCPServer {
                     } catch {
                         result = .object(["isError": .bool(true), "content": .array([.object(["type": .string("text"), "text": .string(String(describing: error))])])])
                     }
-                } else {
-                    result = .null
-                    error = .object(["code": .number(-32602), "message": .string("unknown tool \(name)")])
+                    if inflight.finish(id) { respond(id, result: result) }
                 }
             default:
-                result = .null
-                error = .object(["code": .number(-32601), "message": .string("method not found: \(method)")])
-            }
-            var response: [String: JSONValue] = ["jsonrpc": .string("2.0"), "id": id!]
-            if let error { response["error"] = error } else { response["result"] = result }
-            if let encoded = try? JSONEncoder().encode(JSONValue.object(response)) {
-                FileHandle.standardOutput.write(encoded + Data("\n".utf8))
+                respond(id, error: failure(-32601, "method not found: \(method)"))
             }
         }
+        // stdin closed: let calls in progress finish writing.
+        calls.sync(flags: .barrier) {}
         exit(0)
+    }
+
+    /// Calls in progress, by JSON-RPC id, so a cancellation can stop one.
+    final class Inflight: @unchecked Sendable {
+        private let lock = NSLock()
+        private var running: [String: RuntimeClient] = [:]
+        private var cancelled: Set<String> = []
+        private func key(_ id: JSONValue) -> String { String(decoding: (try? JSONEncoder().encode(id)) ?? Data(), as: UTF8.self) }
+        func start(_ id: JSONValue, _ client: RuntimeClient) {
+            lock.lock(); defer { lock.unlock() }
+            if cancelled.contains(key(id)) { client.interrupt() } else { running[key(id)] = client }
+        }
+        func cancel(_ id: JSONValue) {
+            lock.lock(); defer { lock.unlock() }
+            cancelled.insert(key(id))
+            running.removeValue(forKey: key(id))?.interrupt()
+        }
+        /// True if the call should be answered (it wasn't cancelled).
+        func finish(_ id: JSONValue) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            running.removeValue(forKey: key(id))
+            return cancelled.remove(key(id)) == nil
+        }
     }
 }
 
@@ -157,6 +242,20 @@ extension MCPServer {
         Tool(name: "workspace_ask_user", description: "Ask a question in Lima and wait for an answer. Include fields for structured information. For a reservation, use labeled date, time, and number fields with IDs such as date, time, and partySize. The reply contains values keyed by field ID.",
              properties: ["question": ["type": "string"]], required: ["question"], structuredProperties: ["fields": WorkspaceQuestionField.schema]) { args, client in
             try client.call("workspace.askUser", params: args)
+        },
+        Tool(name: "workspace_request_approval", description: """
+            Ask the user to approve something before you do it (a destructive command, spending money, acting on their account), \
+            or, with kind "login", to sign in somewhere you can't (include the sign-in url and site). Lima shows a card and waits. \
+            The result says whether they approved. If it says the request stays open, end your turn: the answer arrives later \
+            as a chat message, and you continue from there.
+            """,
+             properties: ["request": ["type": "string", "description": "What you need approved, in one sentence."],
+                          "detail": ["type": "string", "description": "Why, and exactly what will happen."],
+                          "kind": ["type": "string", "description": "approval (default) or login"],
+                          "site": ["type": "string"], "url": ["type": "string"],
+                          "risk": ["type": "string", "description": "money, account or system"]],
+             required: ["request"]) { args, client in
+            try client.call("workspace.requestApproval", params: args)
         },
         Tool(name: "workspace_location", description: "Ask the user to share their approximate current location once for a stated purpose. Use for nearby results or a route starting near the user. A declined request returns no location.",
              properties: ["purpose": ["type": "string"]], required: ["purpose"]) { args, client in

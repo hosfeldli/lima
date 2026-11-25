@@ -2,7 +2,7 @@
  * workspace or helper agent it is the agent's chat; a live line says where
  * the agent is working (the sidebar shows the same with the prism). */
 import { activityStatus, bridge, call, el, errorText, filesPrivacyButton, icon, markdown, onEvent, prefs, setPage } from "./lib.js";
-import { failureActivity, isFolderPermissionError, toolActivity } from "./tool-activity.sys.mjs";
+import { failureActivity, isFolderPermissionError, stepParts, toolActivity } from "./tool-activity.sys.mjs";
 
 import { agentControls, attachmentTray, composerMenu, preferredAgent, QUEUE_HINT, queuedActions, restoreDraft, sentAttachments, sendMode } from "./composer.js";
 import { companion, MASCOTS, setCompanionState, watchVisualActivity } from "./companion.js";
@@ -35,6 +35,53 @@ function toolRow(raw, active = false, step = null, chatId = null) {
     step?.added || step?.removed ? el("span", { class: "tool-diff", title: `${step.added ?? 0} lines added, ${step.removed ?? 0} removed` },
       step.added ? el("span", { class: "diff-add", text: `+${step.added}` }) : null, step.removed ? el("span", { class: "diff-del", text: `−${step.removed}` }) : null) : null,
     step?.images?.length && chatId ? mediaStrip(chatId, step.images) : null);
+}
+
+/** One step in a reply's log: the action, what it acted on (a file with
+ * its folder dimmed, a command as code, a pattern, a page), lines changed. */
+export function stepRow(step, { active = false, chatId = null, cwd = "" } = {}) {
+  const parts = stepParts(step.tool, { cwd });
+  const { icon: glyph, kind } = toolActivity(step.tool);
+  const code = text => el("code", { class: "step-code", title: parts.full, text });
+  const target = !parts.target ? null
+    : parts.kind === "file" ? el("span", { class: "step-file", title: parts.full },
+      parts.dir ? el("span", { class: "step-dir", text: parts.dir }) : null, el("span", { class: "step-name", text: parts.target }))
+    : parts.kind === "pattern" || parts.kind === "files" ? code(parts.target)
+    : parts.kind === "command" ? null
+    : el("span", { class: "step-target", title: parts.full, text: parts.target });
+  const diff = step.added || step.removed ? el("span", { class: "tool-diff", title: `${step.added ?? 0} lines added, ${step.removed ?? 0} removed` },
+    step.added ? el("span", { class: "diff-add", text: `+${step.added}` }) : null,
+    step.removed ? el("span", { class: "diff-del", text: `−${step.removed}` }) : null) : null;
+  return el("div", { class: "step", "data-kind": parts.kind, "data-motion": active ? kind : null },
+    el("div", { class: "step-line" }, icon(glyph, "icon tool-glyph"), el("span", { class: "step-verb", text: parts.verb }), target,
+      parts.note ? el("span", { class: "step-note", text: parts.note }) : null,
+      step.count > 1 ? el("span", { class: "step-count", title: `${step.count} times`, text: `×${step.count}` }) : null, diff),
+    parts.kind === "command" ? el("pre", { class: "step-command", title: parts.full }, el("code", { text: parts.target })) : null,
+    step.images?.length && chatId ? mediaStrip(chatId, step.images) : null);
+}
+
+/** "4 files changed" beside the step count. */
+function stepSummary(steps, cwd) {
+  const files = new Set(steps.map(step => stepParts(step.tool, { cwd })).filter(parts => parts.kind === "file" && parts.verb !== "Read").map(parts => parts.full));
+  return files.size ? el("span", { class: "steps-files", text: `${files.size} file${files.size === 1 ? "" : "s"} changed` }) : null;
+}
+
+/** Back-to-back edits of one file read as one step: ×3, +12 −4. */
+export function mergeSteps(steps, cwd = "") {
+  const merged = [];
+  for (const step of steps) {
+    const parts = stepParts(step.tool, { cwd });
+    const last = merged.at(-1);
+    if (last && parts.kind === "file" && last.key === `${parts.verb}:${parts.full}`) {
+      last.count += 1;
+      last.added = (last.added ?? 0) + (step.added ?? 0) || undefined;
+      last.removed = (last.removed ?? 0) + (step.removed ?? 0) || undefined;
+      if (step.images?.length) last.images = [...(last.images ?? []), ...step.images].slice(-12);
+      continue;
+    }
+    merged.push({ ...step, count: 1, key: parts.kind === "file" ? `${parts.verb}:${parts.full}` : null });
+  }
+  return merged;
 }
 
 // Images a step saw (screenshots, pictures it read): small thumbnails that
@@ -279,22 +326,24 @@ async function initializeChat(app, chatId, compact, signal) {
     if (message.notice) node.append(el("p", { class: "msg-notice", role: "note" }, icon("redo"), el("span", { text: message.notice })));
     // Every step stays visible: what it did, lines it changed (+/−) and
     // images it saw. Long runs fold the earlier steps.
-    const steps = (message.steps?.length ? message.steps : (message.tools ?? []).map(tool => ({ tool })))
-      .filter(step => visibleTools([step.tool]).length);
+    const cwd = workspace?.directory ?? conversation.workingDirectory ?? "";
+    const steps = mergeSteps((message.steps?.length ? message.steps : (message.tools ?? []).map(tool => ({ tool })))
+      .filter(step => visibleTools([step.tool]).length), cwd);
     if (steps.length) {
       const added = steps.reduce((sum, step) => sum + (step.added ?? 0), 0);
       const removed = steps.reduce((sum, step) => sum + (step.removed ?? 0), 0);
-      const row = (step, index) => el("li", {}, toolRow(step.tool, message.status === "streaming" && index === steps.length - 1, step, chatId));
+      const row = (step, index) => el("li", {}, stepRow(step, { active: message.status === "streaming" && index === steps.length - 1, chatId, cwd }));
       const recent = steps.slice(-8);
       const earlier = steps.slice(0, -8);
       node.append(el("div", { class: "steps-log" },
         el("div", { class: "steps-head" }, el("strong", { text: `${steps.length} step${steps.length === 1 ? "" : "s"}` }),
+          stepSummary(steps, cwd),
           added || removed ? el("span", { class: "tool-diff" }, added ? el("span", { class: "diff-add", text: `+${added}` }) : null, removed ? el("span", { class: "diff-del", text: `−${removed}` }) : null) : null),
         earlier.length ? el("details", { class: "steps-earlier" }, el("summary", { text: `${earlier.length} earlier step${earlier.length === 1 ? "" : "s"}` }),
           el("ol", { class: "steps-list" }, earlier.map(row))) : null,
         el("ol", { class: "steps-list" }, recent.map((step, index) => row(step, earlier.length + index)))));
     }
-    const body = markdown(message.text, { onTaskToggle: () => {} });
+    const body = markdown(message.text, { onTaskToggle: () => {}, breaks: true });
     if (message.status === "streaming") body.classList.add("typing");
     node.append(body);
     if (message.status === "failed" && message.error) {
@@ -510,7 +559,7 @@ async function initializeChat(app, chatId, compact, signal) {
           const body = messageElements.get(target.id)?.querySelector(".typing");
           if (!body) return;
           const atBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 60;
-          body.replaceChildren(...markdown(target.text, { onTaskToggle: () => {} }).childNodes);
+          body.replaceChildren(...markdown(target.text, { onTaskToggle: () => {}, breaks: true }).childNodes);
           if (atBottom) messages.scrollTop = messages.scrollHeight;
         });
       }

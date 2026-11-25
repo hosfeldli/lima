@@ -228,3 +228,35 @@ private func archivedText(_ archive: URL, _ entry: String) throws -> String {
     #expect(WorkspacePrompts.browserReview(goal: "Buy the book", plan: "Go to checkout") == .needsUser)
     #expect(WorkspacePrompts.browserReview(goal: "Read the docs", plan: "Scroll the page") == .routine)
 }
+
+@Test(.timeLimit(.minutes(1))) func approvalCardsOutliveTheTurnAndResumeTheChat() async throws {
+    let (runtime, dir) = try await workspaceRuntime()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let id = try #require(await call(runtime, "workspace.create", ["name": .string("Approvals")]).result?["id"]?.stringValue)
+    let workspace = try await runtime.workspaces.get(id)
+    let waiting = Task { try await runtime.workspacePrompts.ask(runtime, workspace: workspace, question: "Sign in to GitHub?", detail: nil,
+                                                                approval: true, risk: "login") }
+    for _ in 0..<100 where (await runtime.workspacePrompts.list().arrayValue ?? []).isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+    // The agent's turn ends: its tool call is released, the card stays.
+    await runtime.workspacePrompts.replyEnded(runtime, workspace: id)
+    await #expect(throws: BridgeError.self) { try await waiting.value }
+    let card = try #require(await runtime.workspacePrompts.list().arrayValue?.first?["id"]?.stringValue)
+    // A new question still goes through while the old card waits.
+    let next = Task { try await runtime.workspacePrompts.ask(runtime, workspace: workspace, question: "Which branch?", detail: nil, approval: false) }
+    for _ in 0..<100 where (await runtime.workspacePrompts.list().arrayValue ?? []).count < 2 { try await Task.sleep(for: .milliseconds(10)) }
+    #expect(await runtime.workspacePrompts.list().arrayValue?.count == 2)
+    await runtime.workspacePrompts.replyEnded(runtime, workspace: id)
+    _ = try? await next.value
+
+    // Answering later sends the answer to the agent's chat.
+    try await runtime.workspacePrompts.answer(runtime, id: card, approved: true, text: nil)
+    let conversationID = try #require(workspace.conversationID)
+    var sent: String?
+    for _ in 0..<200 {
+        sent = try await runtime.conversations.get(conversationID).messages.first { $0.role == .user }?.text
+        if sent != nil { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(sent?.contains("signed in") == true)
+    #expect(await runtime.workspacePrompts.list().arrayValue?.count == 1, "only the unanswered question is left")
+}

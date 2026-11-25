@@ -104,3 +104,51 @@ import Testing
     #expect(sent.result?["messages"]?.arrayValue?.first?["attachments"]?.arrayValue?.first?["name"]?.stringValue == "-notes.txt")
     _ = await call(runtime, "chat.cancel", ["id": .string(chat)])
 }
+
+@Test func calculatorReadsExactlyWhatWasWritten() {
+    #expect(Calculator.evaluate("1 2") == nil, "spaces never join numbers")
+    #expect(Calculator.evaluate("-2^2") == -4, "^ binds tighter than a leading minus")
+    #expect(Calculator.evaluate("(-2)^2") == 4)
+    #expect(Calculator.evaluate("5 − 3") == 2, "the Unicode minus sign the tool advertises")
+    #expect(Calculator.evaluate("6 × 7 ÷ 2") == 21)
+    #expect(Calculator.evaluate("2^-1") == 0.5)
+    #expect(Calculator.evaluate("1/0") == nil && Calculator.evaluate("5 % 0") == nil)
+    #expect(Calculator.evaluate("1.2.3") == nil && Calculator.evaluate("2+") == nil && Calculator.evaluate("(1") == nil)
+    #expect(Calculator.evaluate(String(repeating: "-", count: 10_000) + "1") == nil, "deep nesting is refused, not a stack overflow")
+}
+
+@Test(.timeLimit(.minutes(1))) func outOfRangeLimitsNeverCrashTheRuntime() async throws {
+    #expect(JSONValue.number(1e300).intValue == nil)
+    #expect(JSONValue.number(-.infinity).intValue == nil)
+    #expect(JSONValue.number(42.9).intValue == 42)
+    let (runtime, dir) = try await workspaceRuntime()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    for limit in [JSONValue.number(-5), .number(1e300), .number(-1e300), .string("x")] {
+        let response = await call(runtime, "context.recent", ["limit": limit])
+        #expect(response.ok, "limit \(limit)")
+    }
+}
+
+@Test func mcpChecksArgumentsAndNegotiatesVersions() throws {
+    let search = try #require(MCPServer.contentTools.first { $0.name == "lima_search" })
+    #expect(MCPServer.validate(nil, for: search) != nil, "query is required")
+    #expect(MCPServer.validate(.object(["query": .string("  ")]), for: search) != nil)
+    #expect(MCPServer.validate(.object(["query": .number(3)]), for: search) != nil)
+    #expect(MCPServer.validate(.object(["query": .string("notes")]), for: search) == nil)
+    let recent = try #require(MCPServer.contentTools.first { $0.name == "context_recent" })
+    #expect(MCPServer.validate(.object(["limit": .number(-1)]), for: recent) != nil)
+    #expect(MCPServer.validate(.object(["limit": .number(1e300)]), for: recent) != nil)
+    #expect(MCPServer.validate(.object(["limit": .number(2.5)]), for: recent) != nil)
+    #expect(MCPServer.validate(.object(["limit": .number(20)]), for: recent) == nil)
+    #expect(MCPServer.negotiate("2025-06-18") == "2025-06-18")
+    #expect(MCPServer.negotiate("2024-11-05") == "2024-11-05")
+    #expect(MCPServer.negotiate("1999-01-01") == "2025-06-18", "an unsupported version isn't echoed back")
+}
+
+@Test func mcpTaskGrantsCoverOnlyTheirSession() {
+    let grants = MCPGrants()
+    #expect(!grants.allows(scope: "notes:read"), "fresh installs grant nothing")
+    grants.grant("notes:read", session: "A")
+    #expect(grants.allows(scope: "notes:read", session: "A"))
+    #expect(!grants.allows(scope: "notes:read", session: "B") && !grants.allows(scope: "notes:read"))
+}

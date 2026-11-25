@@ -269,6 +269,10 @@ extension Runtime {
         Nothing you can do in a page is off limits: sensitive steps (bets, payments, passwords, submitting forms, a page the plan didn't list) pause \
         workspace_browser until the user allows or declines them in Lima, then continue. Don't look for workarounds and don't ask the user to click for you. \
         An approval the user gives for this task also covers your helpers and lead. \
+        For any other approval you need (a destructive command, spending, anything only the user can allow), call \
+        workspace_request_approval; when the user must sign in somewhere, call it with kind "login" and the sign-in URL. \
+        Use workspace_ask_user for questions. Each shows the user a card and waits for the answer. Never end your turn asking \
+        for approval or a sign-in in text: no card appears, and the work stalls until the user notices. \
         If the user denies a plan or step, don't retry it; report back. On a tool error, follow the reported recovery once. Reuse an active browser plan after ordinary page updates. Inspect before repeating a click or typing after a navigation or timeout, since the previous action may have taken effect. If the same blocker persists, continue independent work and report the blocker in the workspace. Ask the user only when their input or direct action is required.
         """
         let preamble: String
@@ -460,6 +464,22 @@ extension Runtime {
             let workspace = try await self.workspaces.get(bound)
             return try await self.workspacePrompts.ask(self, workspace: workspace, question: try params.string("question"), detail: nil, approval: false,
                 fields: try WorkspaceQuestionField.parse(params?["fields"]))
+        }
+        // An approval or sign-in the agent needs before it can continue. The
+        // card stays until the user answers; if the agent's turn ends first,
+        // the answer comes back to it as a chat message.
+        register("workspace.requestApproval") { [unowned self] params, context in
+            guard let bound = context.workspaceID else { throw BridgeError(.notAuthorized, "Only a workspace agent can request approval.") }
+            let workspace = try await self.workspaces.get(bound)
+            let login = params.optionalString("kind") == "login"
+            var facts: [WorkspacePrompts.Fact] = []
+            if let site = params.optionalString("site"), !site.isEmpty { facts.append(.init(label: "Site", value: String(site.prefix(200)))) }
+            if let url = params.optionalString("url"), let parsed = URL(string: url), ["https", "http"].contains(parsed.scheme ?? "") {
+                facts.append(.init(label: login ? "Sign-in page" : "Page", value: String(url.prefix(400))))
+            }
+            return try await self.workspacePrompts.ask(self, workspace: workspace, question: try params.string("request"),
+                detail: params.optionalString("detail"), approval: true, actionLabel: login ? "I've signed in" : "Approve",
+                facts: facts, risk: login ? "login" : (params.optionalString("risk").flatMap { ["money", "account", "system"].contains($0) ? $0 : nil }))
         }
         register("workspace.location") { [unowned self] params, context in
             guard let bound = context.workspaceID else { throw BridgeError(.notAuthorized, "Only a workspace agent can request location.") }
@@ -663,8 +683,12 @@ extension Runtime {
             let workspace = try await self.workspaces.get(try params.string("id"))
             try await self.workspaces.requireActive(workspace.id)
             guard let conversationID = workspace.conversationID else { throw BridgeError(.badRequest, "workspace has no agent") }
-            return try JSONValue.from(try await self.conversations.send(conversationID, text: try params.string("text"), mode: Self.sendMode(params),
-                                                                        attachments: try await self.attachments(params, conversationID: conversationID)))
+            let text = try params.string("text")
+            let conversation = try await self.conversations.send(conversationID, text: text, mode: Self.sendMode(params),
+                                                                 attachments: try await self.attachments(params, conversationID: conversationID))
+            // A reply to an agent that was waiting on the user continues its task.
+            await self.userSent(conversation, text: text)
+            return try JSONValue.from(try await self.conversations.get(conversationID))
         }
     }
 

@@ -765,6 +765,35 @@ public actor Orchestrator {
         return try get(id)
     }
 
+    // MARK: Answers (User → blocked task)
+
+    /// The user answered in the chat while a task there was blocked on them.
+    /// The task follows that message's reply instead of staying blocked, so
+    /// its status and verified report come from the turn that continues it.
+    @discardableResult
+    public func userReplied(conversationID: String, messageID: String) async -> OrchestratedTask? {
+        guard let blocked = tasks.values.filter({ $0.conversationID == conversationID && $0.state == .blocked })
+            .max(by: { $0.updatedAt < $1.updatedAt }) else { return nil }
+        var task = blocked
+        reattach(&task, to: messageID, note: "You replied. Continuing.")
+        await commit(task)
+        await observe(conversationID: conversationID)
+        return tasks[task.id]
+    }
+
+    private func reattach(_ task: inout OrchestratedTask, to messageID: String, note: String) {
+        task.sentMessageID = messageID
+        task.toolCount = 0
+        task.attempts = 0
+        task.retryAt = nil
+        task.attention = nil
+        task.finishedAt = nil
+        task.outcome = nil
+        task.issues.removeAll()
+        task.state = .running
+        append(&task, "resumed", note)
+    }
+
     /// Hides a notice without changing the task; the record keeps it.
     public func dismiss(_ id: String) async throws -> OrchestratedTask {
         guard var task = tasks[id] else { throw OrchestratorError.notFound(id) }
@@ -859,8 +888,11 @@ public actor Orchestrator {
             ```lima-report
             {"status":"completed | blocked | failed","summary":"one or two sentences","actionsTaken":["…"],"artifacts":["changed files, notes, URLs"],"verification":["checks you actually ran and their observed result"],"remainingIssues":["…"],"nextSteps":["…"],"needsUser":""}
             ```
-            Use "blocked" only when you can't continue without the user, and put what you need from them in needsUser \
-            (a sign-in, a decision, a file). If your tools can't do part of the job, report "completed" and list what you couldn't check in remainingIssues.
+            When you need the user's approval or a sign-in to continue, use workspace_request_approval (kind "login" for a \
+            sign-in), workspace_ask_user for a decision, or workspace_browser_plan for site actions, and wait for the answer in \
+            this same turn. Lima shows each as a card that stays until the user answers; asking in your reply text shows no card. \
+            If the tool says the request stays open, report "blocked" with exactly what you need in needsUser; the user's answer \
+            arrives as your next message. If your tools can't do part of the job, report "completed" and list what you couldn't check in remainingIssues.
             List a verification item only for a check you ran and observed. Separate observations from assumptions. \
             Never report a command or action as successful without its result.
             """)

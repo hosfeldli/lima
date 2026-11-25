@@ -96,7 +96,7 @@ public actor ContextService {
     }
 
     public func recent(limit: Int = 200, kinds: Set<ActivityEvent.Kind>? = nil) -> [ActivityEvent] {
-        Array(events.reversed().filter { kinds?.contains($0.kind) ?? true }.prefix(limit))
+        Array(events.reversed().filter { kinds?.contains($0.kind) ?? true }.prefix(max(0, limit)))
     }
 
     public func between(_ start: Double, _ end: Double) -> [ActivityEvent] {

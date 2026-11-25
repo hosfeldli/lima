@@ -138,3 +138,66 @@ export function replyActivity(message, { tool, provider, surface } = {}) {
   if (message?.status === "complete") return { state: "complete", label: "Reply ready", icon: "check", motion: "idle" };
   return { state: "idle", label: "Ready" };
 }
+
+// Past-tense verbs for the step log ("Edited Handlers.swift").
+const DONE = {
+  edit: "Edited", multiedit: "Edited", write: "Wrote", read: "Read", notebookedit: "Edited", apply_patch: "Patched", file_change: "Changed",
+  bash: "Ran", shell: "Ran", terminal_run: "Ran", workspace_run: "Ran", grep: "Searched for", glob: "Found files", web_search: "Searched the web for",
+  web_fetch: "Read", workspace_open_tab: "Opened", workspace_read_tab: "Read tab", workspace_note: "Wrote note",
+};
+const FILE_TOOLS = new Set(["edit", "multiedit", "write", "read", "notebookedit"]);
+const COMMAND_TOOLS = new Set(["bash", "shell", "terminal_run", "workspace_run"]);
+
+function jsonField(detail, names) {
+  for (const name of names) {
+    const match = new RegExp(`"${name}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`).exec(detail);
+    if (match) {
+      try { return JSON.parse(`"${match[1]}"`); } catch { return match[1].replace(/\\n/g, "\n").replace(/\\"/g, '"').replace(/\\\//g, "/"); }
+    }
+  }
+  return "";
+}
+
+/** A step for the log: what it did, on what, shown by kind.
+ *  { verb, kind: "file" | "files" | "command" | "pattern" | "url" | "text", target, dir, note } */
+export function stepParts(raw, { cwd = "" } = {}) {
+  const separator = raw.indexOf(": ");
+  const qualified = separator < 0 ? raw : raw.slice(0, separator);
+  const detail = separator < 0 ? "" : raw.slice(separator + 2);
+  const bare = (/^mcp__(.+?)__(.+)$/.exec(qualified)?.[2] ?? qualified).replace(/^lima_/, "").toLowerCase();
+  const name = { websearch: "web_search", webfetch: "web_fetch" }[bare] ?? bare;
+  const json = /^[{[]/.test(detail);
+  const relative = path => {
+    const base = cwd.replace(/\/$/, "");
+    return base && path.startsWith(base + "/") ? path.slice(base.length + 1) : path.replace(/^\/Users\/[^/]+/, "~");
+  };
+  if (FILE_TOOLS.has(name)) {
+    const path = relative(json ? jsonField(detail, ["file_path", "path", "notebook_path"]) : detail);
+    const slash = path.lastIndexOf("/");
+    if (path) return { verb: DONE[name], kind: "file", target: path.slice(slash + 1), dir: slash > 0 ? path.slice(0, slash + 1) : "", full: path };
+  }
+  if (name === "file_change" || name === "apply_patch") {
+    const files = (json ? jsonField(detail, ["path"]) : detail).split(/,\s*/).filter(Boolean).map(relative);
+    if (files.length) return { verb: DONE[name], kind: "files", target: files.map(file => file.split("/").pop()).join(", "), full: files.join("\n") };
+  }
+  if (COMMAND_TOOLS.has(name)) {
+    const command = (json ? jsonField(detail, ["command", "cmd"]) : detail).trim();
+    const note = json ? jsonField(detail, ["description"]) : "";
+    if (command) return { verb: DONE[name], kind: "command", target: command, note, full: command };
+  }
+  if (name === "grep" || name === "glob") {
+    const pattern = json ? jsonField(detail, ["pattern", "query"]) : detail;
+    const where = json ? relative(jsonField(detail, ["path"])) : "";
+    if (pattern) return { verb: DONE[name], kind: "pattern", target: pattern, note: where ? `in ${where}` : "", full: pattern };
+  }
+  const { label, detail: short, server } = toolActivity(raw);
+  const url = json ? jsonField(detail, ["url"]) : /^https?:/.test(detail) ? detail : "";
+  if (url) {
+    let shown = url;
+    try { const parsed = new URL(url); shown = parsed.host.replace(/^www\./, "") + parsed.pathname.replace(/\/$/, ""); } catch {}
+    return { verb: DONE[name] ?? label, kind: "url", target: shown, full: url, note: server };
+  }
+  const query = name === "web_search" && json ? jsonField(detail, ["query"]) : "";
+  if (query) return { verb: DONE[name], kind: "text", target: `“${query}”`, full: query };
+  return { verb: label, kind: "text", target: short, note: server, full: short };
+}

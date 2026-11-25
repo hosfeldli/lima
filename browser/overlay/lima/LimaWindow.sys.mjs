@@ -39,6 +39,7 @@ export const LimaWindow = {
     lazy.LimaSidebar.attach(win);
     lazy.LimaAssistant.attach(win);
     lazy.LimaWorkspaces.keepChatFoldersCollapsed(win);
+    lazy.LimaWorkspaces.watchLayout(win);
     // Tab size (Settings → General → Tabs): row height, with the label scaled to match.
     const applyTabSize = () => {
       const height = Math.max(22, Math.min(40, Services.prefs.getIntPref("lima.tabs.height", 26)));

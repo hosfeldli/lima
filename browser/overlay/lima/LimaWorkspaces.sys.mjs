@@ -19,6 +19,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
   SessionStore: "moz-src:///browser/components/sessionstore/SessionStore.sys.mjs",
+  broadcastToLimaPages: "resource://lima/actors/LimaParent.sys.mjs",
 });
 
 import { LimaVisualActivity } from "resource://lima/LimaVisualActivity.sys.mjs";
@@ -178,6 +179,44 @@ class Workspaces {
   #win() {
     const win = lazy.BrowserWindowTracker.getTopWindow({ private: false });
     return win?.gZenFolders ? win : null;
+  }
+
+  /** Where each top-level workspace sits in the sidebar, in sidebar order,
+   * with the user's own folders around it (outermost first). */
+  layout(win = this.#win()) {
+    if (!win) return [];
+    const rows = [];
+    for (const folder of win.document.querySelectorAll("zen-folder[lima-workspace]:not([lima-agent])")) {
+      const folders = [];
+      let nested = false;
+      for (let group = folder.group; group?.isZenFolder; group = group.group) {
+        if (group.hasAttribute("lima-workspace")) { nested = true; break; }
+        folders.unshift({ id: group.id, label: String(group.label ?? "").slice(0, 80) });
+      }
+      if (!nested) rows.push({ id: folder.getAttribute("lima-workspace"), folders, pinned: !!folder.pinned });
+    }
+    return rows;
+  }
+
+  /** Tells open Lima pages (the Companion) when folders move or are renamed. */
+  watchLayout(win) {
+    if (win.limaLayoutWatch || lazy.PrivateBrowsingUtils?.isWindowPrivate?.(win)) return;
+    let last = "";
+    let timer = null;
+    const send = () => {
+      timer = null;
+      const layout = this.layout(win);
+      const text = JSON.stringify(layout);
+      if (text === last) return;
+      last = text;
+      lazy.broadcastToLimaPages("workspace.layout", layout);
+    };
+    const observer = new win.MutationObserver(() => { if (!timer) timer = win.setTimeout(send, 400); });
+    const root = win.document.getElementById("tabbrowser-tabs") ?? win.gBrowser.tabContainer;
+    observer.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ["label", "lima-workspace"] });
+    win.limaLayoutWatch = observer;
+    win.addEventListener("unload", () => { observer.disconnect(); if (timer) win.clearTimeout(timer); }, { once: true });
+    send();
   }
 
   folderFor(id, part = "folder", win = this.#win()) {

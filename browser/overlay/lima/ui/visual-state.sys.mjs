@@ -147,6 +147,9 @@ export class VisualState {
       const chat = this.chats.get(workspace.conversationID);
       let task = tasksByWorkspace.get(id);
       if (task && SETTLED_TASK.has(task.state) && chat?.message?.createdAt > task.updatedAt) task = undefined;
+      // A reply that started after the task blocked (the user answered in the
+      // chat) is the live state, not the old block.
+      if (task?.state === "blocked" && chat?.message?.status === "streaming" && chat.message.createdAt > (task.finishedAt ?? task.updatedAt)) task = undefined;
       const prompt = promptsByWorkspace.get(id);
       const target = this.focus.get(id);
       const terminal = this.terminals.get(workspace.terminalID);

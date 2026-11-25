@@ -368,3 +368,19 @@ func waitIdle(_ service: ConversationService, _ id: String) async throws -> Conv
     #expect(parser.parse(line: shot) == [.image(data: Data([0x89, 0x50, 0x4E, 0x47]), type: "image/png")])
     #expect(AgentEventParser.diffCounts("--- a/x\n+++ b/x\n@@\n-old\n+new\n+more\n context") == (2, 1))
 }
+
+@Test func claudeTextAroundToolCallsStaysInParagraphs() {
+    var parser = AgentEventParser(provider: .claude)
+    let lines = [
+        #"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"text"}}}"#,
+        #"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Let me check."}}}"#,
+        #"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}"#,
+        #"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"text"}}}"#,
+        #"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"All done."}}}"#,
+        #"{"type":"result","subtype":"success","result":"All done."}"#,
+    ]
+    let events = lines.flatMap { parser.parse(line: $0) }
+    let streamed = events.compactMap { if case .delta(let text) = $0 { text } else { nil } }.joined()
+    #expect(streamed == "Let me check.\n\nAll done.")
+    #expect(events.last == .completed(text: "Let me check.\n\nAll done."), "the whole reply stays, not just its last block")
+}

@@ -265,7 +265,9 @@ export function installEmbedActions() {
   });
 }
 
-export function markdown(source, { onTaskToggle, attachments, embeds = false } = {}) {
+/** `breaks`: a single newline is a line break, as in chat replies (Notes keeps
+ * Markdown's joined paragraphs). */
+export function markdown(source, { onTaskToggle, attachments, embeds = false, breaks = false } = {}) {
   const root = el("div", { class: "md" });
   const lines = String(source ?? "").replace(/\r\n/g, "\n").split("\n");
   let i = 0;
@@ -352,7 +354,11 @@ export function markdown(source, { onTaskToggle, attachments, embeds = false } =
     const para = [line];
     i++;
     while (i < lines.length && lines[i].trim() && !markdownTableAt(lines, i) && !/^(#{1,6}\s|\s*```|\s*[-*+]\s|\s*\d+\.\s|\s*>|\s*::embed\s|\s*:::|\s*<iframe\s)/i.test(lines[i])) para.push(lines[i++]);
-    root.append(inline(el("p"), para.join(" "), attachments));
+    if (breaks) {
+      const paragraph = el("p");
+      para.forEach((text, index) => { if (index) paragraph.append(el("br")); inline(paragraph, text, attachments); });
+      root.append(paragraph);
+    } else root.append(inline(el("p"), para.join(" "), attachments));
   }
   if (embeds) hydrateEmbeds(root);
   return root;

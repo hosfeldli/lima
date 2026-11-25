@@ -1,4 +1,4 @@
-import { call, el, errorText, icon, onEvent } from "./lib.js";
+import { bridge, call, el, errorText, icon, onEvent } from "./lib.js";
 
 // What an approval puts at stake, in a few words.
 const RISK = {
@@ -9,6 +9,8 @@ const RISK = {
   // New reach: an ungranted scope, a folder outside the workspace.
   access: ["key", "Needs new access"],
   schedule: ["calendar", "Runs on its own later"],
+  // The agent needs the user to sign in somewhere first.
+  login: ["key", "Sign-in needed"],
 };
 
 export function workspacePrompts({ workspace = () => null, signal } = {}) {
@@ -40,7 +42,8 @@ export function workspacePrompts({ workspace = () => null, signal } = {}) {
     const cancel = el("button", { class: "ghost", type: "button", onclick: () => reply(false) }, prompt.approval ? "Deny" : "Dismiss");
     // "For this task" also covers the helpers working with this agent.
     const task = prompt.allowTask ? el("button", { type: "button", class: "ghost",
-      title: "Don't ask again for this site while this task runs, including its helper agents",
+      title: prompt.risk === "access" ? "Don't ask this tool again until Lima quits. Other tools still ask."
+        : "Don't ask again for this site while this task runs, including its helper agents",
       onclick: () => reply(true, "task") }, "Allow for this task") : null;
     const form = el("form", { onsubmit: event => { event.preventDefault(); reply(true); } },
       input && el("label", { class: "prompt-answer" }, el("span", { text: "Your answer" }), input),
@@ -63,7 +66,11 @@ export function workspacePrompts({ workspace = () => null, signal } = {}) {
         el("div", { class: "prompt-workspace" }, el("span", { text: prompt.workspaceName }),
           riskText ? el("span", { class: "prompt-risk" }, icon(riskIcon), riskText) : null),
         el("h3", { text: prompt.question })),
-      facts.length ? el("dl", { class: "prompt-facts" }, facts.flatMap(fact => [el("dt", { text: fact.label }), el("dd", { text: fact.value })])) : null,
+      facts.length ? el("dl", { class: "prompt-facts" }, facts.flatMap(fact => [el("dt", { text: fact.label }), el("dd", {},
+        // A sign-in or page link opens in a tab, so the user can act on it here.
+        /^https?:\/\//.test(fact.value)
+          ? el("button", { type: "button", class: "link prompt-link", title: fact.value, onclick: () => bridge.openTab(fact.value) }, fact.value)
+          : fact.value)])) : null,
       detail, form);
     rows.set(prompt.id, card);
     tray.append(card);

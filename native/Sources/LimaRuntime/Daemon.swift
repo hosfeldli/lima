@@ -45,7 +45,8 @@ public enum Daemon {
                 // Lima engine) or the daemon's own helpers may speak for the user.
                 throw BridgeError(.notAuthorized, "The browser origin is reserved for Lima itself.")
             }
-            origins.set(client, requested, workspaceID: workspaceID)
+            let session = params.optionalString("session").flatMap { $0.range(of: #"^[0-9A-Fa-f-]{36}$"#, options: .regularExpression) != nil ? $0 : nil }
+            origins.set(client, requested, workspaceID: workspaceID, session: session)
             if requested == .browser { runtime.connect(client) } else { runtime.disconnect(client) }
             return .object(["origin": .string(requested.rawValue), "workspace": workspaceID.map(JSONValue.string) ?? .null])
         }
@@ -74,8 +75,8 @@ public enum Daemon {
                     return
                 }
                 Task {
-                    let (origin, workspaceID) = origins.binding(client)
-                    let response = await runtime.handle(request, context: CallContext(client: client, origin: origin, workspaceID: workspaceID))
+                    let (origin, workspaceID, session) = origins.binding(client)
+                    let response = await runtime.handle(request, context: CallContext(client: client, origin: origin, workspaceID: workspaceID, session: session))
                     if let data = try? JSONEncoder().encode(response) { client.send(data) }
                 }
             })
@@ -128,10 +129,12 @@ public enum Daemon {
 
 final class OriginTable: @unchecked Sendable {
     private let lock = NSLock()
-    private var origins: [UUID: (ActionOrigin, String?)] = [:]
-    func set(_ client: ClientConnection, _ origin: ActionOrigin, workspaceID: String? = nil) { lock.lock(); origins[client.id] = (origin, workspaceID); lock.unlock() }
+    private var origins: [UUID: (ActionOrigin, String?, String?)] = [:]
+    func set(_ client: ClientConnection, _ origin: ActionOrigin, workspaceID: String? = nil, session: String? = nil) {
+        lock.lock(); origins[client.id] = (origin, workspaceID, session); lock.unlock()
+    }
     /// Unidentified clients get the least-privileged origin.
-    func binding(_ client: ClientConnection) -> (ActionOrigin, String?) { lock.lock(); defer { lock.unlock() }; return origins[client.id] ?? (.mcp, nil) }
+    func binding(_ client: ClientConnection) -> (ActionOrigin, String?, String?) { lock.lock(); defer { lock.unlock() }; return origins[client.id] ?? (.mcp, nil, nil) }
     func remove(_ client: ClientConnection) { lock.lock(); origins[client.id] = nil; lock.unlock() }
 }
 
@@ -148,7 +151,7 @@ public final class RuntimeClient: @unchecked Sendable {
 
     /// Connects, starting the daemon if needed and replacing a daemon left
     /// running from a different build.
-    public static func connect(paths: RuntimePaths = .resolve(), executable: String = CommandLine.arguments[0], origin: ActionOrigin, workspaceToken: String? = nil) throws -> RuntimeClient {
+    public static func connect(paths: RuntimePaths = .resolve(), executable: String = CommandLine.arguments[0], origin: ActionOrigin, workspaceToken: String? = nil, session: String? = nil) throws -> RuntimeClient {
         var client = try connectOrSpawn(paths: paths, executable: executable)
         func timeout(_ socket: Int32, seconds: Int) {
             var interval = timeval(tv_sec: seconds, tv_usec: 0)
@@ -159,6 +162,7 @@ public final class RuntimeClient: @unchecked Sendable {
             let hello = try client.call("host.hello")
             var identity: [String: JSONValue] = ["origin": .string(origin.rawValue)]
             if let workspaceToken { identity["workspaceToken"] = .string(workspaceToken) }
+            if let session { identity["session"] = .string(session) }
             _ = try client.call("host.identify", params: .object(identity))
             if origin == .browser, workspaceToken == nil, hello["buildID"]?.stringValue != RuntimeBuild.id,
                ProcessInfo.processInfo.environment["LIMA_KEEP_DAEMON"] == nil,
@@ -217,6 +221,13 @@ public final class RuntimeClient: @unchecked Sendable {
         let status = posix_spawn(&pid, executable, &actions, &attributes, argv, environ)
         guard status == 0 else { throw BridgeError(.internalError, "could not start runtime: \(String(cString: strerror(status)))") }
     }
+
+    /// Ends a call in progress from another thread (its read fails), as when
+    /// an MCP client cancels a request.
+    public func interrupt() { shutdown(fd, SHUT_RDWR) }
+
+    /// Closes the connection.
+    public func disconnect() { close(fd) }
 
     /// Synchronous request/response; events received meanwhile are queued.
     public func call(_ method: String, params: JSONValue? = nil) throws -> JSONValue {

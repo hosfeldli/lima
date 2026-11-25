@@ -254,9 +254,11 @@ export class ResultSet {
       web = [...kept, ...this.web.filter(item => !visible.has(item.key)).slice(0, spare)];
     }
 
+    // `titles` renames sections for a view that isn't a query (the empty
+    // panel: "Start" and "Recent").
     const sections = [
-      { ...SECTIONS[0], items: best },
-      { ...SECTIONS[1], items: local },
+      { ...SECTIONS[0], title: this.titles?.[0] ?? SECTIONS[0].title, items: best },
+      { ...SECTIONS[1], title: this.titles?.[1] ?? SECTIONS[1].title, items: local },
       { ...SECTIONS[2], items: web },
     ].filter(section => section.items.length);
     const shown = sections.reduce((sum, section) => sum + section.items.length, 0);

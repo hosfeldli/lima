@@ -291,8 +291,29 @@ zen-folder[lima-archiving] > .tab-group-label-container { opacity: .7; }
 }
 #lima-spotify[data-source="Music"] .lima-spotify-icon { border-radius: 0; mask-image: url("resource://lima-ui/marks/music.svg"); }
 #lima-spotify[data-source="browser"] .lima-spotify-icon { border-radius: 0; mask-image: url("resource://lima-ui/icons/audio.svg"); }
+/* Lima's player replaces Zen's media card: same compact shape, every source. */
+:root[lima-window] #zen-media-controls-toolbar { display: none !important; }
+#lima-dock .lima-music-bar {
+  display: flex; align-items: center; gap: 4px; padding: 6px 8px; min-inline-size: 0; cursor: pointer;
+}
+#lima-dock .lima-music-bar > .lima-music-transport { flex: 1; }
+.lima-music-sources { display: flex; align-items: center; gap: 2px; flex: none; min-inline-size: 0; }
+#lima-dock #lima-music .lima-music-source {
+  position: relative; display: grid; place-items: center; inline-size: 30px; block-size: 30px; padding: 0;
+  border-radius: 8px; opacity: .5;
+}
+#lima-dock #lima-music .lima-music-source[aria-pressed="true"] { opacity: 1; }
+#lima-dock #lima-music .lima-music-source:hover { opacity: 1; }
+.lima-music-source img { inline-size: 22px; block-size: 22px; border-radius: 5px; object-fit: contain; }
+.lima-music-source .lima-glyph { inline-size: 18px; block-size: 18px; }
+.lima-music-source .lima-music-mark { mask-image: url("resource://lima-ui/marks/music.svg"); }
+/* A small note marks each source that's making sound. */
+.lima-music-source[data-playing]::after {
+  content: "♪"; position: absolute; inset-block-start: -1px; inset-inline-end: 0;
+  font-size: 9px; line-height: 1; color: var(--lima-ink-2);
+}
 #lima-dock .lima-music-row {
-  display: flex; align-items: center; gap: 7px; padding: 4px 8px; width: 100%; text-align: start;
+  display: flex; align-items: center; gap: 7px; padding: 2px 0 4px; width: 100%; text-align: start;
 }
 #lima-dock #lima-music button, #lima-music input, #lima-music select {
   transition: background-color 150ms ease, opacity 150ms ease, transform 150ms ease;
@@ -366,6 +387,8 @@ zen-folder[lima-archiving] > .tab-group-label-container { opacity: .7; }
 #lima-music input[type="range"] { flex: 1; inline-size: 0; min-inline-size: 0; margin: 0; accent-color: #55545a; }
 #lima-music input[type="range"]:hover { accent-color: #242429; }
 .lima-music-audio { display: flex; align-items: center; gap: 5px; min-inline-size: 0; }
+.lima-music-audio > .lima-music-dj { margin-inline-start: 0; flex: none; }
+.lima-music-audio > :is(.lima-music-dj, .lima-music-btn)[hidden] { display: none; }
 .lima-music-audio .lima-glyph { width: 12px; height: 12px; }
 #lima-music select {
   flex: 0 1 82px;
@@ -587,6 +610,59 @@ zen-folder[lima-archiving] > .tab-group-label-container { opacity: .7; }
   white-space: nowrap;
   overflow: hidden;
 }
+
+/* Search, refined: a wider panel with room to breathe, rounded selection,
+   icon tiles, a scope bar and relative times. */
+#lima-search-scrim { padding-top: 15vh; background: color-mix(in srgb, var(--lima-ink) 9%, var(--lima-scrim, transparent)); }
+#lima-search { width: min(640px, 100%); max-height: 70vh; border-radius: 14px; }
+#lima-search-field { height: 54px; padding: 0 16px; gap: 11px; border-bottom: 0; }
+#lima-search-mark .lima-s-glyph { width: 17px; height: 17px; }
+#lima-search-input { font-size: 17px; letter-spacing: -.005em; }
+#lima-search-scope { padding: 3px 8px; border-radius: 999px; font-weight: 500; color: var(--lima-ink); }
+#lima-search-scopes {
+  display: flex; gap: 4px; flex: none; padding: 0 12px 8px; border-bottom: 1px solid var(--lima-line);
+  overflow-x: auto; scrollbar-width: none;
+}
+.lima-s-scope {
+  appearance: none; display: inline-flex; align-items: center; gap: 5px; flex: none; height: 24px; padding: 0 9px;
+  border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--lima-ink-2);
+  font: 500 11.5px/1 -apple-system, BlinkMacSystemFont, sans-serif; cursor: default;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.lima-s-scope .lima-s-glyph { width: 12px; height: 12px; }
+.lima-s-scope:hover { background: var(--lima-hover); color: var(--lima-ink); }
+.lima-s-scope[aria-pressed="true"] { background: var(--lima-select); border-color: var(--lima-line); color: var(--lima-ink); }
+.lima-s-scope:focus-visible { outline: 2px solid var(--lima-accent); outline-offset: 1px; }
+#lima-search-results { padding: 4px 6px 8px; }
+.lima-s-group { height: 26px; margin-top: 6px; padding: 0 10px; font-size: 10.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.lima-s-section:first-child .lima-s-group { margin-top: 2px; }
+.lima-s-row { position: relative; height: 40px; padding: 0 10px; gap: 11px; border-radius: 9px; }
+.lima-s-row[aria-selected="true"] { background: var(--lima-select); }
+.lima-s-icon {
+  width: 26px; height: 26px; border-radius: 7px; background: var(--lima-surface, var(--lima-hover));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lima-line) 70%, transparent);
+}
+.lima-s-icon .lima-s-glyph { width: 14px; height: 14px; }
+.lima-s-icon .lima-s-favicon { width: 16px; height: 16px; }
+.lima-s-row[aria-selected="true"] .lima-s-icon { background: var(--lima-bg); }
+.lima-s-title { font-size: 13.5px; font-weight: 500; }
+.lima-s-sub { font-size: 12px; }
+.lima-s-when { flex: none; color: var(--lima-ink-3); font: 11px/1 -apple-system, sans-serif; font-variant-numeric: tabular-nums; }
+.lima-s-action { font-weight: 500; color: var(--lima-ink); }
+.lima-s-action kbd { background: var(--lima-bg); }
+/* Close a tab from its row: shows on hover or selection. */
+.lima-s-close {
+  appearance: none; display: grid; place-items: center; flex: none; width: 22px; height: 22px; margin-inline-end: -4px;
+  border: 0; border-radius: 6px; background: transparent; color: var(--lima-ink-3); font: 15px/1 system-ui; opacity: 0;
+}
+.lima-s-row:hover .lima-s-close, .lima-s-row[aria-selected="true"] .lima-s-close { opacity: 1; }
+.lima-s-close:hover { background: var(--lima-hover); color: var(--lima-ink); }
+.lima-s-empty { padding: 18px 12px 14px; text-align: center; }
+#lima-search-status[data-tone="ok"] { color: var(--lima-ink-2); }
+#lima-search-foot { height: 32px; gap: 16px; padding: 0 16px; background: color-mix(in srgb, var(--lima-surface, var(--lima-bg)) 60%, transparent); }
+#lima-search-foot > [hidden] { display: none; }
+#lima-search-foot kbd { background: var(--lima-bg); }
+@media (prefers-reduced-motion: reduce) { .lima-s-scope, .lima-s-close { transition: none; } }
 
 /* Lima menu items in Zen's menus use the shared icon set. */
 .lima-menuitem > .menu-icon { -moz-context-properties: fill, stroke; }
@@ -930,13 +1006,47 @@ zen-folder:is([lima-agents], [lima-tabs], [lima-images])[collapsed] > .tab-group
   [data-l10n-id="zen-menubar-toggle-pinned-tabs"],
   .zen-current-workspace-indicator) { display: none !important; }
 
-notification-message[lima-update-notice] {
-  background: var(--lima-panel);
-  color: var(--lima-ink);
-  border: 1px solid var(--lima-line);
-  border-radius: var(--lima-radius);
-  margin: 5px 8px;
+/* The update card: bottom left, above the sidebar dock, in Lima's theme. */
+.lima-update-card {
+  position: fixed; z-index: 2147482000; width: 300px; box-sizing: border-box;
+  display: grid; gap: 10px; padding: 12px;
+  border: 1px solid var(--lima-line); border-radius: 12px;
+  background: var(--lima-bg); color: var(--lima-ink);
+  box-shadow: var(--lima-overlay-shadow);
+  font: 12.5px/1.4 -apple-system, BlinkMacSystemFont, sans-serif;
+  animation: lima-update-in 180ms cubic-bezier(.2, .8, .3, 1) both;
 }
+@keyframes lima-update-in { from { opacity: 0; transform: translateY(6px); } }
+.lima-update-head { display: flex; align-items: flex-start; gap: 10px; }
+.lima-update-icon {
+  flex: none; width: 28px; height: 28px; border-radius: 8px; background: var(--lima-select);
+  box-shadow: inset 0 0 0 1px var(--lima-line);
+  -moz-context-properties: none;
+}
+.lima-update-icon::after {
+  content: ""; display: block; width: 14px; height: 14px; margin: 7px; background: var(--lima-ink);
+  mask: url("resource://lima-ui/icons/download.svg") center / contain no-repeat;
+}
+.lima-update-card[data-critical] .lima-update-icon::after { mask-image: url("resource://lima-ui/icons/warning.svg"); }
+.lima-update-copy { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.lima-update-copy > strong { font-size: 13px; font-weight: 600; }
+.lima-update-copy > span { color: var(--lima-ink-2); }
+.lima-update-close {
+  appearance: none; flex: none; width: 22px; height: 22px; margin: -4px -4px 0 0; padding: 0;
+  border: 0; border-radius: 6px; background: transparent; color: var(--lima-ink-3); font: 16px/1 system-ui;
+}
+.lima-update-close:hover { background: var(--lima-hover); color: var(--lima-ink); }
+.lima-update-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.lima-update-actions > button {
+  appearance: none; height: 28px; padding: 0 12px; border-radius: 8px; font: 500 12px/1 -apple-system, sans-serif;
+  border: 1px solid var(--lima-line); background: var(--lima-bg); color: var(--lima-ink);
+}
+.lima-update-actions > button:hover { background: var(--lima-hover); }
+.lima-update-actions > .lima-update-primary { background: var(--lima-accent); border-color: var(--lima-accent); color: var(--lima-accent-contrast); }
+.lima-update-actions > .lima-update-primary:hover { filter: brightness(1.08); background: var(--lima-accent); }
+.lima-update-actions > button:disabled { opacity: .6; }
+.lima-update-card button:focus-visible { outline: 2px solid var(--lima-accent); outline-offset: 1px; }
+@media (prefers-reduced-motion: reduce) { .lima-update-card { animation: none; } }
 
 @-moz-document url-prefix("about:preferences"), url-prefix("chrome://browser/content/preferences/"),
                url-prefix("about:settings"), url-prefix("chrome://browser/content/zen-settings"),

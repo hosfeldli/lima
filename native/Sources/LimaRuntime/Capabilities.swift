@@ -87,7 +87,7 @@ public final class CapabilityRegistry: @unchecked Sendable {
 
     public func recentRuns(limit: Int = 100) -> [CapabilityRun] {
         lock.lock(); defer { lock.unlock() }
-        return Array(runs.suffix(limit).reversed())
+        return Array(runs.suffix(max(0, limit)).reversed())
     }
 
     // MARK: Execution — the single policy point for every surface
@@ -194,7 +194,7 @@ public final class CapabilityRegistry: @unchecked Sendable {
         var asked = false
         if context.origin == .mcp {
             if let scope = definition.mcpScope {
-                if !MCPGrants.shared.allows(scope: scope) {
+                if !MCPGrants.shared.allows(scope: scope, session: context.session) {
                     try await runtime.requireMCPScope(scope, context: context, action: "use \(definition.title)")
                     asked = true
                 }
@@ -361,7 +361,7 @@ public final class CapabilityRegistry: @unchecked Sendable {
         }
         add("calc", "Calculator", "Arithmetic with + − × ÷ % ^ and parentheses", category: "developer", icon: "calc", keywords: ["math", "calculate"],
             input: ("Expression", true), mcp: "utilities", rank: 53) { input, _, _ in
-            guard let value = Calculator.evaluate(input.replacingOccurrences(of: "×", with: "*").replacingOccurrences(of: "÷", with: "/")), value.isFinite else {
+            guard let value = Calculator.evaluate(input) else {
                 throw BridgeError(.badRequest, "Can't evaluate “\(input)”")
             }
             return CapabilityResult.text(value.rounded() == value && abs(value) < 1e15 ? String(Int64(value)) : String(format: "%.10g", value))

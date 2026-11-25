@@ -226,6 +226,13 @@ public struct AgentEventParser: Sendable {
         case "stream_event":
             let event = object["event"] as? [String: Any]
             if event?["type"] as? String == "message_start" { return [.progress(.thinking)] }
+            // Text after a tool call starts a new block: a new paragraph, not
+            // a run-on ("Let me check.Now I'll…").
+            if event?["type"] as? String == "content_block_start",
+               (event?["content_block"] as? [String: Any])?["type"] as? String == "text", let gap = paragraphGap() {
+                finalText += gap
+                return [.delta(gap)]
+            }
             let delta = event?["delta"] as? [String: Any]
             if event?["type"] as? String == "content_block_delta", delta?["type"] as? String == "text_delta", let text = delta?["text"] as? String {
                 sawDelta = true
@@ -240,8 +247,9 @@ public struct AgentEventParser: Sendable {
                     events.append(.tool(name: name, detail: Self.toolDetail(block["input"])))
                     if let change = Self.lineChange(tool: name, input: block["input"] as? [String: Any]) { events.append(change) }
                 } else if !sawDelta, block["type"] as? String == "text", let text = block["text"] as? String {
-                    finalText += text
-                    events.append(.delta(text))
+                    let piece = (paragraphGap() ?? "") + text
+                    finalText += piece
+                    events.append(.delta(piece))
                 }
             }
             return events
@@ -256,7 +264,11 @@ public struct AgentEventParser: Sendable {
             if object["is_error"] as? Bool == true || (object["subtype"] as? String).map({ $0 != "success" }) == true {
                 return [.failed(AgentFailure.classify(text.isEmpty ? (object["subtype"] as? String ?? "error") : text))]
             }
-            return [.completed(text: text.isEmpty ? finalText : text)]
+            // "result" is only the last text block; keep the whole reply the
+            // user watched stream in when it ends with that block.
+            let whole = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let last = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return [.completed(text: last.isEmpty || (!whole.isEmpty && whole.hasSuffix(last)) ? whole : text)]
         default:
             break
         }
@@ -332,8 +344,9 @@ public struct AgentEventParser: Sendable {
             events.append(.progress(.thinking))
         case "text":
             if let part = object["part"] as? [String: Any], let text = part["text"] as? String {
-                finalText += text
-                events.append(.delta(text))
+                let piece = (paragraphGap() ?? "") + text
+                finalText += piece
+                events.append(.delta(piece))
             }
         case "tool_use", "tool":
             let part = object["part"] as? [String: Any]
@@ -396,6 +409,13 @@ public struct AgentEventParser: Sendable {
               let type = source["media_type"] as? String, ["image/png", "image/jpeg", "image/gif", "image/webp"].contains(type),
               text.count < 16_000_000, let data = Data(base64Encoded: text) else { return nil }
         return .image(data: data, type: type)
+    }
+
+    /// The break that starts a new paragraph after earlier text, if needed.
+    private func paragraphGap() -> String? {
+        guard let tail = finalText.last(where: { $0 != " " && $0 != "\t" }) else { return nil }
+        if finalText.hasSuffix("\n\n") { return nil }
+        return tail == "\n" || finalText.hasSuffix("\n") ? "\n" : "\n\n"
     }
 
     private static func toolDetail(_ value: Any?) -> String {

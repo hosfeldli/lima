@@ -375,3 +375,22 @@ func orchestrator(_ agents: MockAgents, tasks: [OrchestratedTask] = [], maxActiv
     #expect(try await lima.get(task.id).state == .canceled)
     #expect(agents.instructions("conv-root-w").count == 1)
 }
+
+@Test func blockedTaskContinuesWhenTheUserReplies() async throws {
+    let agents = MockAgents()
+    let (lima, _) = orchestrator(agents)
+    let task = try await lima.submit(requestID: nil, title: "R", request: "Publish the post", workspaceID: "r")
+    agents.reply("conv-root-r", report("blocked", summary: "Needs approval").replacingOccurrences(of: "\"nextSteps\":[]", with: "\"nextSteps\":[],\"needsUser\":\"Approve publishing.\""))
+    await lima.observe(conversationID: "conv-root-r")
+    #expect(try await lima.get(task.id).state == .blocked)
+
+    // The user answers in the chat: the task follows that message's reply.
+    let message = try await agents.send(conversationID: "conv-root-r", text: "Approved, go ahead.")
+    let resumed = await lima.userReplied(conversationID: "conv-root-r", messageID: message)
+    #expect(resumed?.state == .running && resumed?.attention == nil)
+    agents.reply("conv-root-r", report(verification: ["Post is live"]), tools: ["Bash"])
+    await lima.observe(conversationID: "conv-root-r")
+    #expect(try await lima.get(task.id).state == .completed)
+    // With nothing blocked, a later message changes no task.
+    #expect(await lima.userReplied(conversationID: "conv-root-r", messageID: message) == nil)
+}

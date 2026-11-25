@@ -239,6 +239,12 @@ for key in NSLocationUsageDescription NSLocationWhenInUseUsageDescription NSLoca
   plutil -replace "$key" -string "Lima uses location for sites you allow and for one-time Lima requests you approve." "$PLIST"
 done
 plutil -remove SUFeedURL "$PLIST" 2>/dev/null || true
+# Firefox asks macOS to quarantine every file the app (and anything it
+# launches) writes. Workspace agents build and run code, so their compilers'
+# output (SwiftPM's manifest runner, test binaries, CLIs) was quarantined and
+# Gatekeeper refused to run it. Downloads are still quarantined: Gecko marks
+# each finished download itself (DownloadPlatform).
+plutil -remove LSFileQuarantineEnabled "$PLIST" 2>/dev/null || true
 if [[ "$RELEASE" == 1 ]]; then
   plutil -replace LimaUpdateFeedURL -string "$FEED_URL" "$PLIST"
   plutil -replace LimaUpdatePublicKey -string "$UPDATE_KEY" "$PLIST"

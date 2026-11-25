@@ -226,6 +226,10 @@ export class LimaParent extends JSWindowActorParent {
         const bools = { hideSearchAI: ["lima.search.hideAI", true], hideSearchAds: ["lima.search.hideAds", true],
           searchAsAddressBar: ["lima.search.replaceAddressBar", true], hideShorts: ["lima.youtube.hideShorts", true] };
         const { key, value } = payload ?? {};
+        const ENGINES = ["google", "bing", "duckduckgo", "yahoo", "brave"];
+        if (key === "cleanEngines" && Array.isArray(value)) {
+          Services.prefs.setStringPref("lima.search.cleanEngines", ENGINES.filter(name => value.includes(name)).join(","));
+        }
         if (ints[key] && Number.isInteger(value)) {
           const [pref, min, max] = ints[key];
           Services.prefs.setIntPref(pref, Math.max(min, Math.min(max, value)));
@@ -233,6 +237,7 @@ export class LimaParent extends JSWindowActorParent {
         return Object.fromEntries([
           ...Object.entries(ints).map(([name, [pref, , , fallback]]) => [name, Services.prefs.getIntPref(pref, fallback)]),
           ...Object.entries(bools).map(([name, [pref, fallback]]) => [name, Services.prefs.getBoolPref(pref, fallback)]),
+          ["cleanEngines", Services.prefs.getStringPref("lima.search.cleanEngines", ENGINES.join(",")).split(",").filter(Boolean)],
         ]);
       }
       case "themeChanged": {
@@ -338,6 +343,12 @@ export class LimaParent extends JSWindowActorParent {
         const tab = browser && win.gBrowser.getTabForBrowser(browser);
         if (tab && browser.currentURI.spec.startsWith("about:lima?terminal=")) win.gBrowser.removeTab(tab, { animate: true });
         return null;
+      }
+      case "workspaceLayout": {
+        // The sidebar's folders around each workspace, for the Companion.
+        if (lazy.PrivateBrowsingUtils.isWindowPrivate(win)) return [];
+        const { LimaWorkspaces } = ChromeUtils.importESModule("resource://lima/LimaWorkspaces.sys.mjs");
+        return LimaWorkspaces.layout(win);
       }
       case "noteFolders":
         return lazy.LimaNotesBookmarks.folderTree();

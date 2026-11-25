@@ -480,6 +480,8 @@ button.change-row:hover { background: var(--panel-2); }
 .prompt-facts { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; margin: 0 0 8px; font-size: var(--t-sm); }
 .prompt-facts dt { color: var(--ink-3); }
 .prompt-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; color: var(--ink); }
+.prompt-facts .prompt-link { all: unset; cursor: pointer; color: var(--accent, var(--ink)); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+.prompt-facts .prompt-link:focus-visible { outline: 2px solid var(--accent, currentColor); outline-offset: 2px; border-radius: 3px; }
 .prompt-answer { display: grid; gap: 5px; }
 .workspace-prompts textarea { width: 100%; resize: vertical; }
 .workspace-prompts .prompt-detail { margin: 0 0 6px; color: var(--ink-2); font-size: var(--t-sm); }
@@ -1267,6 +1269,30 @@ button.send-now { white-space: nowrap; }
 .steps-list .tool-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: var(--t-sm); color: var(--ink-2); }
 .steps-list .tool-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .steps-earlier summary { font-size: var(--t-xs); color: var(--ink-3); cursor: pointer; }
+.steps-files { color: var(--ink-3); }
+.steps-head .tool-diff { margin-inline-start: auto; }
+/* One step: verb, then its object (file, command, pattern, page). */
+.steps-list > li + li { border-top: 1px solid color-mix(in srgb, var(--line) 55%, transparent); padding-top: 4px; }
+.step { display: grid; gap: 4px; min-width: 0; font-size: var(--t-sm); color: var(--ink-2); }
+.step-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.step-line .tool-glyph { width: 13px; height: 13px; flex: none; opacity: .8; }
+.step-verb { flex: none; color: var(--ink-3); }
+.step-target { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The folder gives way first; the file name always shows. */
+.step-file { display: inline-flex; min-width: 0; font: .95em/1.4 var(--mono); white-space: nowrap; }
+.step-dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--ink-3); }
+.step-name { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; color: var(--ink); font-weight: 600; }
+.step-target { color: var(--ink); }
+.step-code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 1px 5px; border-radius: 5px;
+  background: var(--sunk, color-mix(in srgb, var(--ink) 6%, transparent)); color: var(--ink); font: .92em/1.4 var(--mono, ui-monospace, monospace); }
+.step-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-3); }
+.step-count { flex: none; color: var(--ink-3); font: 600 var(--t-xs)/1 var(--mono, ui-monospace, monospace); }
+.step-line .tool-diff { flex: none; margin-inline-start: auto; }
+.step-command { margin: 0 0 0 19px; padding: 5px 8px; border-radius: 6px; max-height: 4.4em; overflow: hidden;
+  background: var(--sunk, color-mix(in srgb, var(--ink) 6%, transparent)); color: var(--ink);
+  font: var(--t-xs)/1.45 var(--mono, ui-monospace, monospace); white-space: pre-wrap; overflow-wrap: anywhere; }
+.step[data-motion] .step-verb { color: var(--ink); }
+.step .tool-media { padding-left: 19px; }
 .tool-diff { display: inline-flex; gap: 4px; font: 600 var(--t-xs)/1 var(--mono, ui-monospace, monospace); }
 .diff-add { color: #2f8a4c; }
 .diff-del { color: #b4443e; }
@@ -1287,3 +1313,66 @@ button.send-now { white-space: nowrap; }
 .usage-settings { display: grid; gap: 8px; }
 .usage-preview { max-height: 260px; overflow: auto; margin: 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px;
   background: var(--panel); font: 11.5px/1.45 var(--mono, ui-monospace, monospace); white-space: pre-wrap; }
+
+/* Chat replies keep the agent's spacing: paragraphs apart, single line breaks kept. */
+.msg.assistant .md > p, .companion-msg.assistant .md > p { margin: 0 0 .7em; }
+.msg.assistant .md > :last-child, .companion-msg.assistant .md > :last-child { margin-bottom: 0; }
+.msg.assistant .md pre, .companion-msg.assistant .md pre { white-space: pre; overflow-x: auto; }
+
+/* Settings → Search: a switch with its explanation, and engine chips. */
+.setting-check { align-items: flex-start; gap: 10px; }
+.setting-check > input { margin-top: 3px; }
+.setting-check > span { display: grid; gap: 2px; }
+.setting-check small { font-size: var(--t-xs); line-height: 1.4; }
+.settings-subhead { margin: 12px 0 6px; font-size: var(--t-xs); font-weight: 600; color: var(--ink-2); }
+.engine-switches { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.engine-switch { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px 4px 7px; border: 1px solid var(--line); border-radius: 999px; font-size: var(--t-sm); }
+.engine-switch:has(input:checked) { background: var(--panel); color: var(--ink); }
+.engine-switch:has(input:disabled) { opacity: .5; }
+
+/* Companion at a glance: summary chips, then workspaces grouped the way
+   they're foldered in the sidebar, each with a live state. */
+.companion-overview { display: flex; flex-wrap: wrap; gap: 6px; }
+.companion-chip {
+  display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--paper); color: var(--ink);
+  font-size: var(--t-sm); font-weight: 550;
+}
+.companion-chip > i { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); }
+.companion-chip[data-kind="working"] > i { background: var(--ink); animation: handoff-pulse 1.6s ease-in-out infinite; }
+.companion-chip[data-kind="blocked"] { border-color: color-mix(in srgb, var(--lima-error) 45%, var(--line)); }
+.companion-chip[data-kind="blocked"] > i { background: var(--lima-error); }
+.companion-chip[aria-pressed="true"] { background: var(--panel); border-color: var(--ink-3); }
+.handoff-recent { gap: 10px; }
+.handoff-group { display: grid; gap: 2px; }
+.handoff-group-head {
+  display: flex; align-items: center; gap: 7px; width: 100%; min-height: 28px; padding: 0 6px;
+  border: 0; border-radius: 7px; background: transparent; color: var(--ink-2);
+  font-size: var(--t-xs); font-weight: 650; letter-spacing: .03em; text-transform: uppercase; text-align: left;
+}
+.handoff-group-head:hover { background: var(--panel); color: var(--ink); }
+.handoff-group-head .grow { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.handoff-group-icon { width: 13px; height: 13px; opacity: .8; }
+.handoff-group-chevron { width: 12px; height: 12px; rotate: 90deg; transition: rotate 120ms ease; }
+.handoff-group[data-collapsed] .handoff-group-chevron { rotate: 0deg; }
+.handoff-count { min-width: 18px; padding: 1px 5px; border-radius: 999px; background: var(--panel); color: var(--ink-3); text-align: center; font-variant-numeric: tabular-nums; text-transform: none; letter-spacing: 0; }
+.handoff-badge { padding: 1px 6px; border-radius: 999px; text-transform: none; letter-spacing: 0; font-weight: 600; background: var(--panel); color: var(--ink); }
+.handoff-badge[data-state="blocked"] { background: color-mix(in srgb, var(--lima-error) 14%, transparent); color: var(--lima-error); }
+.handoff-group-rows { display: grid; gap: 1px; }
+.handoff-group[data-folder] .handoff-group-rows { margin-left: 12px; padding-left: 6px; border-left: 1px solid var(--line); }
+.handoff-workspace { display: flex; align-items: center; gap: 9px; min-height: 36px; padding: 0 8px; }
+.handoff-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: color-mix(in srgb, var(--ink-3) 55%, transparent); }
+.handoff-workspace[data-state="working"] .handoff-dot, .handoff-workspace[data-state="starting"] .handoff-dot { background: var(--ink); animation: handoff-pulse 1.6s ease-in-out infinite; }
+.handoff-workspace[data-state="blocked"] .handoff-dot { background: var(--lima-error); }
+.handoff-workspace[data-state="failed"] .handoff-dot { background: var(--lima-error); opacity: .6; }
+.handoff-workspace[data-state="complete"] .handoff-dot { background: var(--lima-success); }
+.handoff-workspace[data-state="blocked"] { background: color-mix(in srgb, var(--lima-error) 7%, transparent); }
+.handoff-name { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; }
+.handoff-name .grow { font-weight: 500; color: var(--ink); white-space: nowrap; }
+.handoff-meta { flex: none; color: var(--ink-3); font-size: var(--t-xs); }
+.handoff-state { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-sm); }
+.handoff-state[data-state="idle"] { color: var(--ink-3); }
+.handoff-state[data-state="blocked"] { color: var(--lima-error); font-weight: 650; }
+.handoff-more { justify-content: flex-start; min-height: 28px; padding: 0 8px 0 25px; color: var(--ink-2); font-size: var(--t-sm); }
+@keyframes handoff-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .companion-chip > i, .handoff-dot, .handoff-group-chevron { animation: none !important; transition: none; } }

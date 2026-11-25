@@ -92,7 +92,21 @@ actor WorkspacePrompts {
         let workspace: String
         let fields: [WorkspaceQuestionField]
         let data: JSONValue
-        let continuation: CheckedContinuation<JSONValue, Error>
+        /// Who's waiting on the answer. Nil once the agent's tool call gave
+        /// up (its turn ended or timed out): the card stays until the user
+        /// answers, and the answer then reaches the agent as a chat message.
+        var continuation: CheckedContinuation<JSONValue, Error>?
+        /// A tool call is waiting on the answer (false: a card for an agent
+        /// whose turn already ended, such as a blocked task's).
+        var waiting = true
+    }
+
+    /// An answer to a card no tool call waits on any more.
+    struct LateAnswer: Sendable {
+        let workspace: String
+        let question: String
+        let approval: Bool
+        let result: JSONValue
     }
 
     private var requests: [String: Request] = [:]
@@ -151,23 +165,29 @@ actor WorkspacePrompts {
     struct Fact { let label: String; let value: String }
 
     func ask(_ runtime: Runtime, workspace: Workspace, question: String, detail: String?, approval: Bool, fields: [WorkspaceQuestionField] = [], actionLabel: String? = nil,
-             facts: [Fact] = [], risk: String? = nil, allowTask: Bool = false) async throws -> JSONValue {
+             facts: [Fact] = [], risk: String? = nil, allowTask: Bool = false, id: String = UUID().uuidString, expires: Bool = true) async throws -> JSONValue {
         try await ask(runtime, ownerID: workspace.id, ownerName: workspace.name, parentID: workspace.parentID, question: question, detail: detail,
-                      approval: approval, fields: fields, actionLabel: actionLabel, facts: facts, risk: risk, allowTask: allowTask)
+                      approval: approval, fields: fields, actionLabel: actionLabel, facts: facts, risk: risk, allowTask: allowTask, id: id, expires: expires)
     }
 
     /// A request from something other than a workspace agent (an outside AI
     /// tool over MCP). It shows in the Companion like any other request.
     func ask(_ runtime: Runtime, ownerID: String, ownerName: String, parentID: String? = nil, question: String, detail: String?, approval: Bool,
              fields: [WorkspaceQuestionField] = [], actionLabel: String? = nil,
-             facts: [Fact] = [], risk: String? = nil, allowTask: Bool = false) async throws -> JSONValue {
+             facts: [Fact] = [], risk: String? = nil, allowTask: Bool = false,
+             id: String = UUID().uuidString, expires: Bool = true) async throws -> JSONValue {
         guard question.count <= 1200, !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw BridgeError(.badRequest, "Provide a question of 1–1,200 characters.")
         }
-        guard !requests.values.contains(where: { $0.workspace == ownerID }) else {
+        guard !requests.values.contains(where: { $0.workspace == ownerID && $0.waiting && $0.continuation != nil }) else {
             throw BridgeError(.badRequest, "This workspace already has a pending question. Wait for the user to answer it, then try again.")
         }
-        let id = UUID().uuidString
+        // Asking the same thing again replaces the card left from an earlier turn.
+        for (old, request) in requests where request.workspace == ownerID && request.continuation == nil
+            && request.data["question"]?.stringValue == question {
+            requests.removeValue(forKey: old)
+            runtime.broadcast("prompt.closed", .object(["id": .string(old), "workspaceId": .string(ownerID)]))
+        }
         let form = try JSONValue.from(fields)
         return try await withCheckedThrowingContinuation { continuation in
             let data: JSONValue = .object([
@@ -182,11 +202,15 @@ actor WorkspacePrompts {
                 // "Allow for this task" alongside "Allow once".
                 "allowTask": .bool(allowTask),
             ])
-            requests[id] = Request(workspace: ownerID, fields: fields, data: data, continuation: continuation)
+            requests[id] = Request(workspace: ownerID, fields: fields, data: data, continuation: continuation, waiting: expires)
             runtime.broadcast("prompt.opened", data)
-            Task {
-                try? await Task.sleep(for: .seconds(540))
-                expire(runtime, id: id)
+            // A tool call waiting on the answer times out at 600 s; before
+            // then it's released, and the card stays until the user answers.
+            if expires {
+                Task {
+                    try? await Task.sleep(for: .seconds(540))
+                    release(id)
+                }
             }
         }
     }
@@ -194,7 +218,7 @@ actor WorkspacePrompts {
     func list() -> JSONValue { .array(requests.values.map(\.data)) }
 
     func answer(_ runtime: Runtime, id: String, approved: Bool, text: String?, values: JSONValue? = nil, scope: String? = nil) throws {
-        guard let pending = requests[id] else { throw BridgeError(.badRequest, "This request has already closed.") }
+        guard let pending = requests[id] else { throw BridgeError(.badRequest, "This request has already been answered.") }
         let answer = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if approved, !pending.fields.isEmpty {
             var answer: [String: JSONValue] = [:]
@@ -216,6 +240,29 @@ actor WorkspacePrompts {
         sessions = sessions.filter { $0.value.family != workspace }
     }
 
+    /// The workspace's agent finished its turn (or was stopped), so no tool
+    /// call is waiting on its open cards any more. The cards stay; answering
+    /// one later resumes the agent's chat.
+    func replyEnded(_ runtime: Runtime, workspace: String) {
+        for (id, request) in requests where request.workspace == workspace && request.waiting { release(id) }
+    }
+
+    /// Lets the waiting tool call go without closing the card.
+    private func release(_ id: String) {
+        guard var request = requests[id], let continuation = request.continuation else { return }
+        request.continuation = nil
+        request.waiting = false
+        requests[id] = request
+        continuation.resume(throwing: BridgeError(.deadlineExceeded,
+            "The user hasn't answered yet. The request stays open in Lima; their answer will come to you as a new chat message. Don't ask again and don't work around it; end your turn with what you have."))
+    }
+
+    /// Open cards for a workspace (its own, not its helpers').
+    func hasCard(workspace: String) -> Bool { requests.values.contains { $0.workspace == workspace } }
+
+    /// Closes one request without an answer.
+    func close(_ runtime: Runtime, id: String) { expire(runtime, id: id) }
+
     private func expire(_ runtime: Runtime, id: String) {
         finish(runtime, id: id, result: .failure(BridgeError(.deadlineExceeded, "The user request closed without a response.")))
     }
@@ -223,7 +270,12 @@ actor WorkspacePrompts {
     private func finish(_ runtime: Runtime, id: String, result: Result<JSONValue, Error>) {
         guard let pending = requests.removeValue(forKey: id) else { return }
         runtime.broadcast("prompt.closed", .object(["id": .string(id), "workspaceId": .string(pending.workspace)]))
-        pending.continuation.resume(with: result)
+        if let continuation = pending.continuation { continuation.resume(with: result); return }
+        // Nobody's waiting: an answer goes to the agent as a message.
+        guard case .success(let value) = result else { return }
+        let late = LateAnswer(workspace: pending.workspace, question: pending.data["question"]?.stringValue ?? "",
+                              approval: pending.data["approval"]?.boolValue == true, result: value)
+        Task { await runtime.resumeAfterAnswer(late) }
     }
 
     static func paths(for url: String, proposed: String?) throws -> Set<String> {

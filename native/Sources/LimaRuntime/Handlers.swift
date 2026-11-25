@@ -110,6 +110,9 @@ extension Runtime {
         let folder = try await conversations.attachmentDirectory(id)
         let fm = FileManager.default
         try fm.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        // Inside a workspace's project: keep the folder out of its git repo.
+        let ignore = folder.appendingPathComponent(".gitignore")
+        if !fm.fileExists(atPath: ignore.path) { fm.createFile(atPath: ignore.path, contents: Data("*\n".utf8), attributes: [.posixPermissions: 0o600]) }
         // A partial upload lives under a random token until it's complete.
         let token = params.optionalString("upload") ?? UUID().uuidString
         guard token.range(of: #"^[0-9A-F-]{36}$"#, options: .regularExpression) != nil else { throw BridgeError(.badRequest, "Unknown upload.") }
@@ -197,12 +200,16 @@ extension Runtime {
             }
             return try JSONValue.from(try await self.conversations.configure(id, provider: provider, model: params.optionalString("model")))
         }
-        register("chat.send") { [unowned self] params, _ in
+        register("chat.send") { [unowned self] params, context in
             let id = try params.string("id")
+            let text = try params.string("text")
             Task { await self.usage.count("chat.sent") }
             if !(params?["attachments"]?.arrayValue ?? []).isEmpty { Task { await self.usage.count("chat.attachment") } }
-            return try JSONValue.from(try await self.conversations.send(id, text: try params.string("text"), mode: Self.sendMode(params),
-                                                                        attachments: try await self.attachments(params, conversationID: id)))
+            let conversation = try await self.conversations.send(id, text: text, mode: Self.sendMode(params),
+                                                                 attachments: try await self.attachments(params, conversationID: id))
+            // A reply to an agent that was waiting on the user continues its task.
+            if context.origin == .browser { await self.userSent(conversation, text: text) }
+            return try JSONValue.from(try await self.conversations.get(id))
         }
         // Files dropped or pasted into a composer, uploaded in chunks of up
         // to 2 MB (base64) so each frame stays under the bridge limit.
@@ -340,7 +347,7 @@ extension Runtime {
     func registerSearch() {
         register("search.query") { [unowned self] params, _ in
             let mode = params.optionalString("mode").flatMap(SearchIntent.Mode.init(rawValue:))
-            var response = await self.search.search(try params.string("query"), mode: mode, limit: params.int("limit", default: 30))
+            var response = await self.search.search(try params.string("query"), mode: mode, limit: params.limit("limit", default: 30, maximum: 200))
             if let instant = InstantAnswers.answer(for: response.intent.query) {
                 response.results.insert(instant, at: 0)
             }
@@ -392,7 +399,7 @@ extension Runtime {
             await self.capabilities.execution(try params.string("executionId"), origin: context.origin) ?? .null
         }
         register("capabilities.runs") { [unowned self] params, _ in
-            try JSONValue.from(self.capabilities.recentRuns(limit: params.int("limit", default: 100)))
+            try JSONValue.from(self.capabilities.recentRuns(limit: params.limit("limit", default: 100, maximum: 500)))
         }
         register("system.openApp") { params, _ in
             let path = try params.string("path")
@@ -407,7 +414,7 @@ extension Runtime {
 
     func registerContext() {
         register("context.recent") { [unowned self] params, _ in
-            try JSONValue.from(await self.context.recent(limit: params.int("limit", default: 200)))
+            try JSONValue.from(await self.context.recent(limit: params.limit("limit", default: 200, maximum: 1000)))
         }
         register("context.record") { [unowned self] params, context in
             // Browser navigation metadata from non-private windows.
@@ -535,13 +542,20 @@ final class ApprovalLedger: @unchecked Sendable {
 final class MCPGrants: @unchecked Sendable {
     static let shared = MCPGrants()
     private let lock = NSLock()
-    private var _scopes: Set<String> = ["notes:read", "search:read", "context:read"]
+    /// Scopes the user granted every outside AI tool in Settings. Nothing by
+    /// default: a fresh install asks before an outside tool reads anything.
+    private var _scopes: Set<String> = []
+    /// "Allow for this task": one MCP session's grants, gone when Lima quits.
+    private var sessions: [String: Set<String>] = [:]
     var scopes: Set<String> {
         get { lock.lock(); defer { lock.unlock() }; return _scopes }
         set { lock.lock(); _scopes = newValue; lock.unlock() }
     }
-    func allows(scope: String) -> Bool { scopes.contains(scope) }
-    func grant(_ scope: String) { lock.lock(); _scopes.insert(scope); lock.unlock() }
+    func allows(scope: String, session: String? = nil) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return _scopes.contains(scope) || session.map { sessions[$0]?.contains(scope) == true } == true
+    }
+    func grant(_ scope: String, session: String) { lock.lock(); sessions[session, default: []].insert(scope); lock.unlock() }
 }
 
 enum LegacyAudit {

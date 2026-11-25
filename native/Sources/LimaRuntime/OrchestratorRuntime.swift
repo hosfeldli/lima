@@ -124,7 +124,7 @@ extension Runtime {
         }
         register("task.list") { [unowned self] params, context in
             guard context.origin == .browser else { throw BridgeError(.notAuthorized, "Only the Lima interface can list tasks.") }
-            let roots = await self.orchestrator.roots(limit: params.int("limit", default: 20), workspaceID: params.optionalString("workspaceId"))
+            let roots = await self.orchestrator.roots(limit: params.limit("limit", default: 20, maximum: 200), workspaceID: params.optionalString("workspaceId"))
             var rows: [JSONValue] = []
             for root in roots { rows.append(try await self.orchestrator.tree(root.id)) }
             return .array(rows)

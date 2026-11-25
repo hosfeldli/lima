@@ -128,7 +128,9 @@ public struct BridgeEvent: Codable, Equatable, Sendable {
 
 public extension JSONValue {
     var doubleValue: Double? { if case .number(let v) = self { return v }; return nil }
-    var intValue: Int? { doubleValue.map { Int($0) } }
+    /// A whole number in Int's range; nil for fractions out of range, NaN or ±∞
+    /// (a bare Int(_:) conversion traps on those).
+    var intValue: Int? { doubleValue.flatMap { $0.isFinite ? Int(exactly: $0.rounded(.towardZero)) : nil } }
     var boolValue: Bool? { if case .bool(let v) = self { return v }; return nil }
     var objectValue: [String: JSONValue]? { if case .object(let v) = self { return v }; return nil }
 }
@@ -141,6 +143,8 @@ public extension Optional where Wrapped == JSONValue {
     }
     func optionalString(_ key: String) -> String? { self?[key]?.stringValue }
     func int(_ key: String, default value: Int) -> Int { self?[key]?.intValue ?? value }
+    /// A count or limit from a caller, kept within 0...maximum.
+    func limit(_ key: String, default value: Int, maximum: Int) -> Int { Swift.min(Swift.max(int(key, default: value), 0), maximum) }
     func double(_ key: String, default value: Double) -> Double { self?[key]?.doubleValue ?? value }
     func bool(_ key: String, default value: Bool) -> Bool { self?[key]?.boolValue ?? value }
     func decode<T: Decodable>(_ key: String, as type: T.Type) throws -> T {

@@ -39,6 +39,21 @@ const SOURCE = {
   app: { kind: "app", icon: "app" }, tool: { kind: "command", icon: "bolt" }, file: { kind: "file", icon: "file" },
 };
 const TARGET_LABEL = { page: "This page", tabs: "Tabs", workspace: "Workspaces", notes: "Notes", files: "Files" };
+// The scope bar under the input, in order (⌘1–⌘6).
+const SCOPES = [[null, "All", "search"], ["tabs", "Tabs", "tab"], ["notes", "Notes", "note"], ["files", "Files", "file"],
+  ["workspace", "Workspaces", "workspace"], ["page", "This page", "web"]];
+const clipboard = () => Cc["@mozilla.org/widget/clipboardhelper;1"].getService(Ci.nsIClipboardHelper);
+
+/** "now", "5m", "3h", "2d", "Nov 3": how long ago, compactly. */
+function ago(when, now = Date.now()) {
+  if (!when) return "";
+  const minutes = Math.round((now - when) / 60000);
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 24 * 60) return `${Math.round(minutes / 60)}h`;
+  if (minutes < 7 * 24 * 60) return `${Math.round(minutes / 1440)}d`;
+  return new Date(when).toLocaleDateString([], { month: "short", day: "numeric" });
+}
 const EMPTY_HINT = "Search the web, open something, or ask Lima.";
 const MORE = "more";
 const ms = value => (value && value < 1e12 ? value * 1000 : value) || 0;
@@ -110,11 +125,17 @@ class Panel {
     this.status = el(doc, "div", { id: "lima-search-status", role: "status", hidden: true });
     this.live = el(doc, "div", { id: "lima-search-live", class: "lima-s-visually-hidden", "aria-live": "polite" });
     const hint = (key, label) => el(doc, "span", {}, el(doc, "kbd", { text: key }), ` ${label}`);
+    // Where to look: everything, or one kind of thing. Same as typing @tabs.
+    this.scopeBar = el(doc, "div", { id: "lima-search-scopes", role: "toolbar", "aria-label": "Search in" },
+      SCOPES.filter(([target]) => !this.private || !target || target === "tabs").map(([target, label, icon], index) =>
+        el(doc, "button", { type: "button", class: "lima-s-scope", "data-target": target ?? "", title: `${label} (⌘${index + 1})`,
+          onmousedown: event => event.preventDefault(), onclick: () => this.setTarget(target) }, glyph(doc, icon), el(doc, "span", { text: label }))));
     this.panel = el(doc, "div", { id: "lima-search", role: "dialog", "aria-label": "Lima Search" },
       el(doc, "div", { id: "lima-search-field" }, this.mark, this.scope, this.input, this.spinner, this.where),
-      this.contextChip, this.status, this.results, this.live,
+      this.scopeBar, this.contextChip, this.status, this.results, this.live,
       el(doc, "div", { id: "lima-search-foot", "aria-hidden": "true" },
-        hint("↑↓", "Select"), this.openHint = hint("↩", "Open"), hint("⌥↩", "Other tab"), this.private ? null : hint("⌘↩", "AI Chat"), hint("esc", "Close")));
+        hint("↑↓", "Select"), this.openHint = hint("↩", "Open"), hint("⇥", "Complete"), hint("⌥↩", "Other tab"),
+        this.private ? null : hint("⌘↩", "AI Chat"), this.tabHint = hint("⌘⌫", "Close tab"), hint("esc", "Close")));
     this.scrim = el(doc, "div", { id: "lima-search-scrim", hidden: true, onpointerdown: event => { if (event.target === this.scrim) this.close(); } }, this.panel);
     doc.documentElement.append(this.scrim);
 
@@ -195,6 +216,23 @@ class Panel {
     if (this.openHint) this.openHint.lastChild.textContent = here ? " Open here" : " Open";
   }
 
+  /** Searches one scope (or all): rewrites the @target in the query. */
+  setTarget(target) {
+    const { text } = parseQuery(this.input.value);
+    this.input.value = target ? `@${target} ${text}` : text;
+    if (target !== "page") this.setContext(null);
+    this.selectedKey = null;
+    this.answering = null;
+    this.clearStatus();
+    this.input.focus();
+    this.input.setSelectionRange(this.input.value.length, this.input.value.length);
+    this.query();
+  }
+
+  paintScopes(target) {
+    for (const button of this.scopeBar.children) button.setAttribute("aria-pressed", String((button.dataset.target || null) === target));
+  }
+
   currentPage() {
     const browser = this.win.gBrowser.selectedBrowser;
     const url = browser?.currentURI?.spec ?? "";
@@ -246,6 +284,7 @@ class Panel {
     if (target === "page" && !this.context) this.setContext(this.currentPage());
     this.scope.hidden = !target;
     this.scope.textContent = target ? TARGET_LABEL[target] : "";
+    this.paintScopes(target);
     const suggest = !target && !this.private && Services.prefs.getBoolPref("browser.search.suggest.enabled", true);
     this.set = new ResultSet(text, { webExpected: !!text && suggest });
     this.pending = 0;
@@ -267,6 +306,8 @@ class Panel {
     };
 
     if (!text) {
+      if (!target) this.set.setBest(this.private ? [] : this.quickActions());
+      this.set.titles = ["Start", "Recent"];
       this.empty(target, generation);
       return;
     }
@@ -331,9 +372,12 @@ class Panel {
         const url = tab.linkedBrowser?.currentURI?.spec ?? "";
         const group = tab.group?.label;
         const image = tab.image && /^(data|https?|page-icon|moz-remote-image|chrome|resource):/.test(tab.image) ? tab.image : null;
+        let host = "";
+        try { host = /^https?:/.test(url) ? new URL(url).host.replace(/^www\./, "") : ""; } catch {}
         return { key: `tab:${tab.linkedPanel ?? url}`, kind: "tab", icon: "tab", image, title: tab.label, url, group,
-          subtitle: group ? `Tab in ${group}` : "Open tab", action: "Switch to Tab", lastUsed: tab.lastAccessed,
+          subtitle: [group ? `Tab in ${group}` : "Open tab", host].filter(Boolean).join(" · "), action: "Switch to Tab", lastUsed: tab.lastAccessed,
           inCurrentWorkspace: !!active && tab.getAttribute("zen-workspace-id") === active,
+          closeTab: () => this.win.gBrowser.removeTab(tab, { animate: false }),
           run: () => { this.win.gBrowser.selectedTab = tab; } };
       });
   }
@@ -342,9 +386,13 @@ class Panel {
     if (this.private) return [];
     const response = await lazy.LimaBridge.request("search.query", { query: text, limit: 18 });
     const wanted = target === "notes" ? "note" : target === "files" ? "file" : null;
-    return response.results
+    const results = response.results
       .filter(r => !["web", "tab"].includes(r.source) && !["agentAsk", "quickAsk", "webSearch", "navigate", "switchTab"].includes(r.action.type))
-      .filter(r => !wanted || r.source === wanted)
+      .filter(r => !wanted || r.source === wanted);
+    // An activity record of opening a note or chat repeats that note or chat.
+    const named = new Set(results.filter(r => r.source !== "context").map(r => r.title?.trim().toLowerCase()));
+    return results
+      .filter(r => r.source !== "context" || !named.has(r.title?.trim().toLowerCase()))
       .map(r => {
         const command = r.action.type === "runCapability";
         const source = SOURCE[r.source] ?? { kind: "other", icon: "search" };
@@ -438,6 +486,20 @@ class Panel {
     this.paint();
   }
 
+  /** Empty query: things to start, above the recent destinations. */
+  quickActions() {
+    const open = url => () => lazy.LimaTabs.openOrFocus(this.win, url);
+    return [
+      { key: "qa:note", icon: "note", title: "New Note", subtitle: "Blank note", action: "Create", run: async () => {
+        const note = await lazy.LimaBridge.request("notes.create", { title: "Untitled", markdown: "" });
+        lazy.LimaTabs.openOrFocus(this.win, `about:lima?note=${encodeURIComponent(note.id)}`);
+      } },
+      { key: "qa:chat", icon: "chat", title: "New AI Chat", subtitle: "Chat with your AI provider", action: "Open", run: open("about:lima?chat=new") },
+      { key: "qa:companion", icon: "spark", title: "Ask the Companion", subtitle: "Hand off work to an agent", action: "Open",
+        run: () => this.win.dispatchEvent(new this.win.CustomEvent("LimaAssistantOpen", { detail: {} })) },
+    ];
+  }
+
   // MARK: Actions
 
   openURL(url, postData = null) {
@@ -482,7 +544,7 @@ class Panel {
       case "openReport": return lazy.LimaTabs.openOrFocus(this.win, `about:lima?view=context&report=${q(p.id)}`);
       case "openContext": return lazy.LimaTabs.openOrFocus(this.win, "about:lima?view=activity");
       case "openApp": return lazy.LimaBridge.request("system.openApp", { path: p.path });
-      case "copyText": return Cc["@mozilla.org/widget/clipboardhelper;1"].getService(Ci.nsIClipboardHelper).copyString(p.text ?? result.title);
+      case "copyText": return clipboard().copyString(p.text ?? result.title);
       case "runCapability": {
         const input = parseQuery(this.input.value).text.split(/\s+/).slice(1).join(" ");
         const capability = (await this.manifest()).find(item => item.id === p.id);
@@ -647,10 +709,13 @@ class Panel {
         role: "option", "aria-selected": String(selected), "data-key": item.key,
         onmousemove: () => { if (this.selectedKey !== item.key) this.select(item.key); },
         onmousedown: event => { event.preventDefault(); this.activate(item); } },
-        el(doc, "span", { class: "lima-s-icon" }, item.image ? picture(doc, item.image, item.icon) : glyph(doc, item.icon)),
+        el(doc, "span", { class: "lima-s-icon", "data-kind": item.kind ?? item.key.split(":")[0] }, item.image ? picture(doc, item.image, item.icon) : glyph(doc, item.icon)),
         el(doc, "span", { class: "lima-s-text" }, el(doc, "span", { class: "lima-s-title", text: item.title }),
           item.subtitle ? el(doc, "span", { class: "lima-s-sub", text: item.subtitle }) : null),
-        selected ? el(doc, "span", { class: "lima-s-action", "aria-hidden": "true" }, el(doc, "kbd", { text: "↩" }), ` ${item.action}`) : null);
+        selected ? el(doc, "span", { class: "lima-s-action", "aria-hidden": "true" }, el(doc, "kbd", { text: "↩" }), ` ${item.action}`)
+          : (item.when ?? item.lastUsed) ? el(doc, "span", { class: "lima-s-when", text: ago(item.when ?? item.lastUsed) }) : null,
+        item.closeTab ? el(doc, "button", { type: "button", class: "lima-s-close", title: "Close tab (⌘⌫)", "aria-label": `Close ${item.title}`,
+          onmousedown: event => { event.preventDefault(); event.stopPropagation(); this.closeTab(item); } }, "×") : null);
     };
     const nodes = [];
     let index = 0;
@@ -669,6 +734,7 @@ class Panel {
     if (selectedIndex >= 0) this.input.setAttribute("aria-activedescendant", `lima-s-option-${selectedIndex}`);
     else this.input.removeAttribute("aria-activedescendant");
     this.results.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+    this.tabHint.hidden = !this.items.find(item => item.key === this.selectedKey)?.closeTab;
     this.announce(text);
   }
 
@@ -680,6 +746,31 @@ class Panel {
       const count = this.items.filter(item => item.key !== MORE).length;
       this.live.textContent = text ? `${count} result${count === 1 ? "" : "s"}` : count ? `${count} recent` : EMPTY_HINT;
     }, 450);
+  }
+
+  /** Closes a tab from its row and keeps the panel and selection near it. */
+  closeTab(item) {
+    const index = this.items.findIndex(entry => entry.key === item.key);
+    try { item.closeTab(); } catch {}
+    this.set.pool = this.set.pool.filter(entry => entry.key !== item.key);
+    this.set.local = this.set.local.filter(entry => entry.key !== item.key);
+    if (this.set.frozen) this.set.frozen = this.set.frozen.filter(key => key !== item.key);
+    this.selectedKey = this.items[index + 1]?.key ?? this.items[index - 1]?.key ?? null;
+    this.paint();
+    this.input.focus();
+  }
+
+  /** Tab: puts the selected row's text in the input to refine it. */
+  complete() {
+    const item = this.items.find(entry => entry.key === this.selectedKey);
+    if (!item || item.key === MORE || item.key.startsWith("qa:")) return false;
+    const { target } = parseQuery(this.input.value);
+    const text = item.key.startsWith("nav:") || item.kind === "history" || item.kind === "bookmark" ? (item.url ?? item.title) : item.title;
+    if (!text) return false;
+    this.input.value = target ? `@${target} ${text}` : text;
+    this.selectedKey = null;
+    this.query();
+    return true;
   }
 
   select(key) {
@@ -694,6 +785,21 @@ class Panel {
       event.preventDefault();
       if (this.answering) { this.answering = null; this.generation++; this.spinner.hidden = true; this.query(); }
       else this.close();
+    } else if (event.metaKey && !event.shiftKey && !event.altKey && /^[1-6]$/.test(event.key) && !this.answering) {
+      event.preventDefault();
+      const scope = this.scopeBar.children[Number(event.key) - 1];
+      if (scope) this.setTarget(scope.dataset.target || null);
+    } else if (event.key === "Backspace" && event.metaKey && !this.answering && this.items[index]?.closeTab
+               && this.input.selectionStart === this.input.selectionEnd && this.input.selectionStart === this.input.value.length) {
+      event.preventDefault();
+      this.closeTab(this.items[index]);
+    } else if (event.key === "c" && event.metaKey && event.shiftKey && !this.answering && this.items[index]?.url) {
+      event.preventDefault();
+      clipboard().copyString(this.items[index].url);
+      this.setStatus("ok", "Link copied", this.items[index].url);
+      this.win.setTimeout(() => { if (this.status.dataset.tone === "ok") this.clearStatus(); }, 1600);
+    } else if (event.key === "Tab" && !event.shiftKey && !this.answering) {
+      if (this.complete()) event.preventDefault();
     } else if (event.key === "Enter" && event.metaKey && event.shiftKey) {
       event.preventDefault();
       if (parseQuery(this.input.value).text) this.delegate();

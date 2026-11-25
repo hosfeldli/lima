@@ -109,3 +109,14 @@ private func local(_ text: String) -> Date {
     #expect(approved.result?["createdBy"]?.stringValue == "Bookings")
     #expect(await call(runtime, "schedule.list", origin: .chat, workspace: workspace).result?.arrayValue?.count == 1)
 }
+
+@Test func plannerRecognizesRequestsForLater() {
+    for text in ["Go to opentable.com every day at 8:00 AM", "remind me tomorrow at 5pm to call Sam",
+                 "Book a table at Nobu when reservations open 60 days out", "schedule a weekly check of my inbox",
+                 "check flight prices in 3 days"] {
+        #expect(Runtime.soundsScheduled(text), "\(text)")
+    }
+    for text in ["Build the ultrawide monitor wishlist", "What's 8 times 7?", "Fix the failing Swift tests in Lima"] {
+        #expect(!Runtime.soundsScheduled(text), "\(text)")
+    }
+}
