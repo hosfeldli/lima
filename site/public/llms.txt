@@ -21,7 +21,7 @@
 
 ## Privacy
 
-Notes, chats, workspace history and Companion memory stay on the Mac in an encrypted store keyed in the macOS Keychain. The AI provider receives only what the user sends it; Lima doesn't proxy or keep a copy. Private windows are never recorded or shown to agents. Anonymous usage statistics (daily feature counts, no content) are on by default and turn off in one click.
+Notes, chats, workspace history and Companion memory stay on the Mac in an encrypted store keyed in the macOS Keychain. The AI provider receives what the user sends and what agents read while working for them (pages, files, notes they open); Lima doesn't proxy or keep a copy. Private windows are never recorded or shown to agents. Anonymous usage statistics (daily feature counts, no content) are on by default and turn off in one click.
 
 ## Install
 

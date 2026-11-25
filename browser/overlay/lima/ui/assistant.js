@@ -1,4 +1,4 @@
-import { activityStatus, bridge, call, el, errorText, filesPrivacyButton, icon, markdown, onEvent, prefs, relativeTime, setPage } from "./lib.js";
+import { activityStatus, bridge, call, el, errorText, filesPrivacyButton, icon, markdown, onEvent, prefs, relativeTime, setPage, popButton } from "./lib.js";
 import { agentControls, attachmentTray, QUEUE_HINT, queuedActions, restoreDraft, sendMode, sentAttachments } from "./composer.js";
 import { mediaStrip } from "./chat.js";
 import { companion, cueCompanion, setCompanionState, watchVisualActivity } from "./companion.js";
@@ -62,6 +62,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     el("div", { class: "handoff-composer composer-box" }, input,
       el("div", { class: "composer-row handoff-controls" }, agent.provider, agent.model,
         el("span", { class: "spacer" }), send)),
+    el("p", { class: "ai-disclaimer", text: "AI can make mistakes. Check important details." }),
     status, overview, prompts.node, scheduleStrip, recent, requestList, home ? null : providerHelp);
   app.replaceChildren(el("div", { class: home ? "assistant-page handoff-home" : "assistant-page" },
     head, el("div", { class: "handoff-body" }, listView, threadView)));
@@ -652,7 +653,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
 
   function buildThread(thread) {
     const field = el("textarea", { rows: 2, placeholder: "Reply…", "aria-label": "Follow-up" });
-    const reply = el("button", { class: "primary companion-thread-send", type: "submit", title: "Send", "aria-label": "Send" }, icon("send"));
+    const reply = el("button", { class: "primary companion-thread-send", type: "submit", title: "Send", "aria-label": "Send", hidden: true }, icon("send"));
     // While Lima replies: Send queues, Send Now (⌘↩) interrupts, Stop stops.
     const now = el("button", { type: "button", class: "ghost send-now", title: "Stop the reply and send this now (⌘↩)", hidden: true,
       onclick: () => followUp(thread, field, "interrupt") }, "Send Now");
@@ -677,10 +678,12 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     });
     if (!thread.conversation.local && thread.conversation.provider) controls.show(thread.conversation, false);
     const form = el("form", { class: "companion-thread-composer composer-box", onsubmit: event => { event.preventDefault(); followUp(thread, field); } },
-      tray.node, field, el("div", { class: "composer-row" }, controls.provider, controls.model, el("span", { class: "spacer" }), stop, now, reply), hint);
+      tray.node, field, el("div", { class: "composer-row" }, controls.provider, controls.model, el("span", { class: "spacer" }), stop, now, reply), hint,
+      el("p", { class: "ai-disclaimer", text: "AI can make mistakes. Check important details." }));
     field.addEventListener("keydown", event => {
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); followUp(thread, field, sendMode(event)); }
     });
+    field.addEventListener("input", () => paintButtons());
     const title = el("strong", { class: "grow" });
     const state = el("span", { class: "companion-entry-state" });
     const log = el("div", { class: "companion-thread-log", role: "log", "aria-live": "polite" });
@@ -691,6 +694,18 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
         title, state),
       log, status, form);
     view = { thread, field, reply, now, stop, hint, title, state, log, status, controls, tray };
+  }
+
+  /** Send pops in once there's text; Stop while Lima replies. */
+  function paintButtons() {
+    if (!view) return;
+    const conversation = view.thread.conversation;
+    const streaming = !conversation.local && conversation.messages?.some(message => message.status === "streaming");
+    const typed = Boolean(view.field.value.trim()) || view.tray.count > 0;
+    popButton(view.stop, streaming);
+    popButton(view.now, streaming && typed);
+    popButton(view.reply, typed);
+    view.hint.hidden = !(streaming && typed);
   }
 
   function paintThread(focus = false) {
@@ -709,7 +724,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     const streaming = conversation.messages?.some(message => message.status === "streaming");
     view.reply.disabled = !!conversation.local;
     view.reply.title = streaming ? "Send after this reply (↩)" : "Send";
-    view.now.hidden = view.stop.hidden = view.hint.hidden = !streaming || !!conversation.local;
+    paintButtons();
     view.controls.provider.disabled ||= !!conversation.local;
     view.controls.model.disabled ||= !!conversation.local;
     view.field.placeholder = conversation.local ? "This request couldn't be saved, so it can't be continued." : streaming ? "Lima is replying… add a message for after" : "Reply…";
@@ -726,6 +741,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     let attachments = [];
     try { attachments = tray?.ready() ?? []; } catch (error) { threadNotice(errorText(error)); return; }
     field.value = "";
+    paintButtons();
     try {
       const records = (thread.task?.taskIds ?? []).map(id => orchestrated.get(id)?.task).filter(Boolean);
       const status = records.map(record => `${workspaces.get(record.workspaceID)?.name ?? record.title}: ${STATES[record.state] ?? record.state}` +

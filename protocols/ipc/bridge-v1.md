@@ -106,7 +106,7 @@ Lima never opens Zen's own site. Page and frame loads to `zen-browser.app` and i
 On unless the user turns it off (see `docs/PRIVACY.md`); `asked` records an explicit choice, and a stored `asked: false` reads as on. `usage.get` returns `{ enabled, asked, endpoint, lastSent }`. The browser-only methods are:
 - `usage.set { enabled }`, from the one-time sidebar notice (OK / Turn Off) or Settings → Privacy;
 - `usage.count { event }`, for names from a fixed list only, ignored while off;
-- `usage.settings { theme, provider, tabSize, hideAI, hideAds, hideShorts, addressBar }`, where unknown keys and values are dropped;
+- `usage.settings { theme, provider, tabSize, hideAI, hideAds, hideShorts, addressBar }`, where unknown keys and values are dropped, and `provider` goes into reports only after an explicit yes (`asked` and on);
 - `usage.preview`, which returns the exact report;
 - `usage.delete`, which deletes what was sent under the current ID and starts a new one.
 
@@ -142,3 +142,16 @@ All `update.*` methods are browser-origin only. Development builds report phase 
 
 Event `update.status` carries the same object whenever the phase changes. Phases: `disabled`, `idle`,
 `checking`, `available`, `downloading`, `ready`, `installing`, `failed`.
+
+## Note images, folders and the archive
+
+`notes.image.add { source, alt?, width? }` turns an HTTPS image address (or a local preview) or a file path (absolute, `~/…`, or relative to the calling workspace's directory) into an encrypted note attachment. Lima fetches it once without cookies, checks that it decodes as an image, re-encodes it as PNG (dropping metadata, longest side at most 2400 px, at most 25 MB in) and returns `{ id, markdown, bytes }`, where `markdown` is `![alt|width](lima-attachment:id)`. In note Markdown, `|width` after the alt text sets an image's width: a percentage such as `50%` or pixels such as `320`.
+
+Notes are bookmarks, so folders and the archive are bookmark folders under Notes; these methods ask the browser (`workspace.browserRequest` kinds `notesOutline`, `notesOrganize`, `notesArchive`, `notesUnarchive`). `notes.folders` (notes:read) returns `[{ folder, archive, notes: [{ id, title }] }]` by folder path. `notes.organize { id, folder }` moves a note into a folder path such as `Recipes/Desserts`, creating folders (up to four levels). `notes.archive { id }` moves a note to Notes/Archive and remembers where it came from; `notes.unarchive { id }` puts it back (or in Notes if that folder is gone). All three need notes:write.
+
+Fenced `calculator` blocks render number inputs and rows computed from them: `{ title?, inputs: [{ id, label, value, min?, max?, step?, unit? }], rows: [{ id?, label, value, unit?, decimals? }], note? }`. A row's `value` is a formula: numbers, input ids and earlier row ids, `+ - * / % ^`, parentheses, and `round(x, digits)`, `ceil`, `floor`, `min`, `max`, `abs`, `sqrt`. A small parser evaluates it; nothing else runs.
+
+## Workspace chats
+
+A workspace's main chat is `conversationID`. `workspace.chats { id }` lists its chats (`{ id, title, main, running }`, main first); `workspace.newChat { id }` opens another with the same provider, folder and tools (not for helpers; at most twelve); `workspace.closeChat { id, chatId }` deletes one that isn't the main chat. Each broadcasts `workspace.chats { id }`. Messages to the main chat go through `workspace.instruct`; the others use `chat.send`. Browser only.
+

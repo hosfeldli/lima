@@ -1,7 +1,7 @@
 /* AI chat tab: one conversation per URL (about:lima?chat=<id>). For a
  * workspace or helper agent it is the agent's chat; a live line says where
  * the agent is working (the sidebar shows the same with the prism). */
-import { activityStatus, bridge, call, el, errorText, filesPrivacyButton, icon, markdown, onEvent, prefs, setPage } from "./lib.js";
+import { activityStatus, bridge, call, el, errorText, filesPrivacyButton, icon, markdown, onEvent, prefs, setPage, popButton } from "./lib.js";
 import { failureActivity, isFolderPermissionError, stepParts, toolActivity } from "./tool-activity.sys.mjs";
 
 import { agentControls, attachmentTray, composerMenu, preferredAgent, QUEUE_HINT, queuedActions, restoreDraft, sentAttachments, sendMode } from "./composer.js";
@@ -17,7 +17,92 @@ export async function renderChat(app, chatId, initialPrompt) {
     bridge.replaceURL(`about:lima?chat=${encodeURIComponent(conversation.id)}`);
     return;
   }
-  mountChat(app, chatId);
+  mountWorkspaceChats(app, chatId);
+}
+
+/* A workspace's chat tab can hold more than one chat: its main chat and
+ * any you open beside it, as tabs along the top (closable, except Main).
+ * Switching swaps the chat in place; the tab's address stays the main
+ * chat's, which is how the sidebar knows it. */
+async function mountWorkspaceChats(app, chatId) {
+  const strip = el("nav", { class: "chat-tabs", "aria-label": "Chats in this workspace", hidden: true });
+  const pane = el("div", { class: "chat-tab-pane" });
+  app.replaceChildren(strip, pane);
+  let current = chatId;
+  let unmount = mountChat(pane, current);
+  const opened = await call("chat.get", { id: chatId }).catch(() => null);
+  const workspace = opened?.workspaceID ? await call("workspace.get", { id: opened.workspaceID }).catch(() => null) : null;
+  if (!workspace || workspace.parentID || workspace.browserTestURL || workspace.conversationID !== chatId) return;
+  let chats = [];
+  const tabs = new Map();
+  const add = el("button", { class: "chat-tab-add ghost icon-only", title: "New chat in this workspace", "aria-label": "New chat in this workspace",
+    onclick: async () => {
+      try {
+        const chat = await call("workspace.newChat", { id: workspace.id });
+        await refresh();
+        show(chat.id);
+      } catch (error) { add.title = errorText(error); }
+    } }, icon("plus"));
+  function show(id) {
+    if (id === current) return;
+    unmount();
+    current = id;
+    unmount = mountChat(pane, id);
+    paint();
+  }
+  async function close(chat) {
+    const full = await call("chat.get", { id: chat.id }).catch(() => null);
+    if (full?.messages?.length && !confirm(`Close “${chat.title}”? Its messages are deleted.`)) return;
+    try {
+      chats = await call("workspace.closeChat", { id: workspace.id, chatId: chat.id });
+      if (current === chat.id) show(workspace.conversationID);
+      paint();
+    } catch (error) { console.error(error); }
+  }
+  function tabFor(chat) {
+    let tab = tabs.get(chat.id);
+    if (!tab) {
+      const label = el("span", { class: "chat-tab-label" });
+      const dot = el("span", { class: "chat-tab-dot", "aria-hidden": "true" });
+      const select = el("button", { class: "chat-tab-select", role: "tab", onclick: () => show(chat.id) }, dot, label);
+      const shut = chat.main ? null : el("button", { class: "chat-tab-close", title: `Close ${chat.title}`, "aria-label": `Close ${chat.title}`,
+        onclick: event => { event.stopPropagation(); close(tab.limaChat); } }, icon("close"));
+      tab = el("div", { class: "chat-tab" }, select, shut);
+      tab.limaLabel = label;
+      tab.limaSelect = select;
+      tabs.set(chat.id, tab);
+      if (!matchMedia("(prefers-reduced-motion: reduce)").matches && strip.childElementCount) {
+        tab.animate([{ opacity: 0, transform: "scale(.7)" }, { opacity: 1, transform: "none" }],
+          { duration: 420, easing: "linear(0, 0.22 7%, 0.62 15%, 0.95 23%, 1.1 31%, 1.12 36%, 1.08 43%, 1.01 53%, 0.98 62%, 1 78%, 1)" });
+      }
+    }
+    tab.limaChat = chat;
+    tab.limaLabel.textContent = chat.title;
+    tab.toggleAttribute("data-running", chat.running);
+    tab.limaSelect.setAttribute("aria-selected", String(chat.id === current));
+    tab.toggleAttribute("data-current", chat.id === current);
+    return tab;
+  }
+  function paint() {
+    const ids = new Set(chats.map(chat => chat.id));
+    for (const [id] of tabs) if (!ids.has(id)) tabs.delete(id);
+    strip.replaceChildren(el("div", { class: "chat-tab-list", role: "tablist" }, chats.map(tabFor)), add);
+  }
+  async function refresh() {
+    chats = await call("workspace.chats", { id: workspace.id }).catch(() => chats);
+    paint();
+  }
+  onEvent(({ event, data }) => {
+    if (!strip.isConnected) return;
+    if (event === "workspace.chats" && data?.id === workspace.id) refresh();
+    else if (event === "chat.updated" && tabs.has(data?.id)) {
+      const chat = chats.find(item => item.id === data.id);
+      if (chat) { chat.running = data.messages?.some(message => message.status === "streaming") ?? chat.running; chat.title = chat.main ? "Main" : data.title ?? chat.title; paint(); }
+    }
+  });
+  await refresh();
+  // With one chat the strip is just Main and the + button.
+  strip.hidden = false;
 }
 
 /** The agent's own bookkeeping (tool lookup, todo lists) isn't a step. */
@@ -158,7 +243,7 @@ async function initializeChat(app, chatId, compact, signal) {
     },
   }, Object.entries(MASCOTS).map(([value, text]) => el("option", { value, text })));
   const prompts = workspacePrompts({ workspace: () => workspace?.id ?? "", signal });
-  const sendButton = el("button", { class: "send", title: "Send (↩)", onclick: () => send("queue"), disabled: true }, "Send");
+  const sendButton = el("button", { class: "send", title: "Send (↩)", onclick: () => send("queue"), disabled: true, hidden: true }, "Send");
   // Files dropped or pasted in; long pastes become a text attachment.
   const tray = attachmentTray({ conversation: () => chatId, input, onChange: () => draw() });
   // While a reply runs, Send queues and Send Now interrupts (⌘↩).
@@ -200,13 +285,25 @@ async function initializeChat(app, chatId, compact, signal) {
       messages, progress, agents, steps, files,
       el("div", { class: "composer" }, prompts.node, activity.node, recovery,
         el("div", { class: "composer-box" }, tray.node, input, completionMenu.node,
-          el("div", { class: "composer-row" }, controls.provider, controls.model, el("span", { class: "spacer" }), stopButton, nowButton, sendButton)), queueHint)));
+          el("div", { class: "composer-row" }, controls.provider, controls.model, el("span", { class: "spacer" }), stopButton, nowButton, sendButton)), queueHint,
+        el("p", { class: "ai-disclaimer", text: "AI can make mistakes. Check important details." }))));
   app.replaceChildren(el("div", { class: compact ? "chat-page assistant-chat" : "chat-page" },
     el("header", { class: "chat-head" }, character, title, subtitle, el("span", { class: "spacer" }), mascot),
     body));
 
   const autosize = () => { input.style.height = "auto"; input.style.height = `${Math.min(220, input.scrollHeight)}px`; };
-  input.addEventListener("input", () => { prefs.set(draftKey, input.value); autosize(); });
+  input.addEventListener("input", () => { prefs.set(draftKey, input.value); autosize(); paintButtons(); });
+
+  /* Send (and, while a reply runs, Send Now) appear only once there's
+   * something to send; Stop appears while a reply runs. Each pops in and out. */
+  function paintButtons() {
+    const running = !!runningReply();
+    const typed = Boolean(input.value.trim()) || tray.count > 0;
+    popButton(stopButton, running);
+    popButton(nowButton, running && typed);
+    popButton(sendButton, typed);
+    queueHint.hidden = !(running && typed);
+  }
   input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(sendMode(e)); } });
 
   /** Stops the reply; messages queued behind it come back to the box. */
@@ -230,7 +327,8 @@ async function initializeChat(app, chatId, compact, signal) {
     try {
       await controls.settled();
       const revision = eventRevision;
-      const response = workspace && !workspace.parentID
+      // The workspace's main chat goes through the workspace; other chats in it are ordinary chats.
+      const response = workspace && !workspace.parentID && workspace.conversationID === chatId
         ? await call("workspace.instruct", { id: workspace.id, text, mode, attachments })
         : await call("chat.send", { id: chatId, text, mode, attachments });
       tray.clear();
@@ -274,7 +372,7 @@ async function initializeChat(app, chatId, compact, signal) {
     subtitle.textContent = workspace?.parentID ? `Helper · ${workspace.task ?? ""}` : [conversation.provider, conversation.model && conversation.model !== "default" ? conversation.model : null, folder].filter(Boolean).join(" · ");
     subtitle.title = workspace?.directory ?? "";
     const running = !!runningReply();
-    stopButton.hidden = nowButton.hidden = queueHint.hidden = !running;
+    paintButtons();
     sendButton.textContent = running ? "Queue" : "Send";
     sendButton.title = running ? "Send after this reply (↩)" : "Send (↩)";
     sendButton.disabled = nowButton.disabled = !loaded || pendingRequest || tray.busy || !controls.settings().provider;

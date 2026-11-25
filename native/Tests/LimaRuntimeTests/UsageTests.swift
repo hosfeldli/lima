@@ -35,3 +35,11 @@ import Testing
     await usage.configure(enabled: true)
     #expect(await usage.preview()["counts"]?["chat.sent"] == nil)
 }
+
+@Test func usageLeavesOutTheAIProviderUntilTheUserSaysYes() async {
+    let usage = UsageStats(state: nil, endpoint: nil) { _ in }
+    await usage.setSnapshot(.object(["theme": .string("dark"), "provider": .string("claude")]))
+    #expect(await usage.preview()["settings"]?["provider"] == nil, "on by default isn't consent for provider popularity")
+    await usage.configure(enabled: true)
+    #expect(await usage.preview()["settings"]?["provider"]?.stringValue == "claude")
+}

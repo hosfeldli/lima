@@ -21,6 +21,7 @@ enum SecurityPolicy {
     static let readScopes: [String: (scope: String, action: String)] = [
         "notes.list": ("notes:read", "read your notes"),
         "notes.get": ("notes:read", "read your notes"),
+        "notes.folders": ("notes:read", "read your notes"),
         "search.query": ("search:read", "search your notes, chats and activity"),
         "context.recent": ("context:read", "read your recent activity"),
         "context.reports": ("context:read", "read your weekly reports"),

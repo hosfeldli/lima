@@ -204,6 +204,8 @@ install -m 0755 "$HOST_BIN" "$C/MacOS/lima-host"
 # The 466 MB model isn't copied; the runtime finds the one Lima 4 installed.
 mkdir -p "$R/Whisper/runtime"
 install -m 0755 "$BROWSER/vendor/whisper/whisper-cli" "$R/Whisper/runtime/whisper-cli"
+# MIT requires the notice to travel with the binary.
+install -m 0644 "$BROWSER/vendor/whisper/LICENSE" "$R/Whisper/runtime/LICENSE"
 mkdir -p "$R/lima-runtime"
 cp "$ROOT/native/Sources/LimaRuntime/Resources/emoji-test.txt" "$R/lima-runtime/"
 

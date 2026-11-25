@@ -1,5 +1,6 @@
 /* Notes: index (organized by the bookmark tree), classic editor and canvas. */
 import { bar, bridge, call, debounce, el, errorText, hydrateEmbeds, icon, installEmbedActions, markdown, noteEmbed, onEvent, relativeTime, setPage } from "./lib.js";
+import { artifactFromBlock, CALCULATOR_TEMPLATE } from "./rich-content.js";
 
 installEmbedActions();
 
@@ -140,7 +141,7 @@ export function toMarkdown(root) {
       else if (tag === "code") text += `\`${child.textContent}\``;
       else if (tag === "s" || tag === "del" || tag === "strike") text += `~~${inner}~~`;
       else if (tag === "a") text += `[${inner}](${child.getAttribute("href")})`;
-      else if (tag === "img") text += `![${child.alt ?? ""}](${child.dataset.src ?? child.getAttribute("src") ?? ""})`;
+      else if (tag === "img") text += `![${child.alt ?? ""}${child.dataset.width ? `|${child.dataset.width}` : ""}](${child.dataset.src ?? child.getAttribute("src") ?? ""})`;
       else text += inner;
     }
     return text;
@@ -228,38 +229,184 @@ async function renderClassic(app, note) {
   const tableTools = [addRow, addColumn, removeRow, removeColumn, removeTable];
   const setTableTools = enabled => { for (const button of tableTools) button.hidden = button.disabled = !enabled; };
   setTableTools(false);
-  // Layout: one, two or three columns for the section holding the cursor.
-  const layout = el("select", { class: "fmt-select", title: "Columns for this section", "aria-label": "Columns for this section",
+  // One style menu instead of three heading buttons.
+  const styles = [["p", "Text"], ["h1", "Heading"], ["h2", "Subheading"], ["h3", "Small heading"]];
+  const styleSelect = el("select", { class: "fmt-select fmt-style", title: "Text style", "aria-label": "Text style",
     onmousedown: () => { rememberSelection(); },
-    onchange: () => { const count = Number(layout.value); selectBody(); setColumns(count); markDirty(); } },
-    [["1", "1 column"], ["2", "2 columns"], ["3", "3 columns"]].map(([value, text]) => el("option", { value, text })));
-  const toolbar = el("div", { class: "page-tools", role: "toolbar" },
-    tool("H1", "Heading", exec("formatBlock", "h1")), tool("H2", "Subheading", exec("formatBlock", "h2")), tool(icon("paragraph"), "Text", exec("formatBlock", "p")),
-    el("i", { class: "sep" }),
-    tool("B", "Bold (⌘B)", exec("bold")), tool("I", "Italic (⌘I)", exec("italic")), tool("S", "Strikethrough", exec("strikeThrough")),
-    tool("{}", "Code", wrapCode), tool(icon("link"), "Link (⌘K)", insertLink),
-    el("i", { class: "sep" }),
-    tool(icon("list"), "Bulleted list", exec("insertUnorderedList")), tool("1.", "Numbered list", exec("insertOrderedList")), tool(icon("checkbox"), "To-do", () => insertTodo()),
-    tool(icon("table"), "Insert table", insertTable), ...tableTools, layout,
-    tool(icon("globe"), "Insert an interactive embed", () => {
-      const value = window.prompt("Paste an HTTPS or local preview URL");
-      if (!value) return;
-      const card = noteEmbed(value.trim());
-      if (!card) { status.textContent = "Enter an HTTPS or local preview URL."; return; }
+    onchange: () => { selectBody(); document.execCommand("formatBlock", false, styleSelect.value); markDirty(); } },
+    styles.map(([value, text]) => el("option", { value, text })));
+  /* A small menu: a toolbar button that opens a list of actions. Items keep
+   * the note's selection, like the toolbar buttons. */
+  const menus = [];
+  const menu = (iconOrText, label, items) => {
+    const list = el("div", { class: "fmt-menu", role: "menu", hidden: true });
+    const button = el("button", { class: "fmt fmt-menu-button", title: label, "aria-label": label, "aria-haspopup": "menu", "aria-expanded": "false",
+      onmousedown: event => { event.preventDefault(); rememberSelection(); },
+      onclick: () => toggle(list.hidden) },
+    typeof iconOrText === "string" ? el("span", { text: iconOrText }) : iconOrText, icon("chevron", "icon fmt-caret"));
+    const toggle = open => {
+      if (open) for (const other of menus) if (other !== entry) other.close();
+      if (list.hidden === !open) return;
+      list.hidden = !open;
+      button.setAttribute("aria-expanded", String(open));
+      if (open) list.querySelector("button")?.focus({ preventScroll: true });
+    };
+    const fill = () => list.replaceChildren(...items().map(item => item === "-" ? el("i", { class: "fmt-menu-sep", role: "separator" })
+      : el("button", { class: "fmt-menu-item", role: "menuitem", disabled: item.disabled ? "" : null,
+        onmousedown: event => event.preventDefault(),
+        onclick: () => { toggle(false); selectBody(); item.run(); if (item.dirty !== false) markDirty(); } },
+      item.icon ? icon(item.icon) : el("span", { class: "fmt-menu-blank" }), el("span", { text: item.label }), item.hint ? el("kbd", { text: item.hint }) : null)));
+    const entry = { close: () => toggle(false), fill };
+    menus.push(entry);
+    button.addEventListener("click", fill, { capture: true });
+    list.addEventListener("keydown", event => {
+      if (event.key === "Escape") { toggle(false); button.focus(); }
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const items = [...list.querySelectorAll("button:not([disabled])")];
+        const next = items[(items.indexOf(document.activeElement) + (event.key === "ArrowDown" ? 1 : items.length - 1)) % items.length];
+        next?.focus();
+      }
+    });
+    return el("span", { class: "fmt-menu-wrap" }, button, list);
+  };
+  document.addEventListener("mousedown", event => { if (!event.target.closest?.(".fmt-menu-wrap")) for (const entry of menus) entry.close(); });
+
+  const imageFile = el("input", { type: "file", accept: "image/*", hidden: true, onchange: async () => {
+    const file = imageFile.files?.[0];
+    imageFile.value = "";
+    if (!file) return;
+    if (file.size > 25_000_000) { status.textContent = "That image is larger than 25 MB."; return; }
+    status.textContent = "Adding image…";
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      let binary = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      const { id } = await call("notes.attachment.put", { data: btoa(binary) });
+      insertImage(id, file.name.replace(/\.[^.]+$/, ""));
+      status.textContent = "";
+    } catch (error) { status.textContent = errorText(error); }
+  } });
+  async function imageFromAddress() {
+    const value = window.prompt("Image address (HTTPS) or a file path on this Mac");
+    if (!value?.trim()) return;
+    status.textContent = "Adding image…";
+    try {
+      const { id } = await call("notes.image.add", { source: value.trim() });
       selectBody();
-      // One editing transaction, so Undo removes the embed again.
-      document.execCommand("insertHTML", false, card.outerHTML + "<p><br></p>");
-      hydrateEmbeds(body);
-    }),
+      insertImage(id, "");
+      status.textContent = "";
+    } catch (error) { status.textContent = errorText(error); }
+  }
+  function insertImage(id, alt) {
+    const img = el("img", { "data-src": `lima-attachment:${id}`, alt });
+    document.execCommand("insertHTML", false, img.outerHTML + "<p><br></p>");
+    hydrateImages();
+    markDirty();
+  }
+  function hydrateImages() {
+    for (const img of body.querySelectorAll("img[data-src^='lima-attachment:']:not([src])")) {
+      attachmentURL(img.dataset.src.slice("lima-attachment:".length)).then(url => { img.src = url; }).catch(() => {});
+    }
+  }
+  function insertCalculator() {
+    const card = artifactFromBlock("calculator", JSON.stringify(JSON.parse(CALCULATOR_TEMPLATE)), el);
+    document.execCommand("insertHTML", false, card.outerHTML + "<p><br></p>");
+    hydrateArtifacts();
+  }
+  /** Blocks pasted in as HTML lose their behaviour; rebuild them from their source. */
+  function hydrateArtifacts() {
+    for (const figure of body.querySelectorAll("figure[data-artifact]")) {
+      if (figure.limaLive) continue;
+      const live = artifactFromBlock(figure.dataset.artifact, figure.dataset.artifactSource ?? "", el);
+      if (live) { live.limaLive = true; figure.replaceWith(live); } else figure.limaLive = true;
+    }
+  }
+  let archived = false;
+  const archivedNotice = el("div", { class: "notice", hidden: true }, "This note is archived. ",
+    el("button", { onclick: () => setArchived(false) }, "Restore"));
+  async function setArchived(value) {
+    try {
+      await bridge.browser(value ? "archiveNote" : "unarchiveNote", { noteId: note.id });
+      archived = value;
+      archivedNotice.hidden = !value;
+      status.textContent = value ? "Archived" : "Restored from the archive";
+    } catch (error) { status.textContent = errorText(error); }
+  }
+  bridge.browser("noteArchived", { noteId: note.id }).then(value => { archived = value === true; archivedNotice.hidden = !archived; }).catch(() => {});
+
+  const insertMenu = menu(icon("plus"), "Insert", () => [
+    { label: "Table", icon: "table", run: insertTable },
+    { label: "Image from a file…", icon: "image", run: () => imageFile.click(), dirty: false },
+    { label: "Image from an address…", icon: "globe", run: imageFromAddress, dirty: false },
+    { label: "Calculator", icon: "calc", run: insertCalculator },
+    { label: "Embed a page…", icon: "link", run: insertEmbed },
+  ]);
+  const columnCount = () => { const columns = currentColumns(); return columns ? columns.querySelectorAll(":scope > .note-column").length : 1; };
+  const moreMenu = menu(icon("more"), "More", () => [
+    { label: "Strikethrough", run: exec("strikeThrough") },
+    { label: "Inline code", run: wrapCode },
+    { label: "Numbered list", run: exec("insertOrderedList") },
+    "-",
+    ...[1, 2, 3].map(count => ({ label: count === 1 ? "One column" : `${count} columns`, disabled: columnCount() === count, run: () => setColumns(count) })),
+    "-",
+    { label: "Undo", hint: "⌘Z", run: exec("undo") },
+    { label: "Redo", hint: "⇧⌘Z", run: exec("redo") },
+    "-",
+    { label: archived ? "Restore from archive" : "Archive note", icon: "archive", run: () => setArchived(!archived), dirty: false },
+  ]);
+  function insertEmbed() {
+    const value = window.prompt("Paste an HTTPS or local preview URL");
+    if (!value) return;
+    const card = noteEmbed(value.trim());
+    if (!card) { status.textContent = "Enter an HTTPS or local preview URL."; return; }
+    selectBody();
+    // One editing transaction, so Undo removes the embed again.
+    document.execCommand("insertHTML", false, card.outerHTML + "<p><br></p>");
+    hydrateEmbeds(body);
+  }
+  const toolbar = el("div", { class: "page-tools", role: "toolbar" },
+    styleSelect, el("i", { class: "sep" }),
+    tool("B", "Bold (⌘B)", exec("bold")), tool("I", "Italic (⌘I)", exec("italic")), tool(icon("link"), "Link (⌘K)", insertLink),
     el("i", { class: "sep" }),
+    tool(icon("list"), "Bulleted list", exec("insertUnorderedList")), tool(icon("checkbox"), "To-do", () => insertTodo()),
+    ...tableTools,
+    el("i", { class: "sep" }),
+    insertMenu, moreMenu, imageFile,
     tool(icon("mic"), "Dictate (⌃⌥D)", () => bridge.browser("dictate", { noteId: note.id })),
-    el("span", { class: "spacer" }), status, recover,
-    tool(icon("undo"), "Undo (⌘Z)", exec("undo")), tool(icon("redo"), "Redo (⇧⌘Z)", exec("redo")));
+    el("span", { class: "spacer" }), status, recover);
+
+  /* Images: click one to resize it (S, M, L or full width). */
+  const sizeBar = el("div", { class: "image-size", role: "toolbar", "aria-label": "Image size", hidden: true },
+    [["25%", "S"], ["50%", "M"], ["75%", "L"], ["", "Full"]].map(([width, label]) => el("button", { type: "button", class: "fmt", title: width ? `${width} wide` : "Full width",
+      onmousedown: event => event.preventDefault(),
+      onclick: () => {
+        const img = sizeBar.limaImage;
+        if (!img?.isConnected) return;
+        if (width) { img.dataset.width = width; img.style.width = width; } else { delete img.dataset.width; img.style.removeProperty("width"); }
+        placeSizeBar(img);
+        markDirty();
+      } }, label)));
+  function placeSizeBar(img) {
+    const rect = img.getBoundingClientRect();
+    sizeBar.limaImage = img;
+    sizeBar.hidden = false;
+    sizeBar.style.top = `${Math.max(8, rect.top + 8)}px`;
+    sizeBar.style.left = `${rect.left + 8}px`;
+    for (const button of sizeBar.children) button.setAttribute("aria-pressed", String(button.title === (img.dataset.width ? `${img.dataset.width} wide` : "Full width")));
+  }
+  body.addEventListener("click", event => {
+    const img = event.target.closest?.("img");
+    if (img && body.contains(img)) { placeSizeBar(img); img.classList.add("selected-image"); }
+    else sizeBar.hidden = true;
+    for (const other of body.querySelectorAll("img.selected-image")) if (other !== img) other.classList.remove("selected-image");
+  });
+  addEventListener("scroll", () => { sizeBar.hidden = true; }, { passive: true, capture: true });
 
   setPage(note.title || "Untitled", "note");
   app.replaceChildren(el("div", { class: "page-wrap" },
-    trashedNotice(note, () => renderNote(app, note.id)) ?? "",
-    toolbar,
+    trashedNotice(note, () => renderNote(app, note.id)) ?? "", archivedNotice,
+    toolbar, sizeBar,
     el("article", { class: "page-sheet" }, title, el("div", { class: "page-date", text: dateLine(note.createdAt) }), body)));
   document.execCommand("defaultParagraphSeparator", false, "p");
 
@@ -539,9 +686,10 @@ async function renderClassic(app, note) {
 
   const rememberSelection = () => {
     setTableTools(!!tableCell());
-    const columns = currentColumns();
-    layout.value = String(columns ? columns.querySelectorAll(":scope > .note-column").length : 1);
     const selection = getSelection();
+    const anchor = selection.anchorNode?.nodeType === Node.ELEMENT_NODE ? selection.anchorNode : selection.anchorNode?.parentElement;
+    const blockTag = anchor && body.contains(anchor) ? anchor.closest("h1, h2, h3, p, li")?.localName : null;
+    if (blockTag && document.activeElement !== styleSelect) styleSelect.value = ["h1", "h2", "h3"].includes(blockTag) ? blockTag : "p";
     if (selection.rangeCount && body.contains(selection.anchorNode)) selectionRange = selection.getRangeAt(0).cloneRange();
   };
   document.addEventListener("selectionchange", rememberSelection);
@@ -556,7 +704,9 @@ async function renderClassic(app, note) {
     selection.addRange(range);
     if (!document.execCommand("delete", false) || body.contains(card)) { card.remove(); markDirty(); }
   });
-  body.addEventListener("input", () => {
+  body.addEventListener("input", event => {
+    // Typing a number into a calculator isn't an edit of the note (its Save is).
+    if (event.target.closest?.("[data-artifact]") && !event.target.matches?.("[data-artifact]")) return;
     for (const li of body.querySelectorAll("li.task")) {
       if (!li.querySelector(":scope > input[type=checkbox]")) li.prepend(el("input", { type: "checkbox" }));
     }

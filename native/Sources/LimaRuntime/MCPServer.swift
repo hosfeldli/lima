@@ -41,6 +41,42 @@ public enum MCPServer {
             let edits: JSONValue = .array([.object(["setMarkdown": .object(["_0": .string(existing.isEmpty ? addition : existing + "\n\n" + addition)])])])
             return try client.call("notes.apply", params: .object(["id": id, "edits": edits, "baseRevision": note["revision"] ?? .null, "author": .string("agent:mcp")]))
         },
+        Tool(name: "notes_folders", description: "Every note grouped by folder path (Notes, Notes/Recipes…), including Notes/Archive.",
+             properties: [:], required: []) { _, client in
+            try client.call("notes.folders")
+        },
+        Tool(name: "notes_organize", description: """
+            Move a note into a folder by path, creating folders as needed (e.g. "Recipes" or "Work/Clients"). \
+            Group related notes whenever you can: file new notes you write, and suggest tidying loose ones. Requires notes:write.
+            """,
+             properties: ["id": ["type": "string"], "folder": ["type": "string"]], required: ["id", "folder"]) { args, client in
+            try client.call("notes.organize", params: .object(["id": args?["id"] ?? .null, "folder": args?["folder"] ?? .null]))
+        },
+        Tool(name: "notes_archive", description: "Archive a note the user no longer needs day to day: it moves to Notes/Archive and can be brought back with notes_unarchive. Requires notes:write.",
+             properties: ["id": ["type": "string"]], required: ["id"]) { args, client in
+            try client.call("notes.archive", params: .object(["id": args?["id"] ?? .null]))
+        },
+        Tool(name: "notes_unarchive", description: "Bring an archived note back to the folder it came from. Requires notes:write.",
+             properties: ["id": ["type": "string"]], required: ["id"]) { args, client in
+            try client.call("notes.unarchive", params: .object(["id": args?["id"] ?? .null]))
+        },
+        Tool(name: "notes_add_image", description: """
+            Add an image to the end of a note from an HTTPS address or a file path (absolute, ~/…, or relative to your \
+            workspace). Lima downloads or reads it once and stores a copy in the note. width resizes it: a percentage \
+            such as 50% or pixels such as 320. Requires notes:write.
+            """,
+             properties: ["id": ["type": "string"], "source": ["type": "string"], "alt": ["type": "string", "description": "What the image shows"],
+                          "width": ["type": "string", "description": "e.g. 50% or 320"]], required: ["id", "source"]) { args, client in
+            let id = args?["id"] ?? .null
+            var params: [String: JSONValue] = ["source": args?["source"] ?? .null]
+            for key in ["alt", "width"] { if let value = args?[key] { params[key] = value } }
+            let image = try client.call("notes.image.add", params: .object(params))
+            let note = try client.call("notes.get", params: .object(["id": id]))
+            let existing = note["markdown"]?.stringValue ?? ""
+            let addition = image["markdown"]?.stringValue ?? ""
+            let edits: JSONValue = .array([.object(["setMarkdown": .object(["_0": .string(existing.isEmpty ? addition : existing + "\n\n" + addition)])])])
+            return try client.call("notes.apply", params: .object(["id": id, "edits": edits, "baseRevision": note["revision"] ?? .null, "author": .string("agent:mcp")]))
+        },
         Tool(name: "context_recent", description: "Recent activity metadata (no keystrokes or screen content). limit: 1–1000, default 50.",
              properties: [:], required: [],
              structuredProperties: ["limit": .object(["type": .string("integer"), "minimum": .number(1), "maximum": .number(1000)])]) { args, client in

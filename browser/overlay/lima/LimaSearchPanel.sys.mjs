@@ -652,7 +652,8 @@ class Panel {
     const meta = el(doc, "span", { class: "lima-s-answer-meta", text: "Asking Lima…" });
     this.clearStatus();
     this.results.replaceChildren(el(doc, "div", { class: "lima-s-answer", role: "region", "aria-label": "Lima's answer" },
-      el(doc, "div", { class: "lima-s-answer-question", text }), answer, el(doc, "div", { class: "lima-s-answer-foot" }, meta, actions)));
+      el(doc, "div", { class: "lima-s-answer-question", text }), answer, el(doc, "div", { class: "lima-s-answer-foot" }, meta, actions),
+      el(doc, "p", { class: "lima-s-disclaimer", text: "AI can make mistakes. Check important details." })));
     let streamed = "";
     const current = () => generation === this.generation && this.answering?.requestId === requestId;
     const off = lazy.LimaBridge.onEvent(message => {

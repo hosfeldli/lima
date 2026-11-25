@@ -361,10 +361,11 @@ function searchSettings() {
 function privacySummary() {
   const facts = [
     "Notes, chats, activity and memory are encrypted on this Mac with a key in your Keychain. Lima has no account and no cloud copy.",
-    "Your AI provider (Claude, Codex or OpenCode) receives only what you send it, under that provider's own terms.",
+    "Your AI provider (Claude, Codex or OpenCode) receives what you send and what its agents read while working for you, under that provider's own terms. Lima keeps no copy on any server.",
+    "Once a day, Companion memory sends your recent requests and activity to your default AI to update its notes. Turn it off in Personal Memory.",
     "Agents and outside AI tools ask before they read your chats, take screenshots, open apps or touch your settings.",
     "Private windows are never recorded, counted or shown to agents.",
-    "Lima hides AI answers, ads and Shorts locally; nothing about your browsing leaves your Mac.",
+    "Page cleanup (hiding AI answers, ads and Shorts) runs on your Mac and sends nothing anywhere.",
   ];
   return el("ul", { class: "privacy-facts" }, facts.map(text => el("li", {}, icon("check"), el("span", { text }))));
 }

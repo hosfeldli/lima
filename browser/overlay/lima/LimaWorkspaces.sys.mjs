@@ -17,6 +17,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
   BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.sys.mjs",
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
+  LimaNotesBookmarks: "resource://lima/LimaNotesBookmarks.sys.mjs",
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
   SessionStore: "moz-src:///browser/components/sessionstore/SessionStore.sys.mjs",
   broadcastToLimaPages: "resource://lima/actors/LimaParent.sys.mjs",
@@ -855,6 +856,10 @@ class Workspaces {
         return reply({ kept: keep.length });
       }
       if (request.kind === "location") return reply(await approximateLocation(win));
+      if (request.kind === "notesOutline") return reply(await lazy.LimaNotesBookmarks.outline());
+      if (request.kind === "notesOrganize") return reply(await lazy.LimaNotesBookmarks.organize(request.noteId, request.folder));
+      if (request.kind === "notesArchive") return reply(await lazy.LimaNotesBookmarks.archiveNote(request.noteId));
+      if (request.kind === "notesUnarchive") return reply(await lazy.LimaNotesBookmarks.unarchiveNote(request.noteId));
       if (request.kind === "listTabs") return reply(this.#pages(win, request.workspaceId).map(tab => ({ url: tabURL(tab), title: tab.label, selected: tab.selected })));
       if (request.kind === "action") return reply(await this.#act(win, request));
       if (request.kind === "readTab") return reply(await this.#read(win, request.workspaceId, request.url));

@@ -371,14 +371,18 @@ function inline(node, text, attachments) {
     if (match.index > last) node.append(text.slice(last, match.index));
     if (match[1]) {
       const src = match[3];
+      // ![alt|50%](…) or ![alt|320](…): the image's width.
+      const [alt, size] = match[2].split("|");
+      const width = /^(?:\d{1,4}|\d{1,3}%)$/.test(size ?? "") ? size : null;
+      const sized = img => { if (width) { img.dataset.width = width; img.style.width = width.endsWith("%") ? width : `${width}px`; } return img; };
       if (src.startsWith("lima-attachment:")) {
-        const img = el("img", { alt: match[2], "data-src": src });
+        const img = sized(el("img", { alt, "data-src": src }));
         attachments?.(src.slice("lima-attachment:".length)).then(url => { img.src = url; }).catch(() => {});
         node.append(img);
       } else if (src.startsWith("data:image/")) {
-        node.append(el("img", { alt: match[2], src }));
+        node.append(sized(el("img", { alt, src })));
       } else {
-        node.append(`[image: ${match[2]}]`);
+        node.append(`[image: ${alt}]`);
       }
     } else if (match[4]) {
       const href = match[6];
@@ -468,4 +472,32 @@ export function permissionSheet(kind, { onGranted } = {}) {
   dialog.showModal();
   check().then(ok => { if (ok) granted(); });
   return dialog;
+}
+
+// A springy settle (about 10% overshoot), as a linear() curve.
+const POP_SPRING = "linear(0, 0.22 7%, 0.62 15%, 0.95 23%, 1.1 31%, 1.12 36%, 1.08 43%, 1.01 53%, 0.98 62%, 1 78%, 1)";
+
+/** Shows or hides a composer button with a little pop: it springs out of
+ * nothing when it appears and shrinks away when it goes. */
+export function popButton(button, show) {
+  const leaving = button.dataset.leaving === "true";
+  if (show ? !button.hidden && !leaving : button.hidden || leaving) return;
+  button.limaPop?.cancel();
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (show) {
+    delete button.dataset.leaving;
+    button.hidden = false;
+    if (!reduce) button.limaPop = button.animate([{ opacity: 0, transform: "scale(.55)" }, { opacity: 1, transform: "none" }], { duration: 440, easing: POP_SPRING });
+    return;
+  }
+  if (reduce) { button.hidden = true; return; }
+  button.dataset.leaving = "true";
+  const animation = button.limaPop = button.animate([{ opacity: 1, transform: "none" }, { opacity: 0, transform: "scale(.55)" }],
+    { duration: 170, easing: "cubic-bezier(.4, 0, 1, 1)", fill: "forwards" });
+  animation.onfinish = () => {
+    if (button.limaPop !== animation) return;
+    delete button.dataset.leaving;
+    button.hidden = true;
+    animation.cancel();
+  };
 }

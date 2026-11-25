@@ -20,6 +20,9 @@ ChromeUtils.defineESModuleGetters(lazy, {
 
 export const NOTE_URL_PREFIX = "about:lima?note=";
 const FOLDER_PREF = "lima.notes.defaultFolderGuid";
+const ARCHIVE_PREF = "lima.notes.archiveFolderGuid";
+// Where each archived note came from, so Restore puts it back: {noteId: folderGuid}.
+const ARCHIVED_FROM_PREF = "lima.notes.archivedFrom";
 const TRASH_DELAY_MS = 1500;
 
 function log(message) {
@@ -179,6 +182,106 @@ class NotesBookmarks {
     if (!bookmark) return false;
     await lazy.PlacesUtils.bookmarks.update({ guid: bookmark.guid, parentGuid: folderGuid, index: lazy.PlacesUtils.bookmarks.DEFAULT_INDEX });
     return true;
+  }
+
+  // MARK: Folders and the archive (for people and agents alike)
+
+  /** The folder at `path` ("Recipes/Desserts") inside Notes, made as needed. */
+  async folderAt(path) {
+    let parentGuid = await this.defaultFolderGuid();
+    const parts = String(path ?? "").split("/").map(part => part.trim()).filter(Boolean).slice(0, 4);
+    if (!parts.length) return parentGuid;
+    for (const part of parts) {
+      if (part.length > 80) throw new Error("Folder names are at most 80 characters.");
+      if (part.toLowerCase() === "archive" && parentGuid === (await this.defaultFolderGuid())) throw new Error("Use archive to put notes in the Archive.");
+      let found = null;
+      await lazy.PlacesUtils.bookmarks.fetch({ parentGuid }, child => {
+        if (!found && child.type === lazy.PlacesUtils.bookmarks.TYPE_FOLDER && child.title === part) found = child.guid;
+      });
+      parentGuid = found ?? (await this.createFolder(part, parentGuid)).guid;
+    }
+    return parentGuid;
+  }
+
+  /** Moves a note into the folder at `path`, creating it. Archived notes leave the archive. */
+  async organize(noteId, path) {
+    const guid = await this.folderAt(path);
+    if (!(await this.moveNote(noteId, guid))) throw new Error("That note isn't in your notebook.");
+    this.#forgetArchived(noteId);
+    lazy.broadcastToLimaPages("notes.bookmarks");
+    return { folder: String(path ?? "").split("/").map(part => part.trim()).filter(Boolean).join("/") || "Notes" };
+  }
+
+  async archiveGuid() {
+    const saved = Services.prefs.getStringPref(ARCHIVE_PREF, "");
+    if (saved && (await lazy.PlacesUtils.bookmarks.fetch(saved))) return saved;
+    const folder = await this.createFolder("Archive", await this.defaultFolderGuid());
+    Services.prefs.setStringPref(ARCHIVE_PREF, folder.guid);
+    return folder.guid;
+  }
+
+  #archivedFrom() {
+    try { return JSON.parse(Services.prefs.getStringPref(ARCHIVED_FROM_PREF, "{}")) ?? {}; } catch { return {}; }
+  }
+
+  #forgetArchived(noteId) {
+    const map = this.#archivedFrom();
+    if (!(noteId in map)) return;
+    delete map[noteId];
+    Services.prefs.setStringPref(ARCHIVED_FROM_PREF, JSON.stringify(map));
+  }
+
+  async isArchived(noteId) {
+    const archive = Services.prefs.getStringPref(ARCHIVE_PREF, "");
+    return Boolean(archive) && (await this.noteBookmarks()).some(b => b.noteId === noteId && b.parentGuid === archive);
+  }
+
+  /** Out of the way but kept: the note moves to Notes ▸ Archive. */
+  async archiveNote(noteId) {
+    const [bookmark] = (await this.noteBookmarks()).filter(b => b.noteId === noteId);
+    if (!bookmark) throw new Error("That note isn't in your notebook.");
+    const archive = await this.archiveGuid();
+    if (bookmark.parentGuid === archive) return { archived: true };
+    const map = this.#archivedFrom();
+    map[noteId] = bookmark.parentGuid;
+    Services.prefs.setStringPref(ARCHIVED_FROM_PREF, JSON.stringify(map));
+    await this.moveNote(noteId, archive);
+    lazy.broadcastToLimaPages("notes.bookmarks");
+    return { archived: true };
+  }
+
+  /** Back to the folder it was archived from (or Notes if that's gone). */
+  async unarchiveNote(noteId) {
+    const from = this.#archivedFrom()[noteId];
+    const target = from && from !== Services.prefs.getStringPref(ARCHIVE_PREF, "") && (await lazy.PlacesUtils.bookmarks.fetch(from))
+      ? from : await this.defaultFolderGuid();
+    if (!(await this.moveNote(noteId, target))) throw new Error("That note isn't in your notebook.");
+    this.#forgetArchived(noteId);
+    lazy.broadcastToLimaPages("notes.bookmarks");
+    return { archived: false };
+  }
+
+  /** Every note by folder path, for agents organizing them. */
+  async outline() {
+    const root = await this.defaultFolderGuid();
+    const archive = Services.prefs.getStringPref(ARCHIVE_PREF, "");
+    const paths = new Map([[root, "Notes"]]);
+    const pathOf = async guid => {
+      if (paths.has(guid)) return paths.get(guid);
+      const folder = await lazy.PlacesUtils.bookmarks.fetch(guid);
+      if (!folder) return "Elsewhere";
+      const parent = folder.parentGuid && folder.parentGuid !== guid ? await pathOf(folder.parentGuid) : null;
+      const path = parent && parent !== "Elsewhere" ? `${parent}/${folder.title}` : this.#folderTitle(folder);
+      paths.set(guid, path);
+      return path;
+    };
+    const folders = new Map();
+    for (const bookmark of await this.noteBookmarks()) {
+      const path = await pathOf(bookmark.parentGuid);
+      if (!folders.has(path)) folders.set(path, { folder: path, archive: bookmark.parentGuid === archive, notes: [] });
+      folders.get(path).notes.push({ id: bookmark.noteId, title: bookmark.title });
+    }
+    return [...folders.values()];
   }
 
   /** Delete from the UI = remove its bookmarks; the observer trashes the note. */

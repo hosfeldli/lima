@@ -63,6 +63,9 @@ actor LinkPreviews {
         return value
     }
 
+    /// The same cookie-less fetch, for note images.
+    func fetchData(_ url: URL, limit: Int) async throws -> (Data, URLResponse) { try await fetch(url, limit: limit) }
+
     private func fetch(_ url: URL, limit: Int) async throws -> (Data, URLResponse) {
         let (bytes, response) = try await session.bytes(from: url)
         if let status = (response as? HTTPURLResponse)?.statusCode, !(200..<400).contains(status) {

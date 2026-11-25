@@ -260,3 +260,36 @@ private func archivedText(_ archive: URL, _ entry: String) throws -> String {
     #expect(sent?.contains("signed in") == true)
     #expect(await runtime.workspacePrompts.list().arrayValue?.count == 1, "only the unanswered question is left")
 }
+
+@Test(.timeLimit(.minutes(1))) func workspaceOpensAndClosesExtraChatsButKeepsItsMainOne() async throws {
+    let (runtime, dir) = try await workspaceRuntime()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let id = try #require(await call(runtime, "workspace.create", ["name": .string("Site")]).result?["id"]?.stringValue)
+    let main = try #require(try await runtime.workspaces.get(id).conversationID)
+    let extra = try #require(await call(runtime, "workspace.newChat", ["id": .string(id)]).result?["id"]?.stringValue)
+    let opened = try await runtime.conversations.get(extra)
+    #expect(opened.workspaceID == id && opened.title == "Chat 2", "same workspace, so the same agent tools")
+    #expect(await runtime.workspaceAgentConfiguration(opened).arguments.contains("--mcp-config"))
+
+    let chats = await call(runtime, "workspace.chats", ["id": .string(id)]).result?.arrayValue ?? []
+    #expect(chats.map { $0["id"]?.stringValue } == [main, extra], "main first")
+    #expect(chats.first?["title"]?.stringValue == "Main")
+
+    #expect(await call(runtime, "workspace.closeChat", ["id": .string(id), "chatId": .string(main)]).error != nil, "the main chat stays")
+    #expect(await call(runtime, "workspace.newChat", ["id": .string(id)], origin: .mcp).error != nil, "only the user opens chats")
+    let after = await call(runtime, "workspace.closeChat", ["id": .string(id), "chatId": .string(extra)]).result?.arrayValue ?? []
+    #expect(after.map { $0["id"]?.stringValue } == [main])
+    #expect((try? await runtime.conversations.get(extra)) == nil)
+}
+
+@Test func noteImagesAreReencodedAndPathsResolve() throws {
+    // A 2×1 PNG in, a PNG out; text that isn't an image is refused.
+    let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR4nGP4z8DwnwEIGAAa/AP9JQxNWQAAAABJRU5ErkJggg==")!
+    let out = try #require(NoteImages.normalized(png))
+    #expect(out.starts(with: [0x89, 0x50, 0x4E, 0x47]))
+    #expect(NoteImages.normalized(Data("not an image".utf8)) == nil)
+    #expect(NoteImages.fileURL("pics/cake.png", base: "/tmp/ws")?.path == "/tmp/ws/pics/cake.png")
+    #expect(NoteImages.fileURL("/a/../b.png", base: nil)?.path == "/b.png")
+    #expect(NoteImages.fileURL("relative.png", base: nil) == nil)
+    #expect(NoteImages.fileURL("~/x.png", base: nil)?.path == NSHomeDirectory() + "/x.png")
+}

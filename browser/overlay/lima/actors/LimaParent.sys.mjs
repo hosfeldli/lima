@@ -362,6 +362,12 @@ export class LimaParent extends JSWindowActorParent {
         return lazy.LimaNotesBookmarks.trashNote(payload.noteId);
       case "restoreNote":
         return lazy.LimaNotesBookmarks.restoreNote(payload.noteId);
+      case "archiveNote":
+        return lazy.LimaNotesBookmarks.archiveNote(payload.noteId);
+      case "unarchiveNote":
+        return lazy.LimaNotesBookmarks.unarchiveNote(payload.noteId);
+      case "noteArchived":
+        return lazy.LimaNotesBookmarks.isArchived(payload.noteId);
       case "workspaceOf": {
         // The workspace a terminal or chat tab belongs to (for its header).
         const { LimaWorkspaces } = ChromeUtils.importESModule("resource://lima/LimaWorkspaces.sys.mjs");

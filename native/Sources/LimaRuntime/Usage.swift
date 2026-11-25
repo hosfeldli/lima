@@ -118,7 +118,9 @@ public actor UsageStats {
             "build": .number(Double(Int(info["CFBundleVersion"] as? String ?? "") ?? 0)),
             "os": .string("\(os.majorVersion).\(os.minorVersion)"),
             "counts": .object(counts.mapValues { .number(Double($0)) }),
-            "settings": .object(snapshot),
+            // Which AI provider people use is shared only after an explicit
+            // yes (Settings, or OK on the notice), not by the on-by-default setting.
+            "settings": .object(state.asked ? snapshot : snapshot.filter { $0.key != "provider" }),
         ]
         if let region = Locale.current.region?.identifier, region.count == 2 { object["region"] = .string(region) }
         return .object(object)
