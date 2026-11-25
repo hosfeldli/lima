@@ -203,7 +203,7 @@ install -m 0755 "$HOST_BIN" "$C/MacOS/lima-host"
 # On-device dictation: the whisper-cli 4.x shipped (pinned in vendor-assets.json).
 # The 466 MB model isn't copied; the runtime finds the one Lima 4 installed.
 mkdir -p "$R/Whisper/runtime"
-install -m 0755 "$ROOT/legacy/lima-4/Packaging/WhisperRuntime/whisper-cli" "$R/Whisper/runtime/whisper-cli"
+install -m 0755 "$BROWSER/vendor/whisper/whisper-cli" "$R/Whisper/runtime/whisper-cli"
 mkdir -p "$R/lima-runtime"
 cp "$ROOT/native/Sources/LimaRuntime/Resources/emoji-test.txt" "$R/lima-runtime/"
 

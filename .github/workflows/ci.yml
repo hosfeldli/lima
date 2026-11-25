@@ -39,7 +39,7 @@ jobs:
             files="$(git diff --name-only "$BASE" HEAD)"
           fi
           grep -qE '^native/' <<<"$files" && echo "native=true" >> "$GITHUB_OUTPUT" || echo "native=false" >> "$GITHUB_OUTPUT"
-          grep -qE '^(browser/scripts/|browser/launcher/|browser/(lima\.lock|release|vendor-assets)\.json|native/Sources/LimaHost/|\.github/workflows/ci\.yml)' <<<"$files" \
+          grep -qE '^(browser/scripts/|browser/launcher/|browser/vendor/|browser/(lima\.lock|release|vendor-assets)\.json|native/Sources/LimaHost/|\.github/workflows/ci\.yml)' <<<"$files" \
             && echo "packaging=true" >> "$GITHUB_OUTPUT" || echo "packaging=false" >> "$GITHUB_OUTPUT"
 
   lint:

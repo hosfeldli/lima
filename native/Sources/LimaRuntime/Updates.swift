@@ -247,6 +247,7 @@ final class UpdateService: @unchecked Sendable {
         unzip.waitUntilExit()
         try? fm.removeItem(at: archive)
         let app = staging.appendingPathComponent("Lima.app")
+        UpdateApplier.releaseFromQuarantine(app)
         guard unzip.terminationStatus == 0,
               (try? fm.destinationOfSymbolicLink(atPath: app.path)) == nil,
               let identity = UpdateVerifier.bundleBuild(app),
@@ -488,6 +489,19 @@ public enum UpdateApplier {
         run(["-f", target.path])
     }
 
+    /// Clears macOS's download quarantine from a verified bundle. A copy that
+    /// still carries it (inherited from the first download's install) opens
+    /// translocated: Gatekeeper asks again whether to open an app downloaded
+    /// from the Internet, and the browser, finding itself in a read-only
+    /// copy, offers to open the installed Lima instead. The signature and
+    /// notarization are what Lima trusts, and they're checked either way.
+    static func releaseFromQuarantine(_ bundle: URL) {
+        let name = "com.apple.quarantine"
+        _ = removexattr(bundle.path, name, XATTR_NOFOLLOW)
+        guard let items = FileManager.default.enumerator(at: bundle, includingPropertiesForKeys: nil) else { return }
+        for case let item as URL in items { _ = removexattr(item.path, name, XATTR_NOFOLLOW) }
+    }
+
     static func apply(source: URL, target: URL, state: URL, waitFor pid: pid_t, keepBackup: Bool) -> String? {
         let fm = FileManager.default
         guard source.resolvingSymlinksInPath() != target.resolvingSymlinksInPath() else {
@@ -511,6 +525,7 @@ public enum UpdateApplier {
         do {
             try fm.createDirectory(at: swapDirectory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
             try fm.copyItem(at: source, to: pending)
+            releaseFromQuarantine(pending)
             try UpdateVerifier.appSatisfiesInstalledRequirement(pending, installed: target)
         } catch { return "Lima couldn't prepare the replacement app: \(error.localizedDescription)" }
         guard renamex_np(target.path, pending.path, UInt32(RENAME_SWAP)) == 0 else {

@@ -209,3 +209,19 @@ func developerIDAppMatchesOnlyItsOwnTeam() throws {
     #expect(try check(team) == errSecSuccess)
     #expect(try check("575W282638") != errSecSuccess)
 }
+
+@Test func installedUpdateIsReleasedFromQuarantine() throws {
+    let bundle = FileManager.default.temporaryDirectory.appendingPathComponent("quarantine-\(UUID().uuidString)/Lima.app")
+    let binary = bundle.appendingPathComponent("Contents/MacOS/lima")
+    try FileManager.default.createDirectory(at: binary.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("#!/bin/sh\n".utf8).write(to: binary)
+    defer { try? FileManager.default.removeItem(at: bundle.deletingLastPathComponent()) }
+    let flag = Array("0083;00000000;Safari;".utf8)
+    for path in [bundle.path, binary.path] {
+        #expect(setxattr(path, "com.apple.quarantine", flag, flag.count, 0, 0) == 0)
+    }
+    UpdateApplier.releaseFromQuarantine(bundle)
+    for path in [bundle.path, binary.path] {
+        #expect(getxattr(path, "com.apple.quarantine", nil, 0, 0, 0) == -1)
+    }
+}

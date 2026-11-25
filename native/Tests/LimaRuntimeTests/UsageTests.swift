@@ -3,13 +3,21 @@ import Testing
 @testable import LimaProtocol
 @testable import LimaRuntime
 
-@Test func usageCountsNothingUntilTurnedOnAndReportsOnlyKnownFields() async throws {
-    let usage = UsageStats(state: nil, endpoint: nil) { _ in }
-    await usage.count("chat.sent")
-    #expect(await usage.preview()["counts"]?["chat.sent"] == nil, "off by default: nothing is counted")
-    #expect(await usage.view["enabled"]?.boolValue == false)
+@Test func usageIsOnUnlessTurnedOffAndKeepsAnEarlierNo() async throws {
+    #expect(await UsageStats(state: nil, endpoint: nil) { _ in }.view["enabled"]?.boolValue == true, "on by default")
+    var unanswered = UsageStats.State()
+    unanswered.enabled = false
+    #expect(await UsageStats(state: unanswered, endpoint: nil) { _ in }.view["enabled"]?.boolValue == true, "never answered: the new default")
+    var declined = unanswered
+    declined.asked = true
+    let off = UsageStats(state: declined, endpoint: nil) { _ in }
+    await off.count("chat.sent")
+    #expect(await off.view["enabled"]?.boolValue == false, "an earlier no stays no")
+    #expect(await off.preview()["counts"]?["chat.sent"] == nil, "nothing is counted while off")
+}
 
-    await usage.configure(enabled: true)
+@Test func usageReportsOnlyKnownFields() async throws {
+    let usage = UsageStats(state: nil, endpoint: nil) { _ in }
     await usage.count("chat.sent")
     await usage.count("chat.sent")
     await usage.count("https://example.com/secret") // not an event name: ignored

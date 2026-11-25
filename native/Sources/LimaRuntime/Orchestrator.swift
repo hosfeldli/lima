@@ -888,6 +888,8 @@ public actor Orchestrator {
             ```lima-report
             {"status":"completed | blocked | failed","summary":"one or two sentences","actionsTaken":["…"],"artifacts":["changed files, notes, URLs"],"verification":["checks you actually ran and their observed result"],"remainingIssues":["…"],"nextSteps":["…"],"needsUser":""}
             ```
+            If you can foresee needing approvals, sign-ins or site interaction from the user, ask for them all before you begin \
+            with workspace_request_permissions, then pass each item's id as grant to workspace_request_approval when you reach it.
             When you need the user's approval or a sign-in to continue, use workspace_request_approval (kind "login" for a \
             sign-in), workspace_ask_user for a decision, or workspace_browser_plan for site actions, and wait for the answer in \
             this same turn. Lima shows each as a card that stays until the user answers; asking in your reply text shows no card. \

@@ -238,6 +238,90 @@ actor WorkspacePrompts {
         for id in requests.keys.filter({ requests[$0]?.workspace == workspace }) { expire(runtime, id: id) }
         // A lead workspace closing ends its family's sessions; a helper's doesn't.
         sessions = sessions.filter { $0.value.family != workspace }
+        grants = grants.filter { $0.value.family != workspace }
+    }
+
+    // MARK: Permissions asked for up front
+
+    /// Something the user approved at the start of a task
+    /// (workspace_request_permissions), so the agent doesn't stop for it
+    /// later. Like a browser session it belongs to a workspace family. A
+    /// browser grant covers plans on its site within its paths and actions;
+    /// it never covers a high-risk plan (money, irreversible account changes)
+    /// or a sensitive step inside a page, which still ask when they happen.
+    struct Grant: Sendable, Equatable {
+        enum Kind: String, Sendable { case approval, login, browser }
+        var id: String
+        var kind: Kind
+        var request: String
+        var detail: String?
+        var risk: String?
+        var url: String?
+        var paths: Set<String> = []
+        var actions: Set<String> = []
+        /// A browser plan that's high-risk: listed on the card for context, never granted.
+        var askAnyway = false
+    }
+    private struct StoredGrant { var family: String; var grant: Grant; var expires: Date }
+    private var grants: [String: StoredGrant] = [:]
+    static let grantLimit: TimeInterval = 4 * 3600
+
+    /// Reads `items` of workspace_request_permissions: up to eight, each with a
+    /// short id, what's needed and, for a browser item, the site, paths and actions.
+    static func preflightItems(_ items: JSONValue?) throws -> [Grant] {
+        guard let list = items?.arrayValue, (1...8).contains(list.count) else {
+            throw BridgeError(.badRequest, "List one to eight permissions, each with an id and a request.")
+        }
+        var seen = Set<String>()
+        return try list.map { item in
+            guard let id = item["id"]?.stringValue, id.range(of: "^[A-Za-z0-9_-]{1,40}$", options: .regularExpression) != nil, seen.insert(id).inserted,
+                  let request = item["request"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), (1...300).contains(request.count)
+            else { throw BridgeError(.badRequest, "Each permission needs a unique short id (letters, numbers, - or _) and a request of 1–300 characters.") }
+            let kind = Grant.Kind(rawValue: item["kind"]?.stringValue ?? "approval") ?? .approval
+            let detail = item["detail"]?.stringValue.map { String($0.prefix(600)) }
+            let risk = item["risk"]?.stringValue.flatMap { ["money", "account", "system"].contains($0) ? $0 : nil }
+            var grant = Grant(id: id, kind: kind, request: request, detail: detail, risk: risk)
+            if let url = item["url"]?.stringValue, let page = URL(string: url), page.host != nil, page.user == nil, page.password == nil,
+               ["https", "http"].contains(page.scheme ?? "") {
+                grant.url = String(url.prefix(400))
+            }
+            if kind == .browser {
+                guard let url = grant.url, url.hasPrefix("https://") || url.hasPrefix("http://localhost") || url.hasPrefix("http://127.0.0.1") else {
+                    throw BridgeError(.badRequest, "A browser permission needs the HTTPS page it starts on.")
+                }
+                let actions = Set((item["actions"]?.stringValue ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) })
+                guard !actions.isEmpty, actions.isSubset(of: browserActions) else {
+                    throw BridgeError(.badRequest, "A browser permission lists its actions: click, type or scroll.")
+                }
+                grant.paths = try paths(for: url, proposed: item["paths"]?.stringValue)
+                grant.actions = actions
+                grant.askAnyway = browserReview(goal: request, plan: detail ?? "") == .highRisk
+            }
+            return grant
+        }
+    }
+
+    func addGrants(_ list: [Grant], family: String, now: Date = Date()) {
+        grants = grants.filter { $0.value.expires > now }
+        for grant in list where !grant.askAnyway {
+            grants["\(family)/\(grant.id)"] = StoredGrant(family: family, grant: grant, expires: now.addingTimeInterval(Self.grantLimit))
+        }
+    }
+
+    /// The up-front approval `id` in this family, if the user gave it and it hasn't expired.
+    func preapproval(family: String, id: String, now: Date = Date()) -> Grant? {
+        guard let stored = grants["\(family)/\(id)"], stored.expires > now else { return nil }
+        return stored.grant
+    }
+
+    /// An up-front browser grant covering this plan (same site, paths and actions within it).
+    func preapprovedBrowser(family: String, url: String, paths: Set<String>, actions: Set<String>, now: Date = Date()) -> Grant? {
+        let origin = Self.origin(of: url)
+        return grants.values.first { stored in
+            stored.family == family && stored.expires > now && stored.grant.kind == .browser &&
+                stored.grant.url.flatMap(Self.origin(of:)) == origin &&
+                paths.isSubset(of: stored.grant.paths) && actions.isSubset(of: stored.grant.actions)
+        }?.grant
     }
 
     /// The workspace's agent finished its turn (or was stopped), so no tool

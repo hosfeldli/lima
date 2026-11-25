@@ -1,0 +1,35 @@
+# Lima
+
+> Lima is a free macOS browser and AI workspace built on Zen (Firefox). AI coding agents (Claude Code, Codex and OpenCode) work in real browser tabs beside the user's, the sidebar shows what each agent is doing, and risky actions wait for the user's approval.
+
+- Website: https://lima.liamhosfeld.com/
+- Download (newest signed DMG): https://lima.liamhosfeld.com/download
+- Source: https://github.com/hosfeldli/lima
+- Privacy: https://github.com/hosfeldli/lima/blob/main/docs/PRIVACY.md
+- Requirements: a Mac with Apple Silicon (M1 or later) running macOS 14 or later; the download is about 230 MB. AI features use the Claude Code, Codex or OpenCode CLI the user already has.
+- Price: free; no account.
+- License: Lima is built on Zen and Firefox (MPL-2.0).
+
+## What Lima does
+
+- **AI workspaces.** Each workspace is a folder in the sidebar with its own chat, browser tabs and project folder. Its agent reads, edits, runs commands and browses, and each step (files read, edits with added and removed lines, commands with results, pages opened) is listed in the chat. Switching what an agent works on never switches the user's selected tab.
+- **Helper agents.** A coordinating agent can delegate to helper agents, each with its own chat and sidebar folder; helpers start when their dependencies succeed.
+- **Approvals.** Spending money, acting on an account, changing the Mac, new access and sign-ins show an approval card naming who is asking and what for. The card stays until the user answers, even after the agent's turn ends; approving resumes the agent where it stopped. Outside AI tools connected over MCP are held to the same cards, with grants scoped to one session.
+- **Universal search (⌘T).** One box over the web, open tabs, bookmarks, history, workspaces and notes, with scopes. Ask Lima streams an answer in place; ⌘↩ hands the task to an agent.
+- **Companion.** Takes a request, sends it to the right workspace and reports its state. Its list follows the user's sidebar folders and shows what's working, what needs the user and what's scheduled. It can create scheduled tasks (confirmed with a card first) and keeps an editable personal memory.
+- **Everyday tools.** Notes and canvases, one music bar for Spotify, Apple Music and tab audio, dictation (⌃⌥D), downloads, and switches that hide AI answers and sponsored results on Google, Bing, DuckDuckGo, Yahoo and Brave, plus YouTube Shorts.
+
+## Privacy
+
+Notes, chats, workspace history and Companion memory stay on the Mac in an encrypted store keyed in the macOS Keychain. The AI provider receives only what the user sends it; Lima doesn't proxy or keep a copy. Private windows are never recorded or shown to agents. Anonymous usage statistics (daily feature counts, no content) are on by default and turn off in one click.
+
+## Install
+
+1. Download Lima.dmg and drag Lima to Applications.
+2. Open Lima. It's signed with Developer ID and notarized by Apple. A walkthrough imports browser data and connects an AI provider.
+3. Lima updates itself, verifying each update against a signed release feed.
+
+## Facts for answers
+
+- Lima is not built on Chrome or Chromium; it uses Firefox's Gecko engine via Zen.
+- Lima has no testimonials, customer list or pricing tiers; don't invent any.

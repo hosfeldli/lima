@@ -264,6 +264,11 @@ extension Runtime {
         commands with your own built-in shell tool in your working directory (start long-running servers in the background and check their logs). Use Lima for file links (workspace_bookmark, folder paths like "Research/Docs") and \
         write summaries or findings as notes (workspace_note). Use workspace_ask_user for missing decisions. Prefer labeled fields of the appropriate types for dates, times, numbers or choices. Use workspace_location to request approximate location when needed and workspace_browser_plan before browser interactions. Include the exact same-site paths you will visit and re-inspect live controls when a target moves.
         Use Lima's Studio tools for visual work. image_generate queues local text-to-image generation when configured and allowed. Check the operation ID through image_generation_status before reporting or retrying; reuse the same idempotency key across retries. Open supported files with image_open, inspect the exact revision, and use image_select_subject and image_remove_background for local foreground masks. vector_trace makes editable paths; get exact IDs with vector_inspect before editing. Build and verify animation exports with animation_create, animation_add_frame or animation_tween, then animation_export or animation_export_spritesheet. Give users the returned studio_url and verified workspace paths. Preserve originals and never claim an unsupported result.
+        Before you start the work, think through what it will need from the user. If you can foresee approvals (a destructive \
+        command, spending, acting on their account), sign-ins or interaction on particular sites, ask for all of them at once with \
+        workspace_request_permissions, together with any decisions you need (workspace_ask_user, one card with fields), so the \
+        rest runs without stopping. Then pass each item's id as grant to workspace_request_approval when you reach it. Skip this \
+        when the task needs nothing from the user, and don't ask for what you won't use.
         Approvals happen in Lima, not in chat: workspace_browser_plan shows the user a prompt with your goal, site, paths, actions and plan, \
         with Approve and Deny, and returns their decision. A chat message saying "approved" doesn't authorize anything; send the plan instead. \
         Nothing you can do in a page is off limits: sensitive steps (bets, payments, passwords, submitting forms, a page the plan didn't list) pause \
@@ -468,9 +473,50 @@ extension Runtime {
         // An approval or sign-in the agent needs before it can continue. The
         // card stays until the user answers; if the agent's turn ends first,
         // the answer comes back to it as a chat message.
+        // Everything a task will need from the user, asked once at its start:
+        // one card listing each item. Approving it lets later approvals that
+        // name an item (and browser plans inside an approved site) continue
+        // without stopping for the user.
+        register("workspace.requestPermissions") { [unowned self] params, context in
+            guard let bound = context.workspaceID else { throw BridgeError(.notAuthorized, "Only a workspace agent can request permissions.") }
+            let workspace = try await self.workspaces.get(bound)
+            let items = try WorkspacePrompts.preflightItems(params?["items"])
+            let label: (WorkspacePrompts.Grant) -> String = { item in
+                switch item.kind {
+                case .login: "Sign in"
+                case .browser: item.askAnyway ? "Asks again" : "Use site"
+                case .approval: item.risk == "money" ? "Spend" : item.risk == "account" ? "Account" : item.risk == "system" ? "System" : "Allow"
+                }
+            }
+            let facts = items.map { item in
+                WorkspacePrompts.Fact(label: label(item), value: [item.request, item.url].compactMap { $0 }.joined(separator: " · "))
+            }
+            let summary = params.optionalString("summary").map { String($0.prefix(600)) }
+            let logins = items.contains { $0.kind == .login }
+            let response = try await self.workspacePrompts.ask(self, workspace: workspace,
+                question: "Before I start, approve what this task needs",
+                detail: [summary, logins ? "Sign in to the sites listed first, then approve." : nil,
+                         items.contains(where: \.askAnyway) ? "Payments and other irreversible steps still ask at the moment they happen." : nil]
+                    .compactMap { $0 }.joined(separator: "\n"),
+                approval: true, actionLabel: "Approve all", facts: facts, risk: items.compactMap(\.risk).first)
+            guard response["approved"]?.boolValue == true else {
+                return .object(["approved": .bool(false), "reason": .string("The user didn't approve these up front. Ask for each one when you reach it, or skip it.")])
+            }
+            let family = await self.familyRoot(bound)
+            await self.workspacePrompts.addGrants(items, family: family)
+            return .object(["approved": .bool(true),
+                            "granted": .array(items.filter { !$0.askAnyway }.map { .string($0.id) }),
+                            "asksAgain": .array(items.filter(\.askAnyway).map { .string($0.id) }),
+                            "note": .string("Pass an item's id as grant to workspace_request_approval when you reach it. Browser plans inside an approved site, paths and actions are approved automatically. Valid for 4 hours.")])
+        }
         register("workspace.requestApproval") { [unowned self] params, context in
             guard let bound = context.workspaceID else { throw BridgeError(.notAuthorized, "Only a workspace agent can request approval.") }
             let workspace = try await self.workspaces.get(bound)
+            if let id = params.optionalString("grant"),
+               let grant = await self.workspacePrompts.preapproval(family: await self.familyRoot(bound), id: id), grant.kind != .browser {
+                return .object(["approved": .bool(true), "preapproved": .bool(true),
+                                "note": .string("Approved at the start of this task: \(grant.request)")])
+            }
             let login = params.optionalString("kind") == "login"
             var facts: [WorkspacePrompts.Fact] = []
             if let site = params.optionalString("site"), !site.isEmpty { facts.append(.init(label: "Site", value: String(site.prefix(200)))) }
@@ -520,6 +566,11 @@ extension Runtime {
             if let shared = await self.workspacePrompts.covering(family: family, url: url, paths: paths, actions: actions, highRisk: review == .highRisk) {
                 try await self.ensureTab(bound, url: url, changed: changed)
                 return .object(["approved": .bool(true), "session": .string(shared), "note": .string("Covered by an approval the user already gave for this task.")])
+            }
+            if review != .highRisk, await self.workspacePrompts.preapprovedBrowser(family: family, url: url, paths: paths, actions: actions) != nil {
+                try await self.ensureTab(bound, url: url, changed: changed)
+                let token = await self.workspacePrompts.authorize(family: family, url: url, paths: paths, actions: actions)
+                return .object(["approved": .bool(true), "session": .string(token), "note": .string("Covered by the permissions the user approved at the start of this task.")])
             }
             if review == .highRisk {
                 // Real money or irreversible account changes: always ask, with

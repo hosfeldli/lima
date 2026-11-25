@@ -3,9 +3,9 @@
   "schemaVersion": 1,
   "assets": {
     "whisper-cli": {
-      "path": "legacy/lima-4/Packaging/WhisperRuntime/whisper-cli",
+      "path": "browser/vendor/whisper/whisper-cli",
       "sha256": "7bc894dd031cdb777a68d07a567ddc37a702b70ccd26adccf20f85e6f6e6cecc",
-      "provenance": "whisper.cpp v1.9.1 (f049fff95a089aa9969deb009cdd4892b3e74916), arm64 static CPU build, see legacy/lima-4/Packaging/WhisperRuntime/REVISION"
+      "provenance": "whisper.cpp v1.9.1 (f049fff95a089aa9969deb009cdd4892b3e74916), arm64 static CPU build, see browser/vendor/whisper/REVISION"
     },
     "xterm.js": {
       "path": "browser/overlay/lima/ui/vendor/xterm.js",

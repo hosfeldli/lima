@@ -4,7 +4,7 @@
 
 Lima 5 is a macOS browser and AI workspace built on Zen. Make browser changes in `browser/overlay/lima/`. Gecko modules and actors live there, while the `about:lima` UI and its assets live in `ui/`. The launcher and repack tooling live in `browser/launcher/` and `browser/scripts/`. The pinned Zen source is in `browser/zen-upstream/`.
 
-Native SwiftPM targets live in `native/Sources/`, with matching test targets in `native/Tests/`. `LimaHost` builds the `lima-host` executable, and `LimaRuntime` composes the native services. See `protocols/ipc/bridge-v1.md` for the browser–native contract and `docs/architecture/` for implementation notes. `legacy/lima-4/` is the migration reference.
+Native SwiftPM targets live in `native/Sources/`, with matching test targets in `native/Tests/`. `LimaHost` builds the `lima-host` executable, and `LimaRuntime` composes the native services. See `protocols/ipc/bridge-v1.md` for the browser–native contract and `docs/architecture/` for implementation notes.
 
 ## Build, Test, and Run
 

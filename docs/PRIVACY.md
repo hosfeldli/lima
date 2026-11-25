@@ -15,8 +15,8 @@ Lima is built so your browsing, notes and AI work stay on your Mac.
 ## Agents and outside AI tools
 Agents and AI tools connected over MCP can't read your chats, take screenshots, open apps, export keys or change settings without your approval. The approval card says who is asking and what for. Reads of notes, search and activity by outside tools follow the grants in Settings → Data & permissions.
 
-## Anonymous usage statistics (off unless you turn it on)
-Lima asks once. If you say yes, it sends **one report a day** with:
+## Anonymous usage statistics (on unless you turn it off)
+Lima tells you once, in the sidebar, with a **Turn Off** button, and Settings → Privacy turns it off at any time. If you turned it down before 5.0.8, it stays off. While it's on, Lima sends **one report a day** with:
 - how many times each feature was used, from a fixed list (for example `search.opened`, `chat.sent`, `workspace.created`);
 - the Lima version and build, and the macOS version;
 - the region from macOS's language settings (for example `US`);

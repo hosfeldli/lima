@@ -6,7 +6,6 @@ A macOS-native browser and AI workspace built on a Zen Browser fork. Spec: `docs
 browser/   zen-upstream (pinned submodule), overlay/ (Lima chrome), launcher/, scripts/
 native/    Swift runtime: LimaProtocol, LimaAuthorization, LimaTerminal, LimaAgentSupervisor, lima-host
 protocols/ browser ↔ native bridge contract
-legacy/    Lima 4.x (ray-placement) with full history — migration source
 docs/      spec, build, Orca port, migration map
 ```
 

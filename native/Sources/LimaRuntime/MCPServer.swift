@@ -243,13 +243,43 @@ extension MCPServer {
              properties: ["question": ["type": "string"]], required: ["question"], structuredProperties: ["fields": WorkspaceQuestionField.schema]) { args, client in
             try client.call("workspace.askUser", params: args)
         },
+        Tool(name: "workspace_request_permissions", description: """
+            At the start of a task, before doing the work: ask once for everything you can foresee needing from the user \
+            (approvals for destructive commands, spending or account actions; sign-ins; browser interaction on specific sites). \
+            Lima shows one card listing them and waits. Once approved, pass an item's id as grant to workspace_request_approval \
+            when you reach it (it returns approved without asking again), and browser plans within an approved site, paths and \
+            actions are approved without a card. Payments and other irreversible steps still ask when they happen. Ask only for \
+            what this task will really need; skip this tool when nothing does.
+            """,
+             properties: ["summary": ["type": "string", "description": "One or two sentences: the plan, and why these are needed."]],
+             required: ["items"],
+             structuredProperties: ["items": .object([
+                "type": .string("array"), "minItems": .number(1), "maxItems": .number(8),
+                "items": .object([
+                    "type": .string("object"), "required": .array([.string("id"), .string("request")]),
+                    "properties": .object([
+                        "id": .object(["type": .string("string"), "description": .string("Short id, e.g. push-branch")]),
+                        "request": .object(["type": .string("string"), "description": .string("What you'll do, in one sentence.")]),
+                        "detail": .object(["type": .string("string")]),
+                        "kind": .object(["enum": .array([.string("approval"), .string("login"), .string("browser")])]),
+                        "risk": .object(["enum": .array([.string("money"), .string("account"), .string("system")])]),
+                        "url": .object(["type": .string("string"), "description": .string("Sign-in page, or the page a browser item starts on")]),
+                        "paths": .object(["type": .string("string"), "description": .string("browser: comma-separated exact paths on that site")]),
+                        "actions": .object(["type": .string("string"), "description": .string("browser: comma-separated click, type or scroll")]),
+                    ]),
+                ]),
+             ])]) { args, client in
+            try client.call("workspace.requestPermissions", params: args)
+        },
         Tool(name: "workspace_request_approval", description: """
             Ask the user to approve something before you do it (a destructive command, spending money, acting on their account), \
             or, with kind "login", to sign in somewhere you can't (include the sign-in url and site). Lima shows a card and waits. \
-            The result says whether they approved. If it says the request stays open, end your turn: the answer arrives later \
+            The result says whether they approved. If the user approved it up front (workspace_request_permissions), pass that \
+            item's id as grant and no card is shown. If it says the request stays open, end your turn: the answer arrives later \
             as a chat message, and you continue from there.
             """,
              properties: ["request": ["type": "string", "description": "What you need approved, in one sentence."],
+                          "grant": ["type": "string", "description": "The id of an item the user approved up front, if this is it."],
                           "detail": ["type": "string", "description": "Why, and exactly what will happen."],
                           "kind": ["type": "string", "description": "approval (default) or login"],
                           "site": ["type": "string"], "url": ["type": "string"],

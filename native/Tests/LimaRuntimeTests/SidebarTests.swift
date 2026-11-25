@@ -291,3 +291,31 @@ private func pendingPrompt(_ runtime: Runtime) async throws -> JSONValue {
     #expect(await prompts.permittedPaths(token, family: "lead", url: "https://stake.example/play", action: "click", now: now.addingTimeInterval(500)) != nil)
     #expect(await prompts.permittedPaths(token, family: "lead", url: "https://stake.example/play", action: "click", now: now.addingTimeInterval(900)) == nil)
 }
+
+@Test func permissionsApprovedUpFrontCoverLaterRequestsButNeverMoneyPlans() async throws {
+    let items: JSONValue = .array([
+        .object(["id": .string("push"), "request": .string("Push the release branch"), "risk": .string("system")]),
+        .object(["id": .string("docs"), "kind": .string("browser"), "request": .string("Read and search the docs"),
+                 "url": .string("https://docs.example/start"), "paths": .string("/guide,/api"), "actions": .string("click,scroll")]),
+        .object(["id": .string("bet"), "kind": .string("browser"), "request": .string("Place a bet on the match"),
+                 "url": .string("https://stake.example/sports"), "actions": .string("click")]),
+    ])
+    let parsed = try WorkspacePrompts.preflightItems(items)
+    #expect(parsed.map(\.id) == ["push", "docs", "bet"])
+    #expect(parsed[1].paths == ["/start", "/guide", "/api"])
+    #expect(parsed[2].askAnyway, "a money plan is listed but never granted up front")
+    #expect(throws: BridgeError.self) { try WorkspacePrompts.preflightItems(.array([.object(["id": .string("a b"), "request": .string("x")])])) }
+    #expect(throws: BridgeError.self) { try WorkspacePrompts.preflightItems(.array([.object(["id": .string("s"), "kind": .string("browser"), "request": .string("x"), "url": .string("https://a.example")])])) }
+
+    let prompts = WorkspacePrompts()
+    let now = Date()
+    await prompts.addGrants(parsed, family: "lead", now: now)
+    #expect(await prompts.preapproval(family: "lead", id: "push", now: now)?.request == "Push the release branch")
+    #expect(await prompts.preapproval(family: "other", id: "push", now: now) == nil, "grants stay in their workspace family")
+    #expect(await prompts.preapproval(family: "lead", id: "bet", now: now) == nil)
+    #expect(await prompts.preapproval(family: "lead", id: "push", now: now.addingTimeInterval(WorkspacePrompts.grantLimit + 1)) == nil)
+    #expect(await prompts.preapprovedBrowser(family: "lead", url: "https://docs.example/guide", paths: ["/guide"], actions: ["click"], now: now) != nil)
+    #expect(await prompts.preapprovedBrowser(family: "lead", url: "https://docs.example/guide", paths: ["/admin"], actions: ["click"], now: now) == nil)
+    #expect(await prompts.preapprovedBrowser(family: "lead", url: "https://docs.example/guide", paths: ["/guide"], actions: ["type"], now: now) == nil)
+    #expect(await prompts.preapprovedBrowser(family: "lead", url: "https://stake.example/sports", paths: ["/sports"], actions: ["click"], now: now) == nil)
+}

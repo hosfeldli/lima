@@ -369,7 +369,7 @@ function privacySummary() {
   return el("ul", { class: "privacy-facts" }, facts.map(text => el("li", {}, icon("check"), el("span", { text }))));
 }
 
-/** Opt-in, anonymous, previewable and deletable usage statistics. */
+/** Anonymous usage statistics: on by default, previewable, deletable, and off with one click. */
 function usageSettings() {
   const box = el("input", { type: "checkbox" });
   const status = el("p", { class: "muted", role: "status" });

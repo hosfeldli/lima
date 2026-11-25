@@ -9,6 +9,8 @@
  * Firefox's update section and the policy banner that switching it off
  * would otherwise show. */
 
+import { sinkAway } from "resource://lima/LimaMotion.sys.mjs";
+
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
@@ -85,7 +87,7 @@ function showCard(win, status) {
   const doc = win.document;
   doc.getElementById(NOTIFICATION_ID)?.remove();
   const onQuit = Services.prefs.getBoolPref(INSTALL_ON_QUIT, true);
-  const close = () => { card.remove(); win.removeEventListener("resize", reposition); };
+  const close = () => { win.removeEventListener("resize", reposition); sinkAway(card, { done: () => card.remove() }); };
   const reposition = () => place(win, card);
   const restart = el(doc, "button", { type: "button", class: "lima-update-primary", onclick: () => {
     restart.disabled = true;

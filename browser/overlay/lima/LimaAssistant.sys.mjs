@@ -29,16 +29,77 @@ export const LimaAssistant = {
     win.addEventListener("unload", () => Services.prefs.removeObserver("lima.personality", updatePersonality), { once: true });
     button.append(icon);
     const root = doc.documentElement;
-    function placeButton() {
-      const floats = root.getAttribute("zen-compact-mode") === "true" || root.getAttribute("zen-right-side") === "true";
+    const toolbox = doc.getElementById("navigator-toolbox");
+    // The attributes Zen sets while a compact sidebar is slid out.
+    const SHOWN = ["zen-has-hover", "zen-user-show", "zen-has-empty-tab", "flash-popup", "has-popup-menu", "movingtab", "zen-compact-mode-active"];
+    // Where the Companion rests while the sidebar is closed (matches lima.css):
+    // the left edge, just below the window buttons Zen shows on hover.
+    const REST_X = 10;
+    const REST_Y = 44;
+    const sidebarOut = () => SHOWN.some(name => toolbox?.hasAttribute(name));
+    const shouldFloat = () => root.getAttribute("zen-right-side") === "true" ||
+      (root.getAttribute("zen-compact-mode") === "true" && !sidebarOut());
+    /* Closing the sidebar (compact mode) carries the Companion with it: an
+     * empty slot keeps its place in the sidebar's toolbar while the button,
+     * fixed above everything, follows that slot each frame until it reaches
+     * the window's left edge, and stays there. Opening the sidebar
+     * reverses it: the button waits at the edge until the sliding slot
+     * reaches it, rides in and drops into place. */
+    let slot = null;
+    let frame = 0;
+    let startedAt = 0;
+    let still = 0;
+    let last = "";
+    const put = (x, y) => { button.style.left = `${x}px`; button.style.top = `${y}px`; };
+    function settle(floats) {
+      if (frame) win.cancelAnimationFrame(frame);
+      frame = 0;
+      button.style.removeProperty("left");
+      button.style.removeProperty("top");
       button.toggleAttribute("floating", floats);
-      const parent = floats ? surface : toolbar;
-      if (button.parentNode !== parent) parent.prepend(button);
+      if (floats) { if (button.parentNode !== surface) surface.prepend(button); slot?.remove(); }
+      else if (slot?.isConnected) slot.replaceWith(button);
+      else if (button.parentNode !== toolbar) toolbar.prepend(button);
+      slot = null;
+    }
+    function step(now) {
+      frame = 0;
+      const rect = slot.getBoundingClientRect();
+      const x = Math.max(REST_X, rect.left);
+      const lift = Math.min(1, Math.max(0, (rect.left - REST_X) / 48));
+      put(x, REST_Y + (rect.top - REST_Y) * lift);
+      const key = `${Math.round(rect.left)},${Math.round(rect.top)}`;
+      still = key === last ? still + 1 : 0;
+      last = key;
+      if ((still >= 4 && now - startedAt > 150) || now - startedAt > 900) { settle(shouldFloat()); return; }
+      frame = win.requestAnimationFrame(step);
+    }
+    function placeButton() {
+      const floats = shouldFloat();
+      if (!slot && button.hasAttribute("floating") === floats && button.parentNode === (floats ? surface : toolbar)) return;
+      const instant = root.getAttribute("zen-right-side") === "true" || !button.isConnected ||
+        win.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (instant) { settle(floats); return; }
+      if (!slot) {
+        const from = button.getBoundingClientRect();
+        slot = doc.createElementNS(HTML, "span");
+        slot.id = "lima-assistant-slot";
+        if (button.parentNode === toolbar) button.replaceWith(slot);
+        else toolbar.prepend(slot);
+        button.setAttribute("floating", "");
+        if (button.parentNode !== surface) surface.prepend(button);
+        put(from.left, from.top);
+      }
+      startedAt = win.performance.now();
+      still = 0;
+      last = "";
+      if (!frame) frame = win.requestAnimationFrame(step);
     }
     placeButton();
     const layout = new win.MutationObserver(placeButton);
     layout.observe(root, { attributes: true, attributeFilter: ["zen-compact-mode", "zen-right-side"] });
-    win.addEventListener("unload", () => layout.disconnect(), { once: true });
+    if (toolbox) layout.observe(toolbox, { attributes: true, attributeFilter: SHOWN });
+    win.addEventListener("unload", () => { layout.disconnect(); if (frame) win.cancelAnimationFrame(frame); }, { once: true });
 
     const panel = doc.createXULElement("vbox");
     panel.id = "lima-assistant-panel";

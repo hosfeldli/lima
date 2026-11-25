@@ -195,25 +195,50 @@ zen-folder[lima-archiving] > .tab-group-label-container { opacity: .7; }
 .lima-dock-rail button[lima-reconnect]::after {
   content: "!"; color: #a85b61; background: var(--lima-panel); width: 9px; height: 10px; font: 750 10px/1 system-ui;
 }
-.lima-services-notice {
-  padding: 7px 8px; border-radius: 9px; border: 1px solid var(--lima-line); background: var(--lima-bg);
-}
 .lima-services-notice[hidden] { display: none; }
 #lima-dock button:disabled { opacity: .4; }
+/* Mail and meeting reminders (attachServices → remind): a card one size up
+ * from the dock's other rows, in the update card's language. LimaMotion
+ * springs it in and sinks it away; overflow clips its height animation. */
 .lima-services-notice {
-  display: flex; align-items: center; gap: 5px; animation: lima-reminder-pop 240ms cubic-bezier(.2,.8,.25,1) both;
+  display: grid; gap: 6px; padding: 9px 9px 10px 10px; border-radius: 12px; overflow: clip;
+  border: 1px solid var(--lima-line); background: var(--lima-bg); box-shadow: 0 6px 18px -10px rgb(0 0 0 / .28);
+  transform-origin: 50% 100%;
 }
-.lima-services-notice img { width: 33px; flex: none; }
-.lima-reminder-copy { display: grid; justify-items: start; flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.lima-reminder-detail { font-size: 11px; color: var(--lima-ink-2); }
-.lima-reminder-actions { display: flex; align-items: center; flex-wrap: wrap; column-gap: 6px; }
-#lima-dock .lima-reminder-actions button[aria-label] { inline-size: 24px; block-size: 24px; }
-#lima-dock .lima-reminder-copy button { font-size: 11px; text-decoration: underline; text-underline-offset: 2px; }
+.lima-reminder-head { display: flex; align-items: center; gap: 7px; min-width: 0; color: var(--lima-ink-2); font-size: 11px; }
+.lima-reminder-icon {
+  display: grid; place-items: center; inline-size: 22px; block-size: 22px; flex: none; border-radius: 6px;
+  background: var(--lima-select); box-shadow: inset 0 0 0 1px var(--lima-line); color: var(--lima-ink);
+}
+#lima-dock .lima-reminder-icon .lima-glyph { inline-size: 13px; block-size: 13px; }
+.lima-reminder-source { font-weight: 600; color: var(--lima-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lima-reminder-when { margin-inline-end: auto; white-space: nowrap; }
+.lima-reminder-when::before { content: "·"; margin-inline-end: 6px; }
+.lima-services-notice[data-kind="meeting-start"] .lima-reminder-when { color: var(--lima-ink); font-weight: 600; }
+#lima-dock .lima-reminder-head > button { inline-size: 22px; block-size: 22px; margin: -3px -3px -3px 0; border-radius: 6px; flex: none; display: grid; place-items: center; }
+#lima-dock .lima-reminder-head > button:hover { background: var(--lima-hover); }
+.lima-reminder-copy { display: grid; gap: 1px; min-width: 0; overflow-wrap: anywhere; }
+.lima-reminder-copy > strong {
+  font-size: 13px; font-weight: 600; line-height: 1.3;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+}
+.lima-reminder-detail { font-size: 11.5px; color: var(--lima-ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lima-reminder-actions { display: flex; align-items: center; gap: 6px; margin-block-start: 2px; }
+#lima-dock .lima-reminder-actions > button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px; block-size: 26px; padding: 0 10px;
+  border-radius: 7px; border: 1px solid var(--lima-line); font: 500 11.5px/1 -apple-system, sans-serif; white-space: nowrap; flex: none;
+  transition: background-color 150ms ease, transform 150ms ease;
+}
+#lima-dock .lima-reminder-actions > .lima-reminder-primary { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; background: var(--lima-accent); border-color: var(--lima-accent); color: var(--lima-accent-contrast); }
+#lima-dock .lima-reminder-actions > .lima-reminder-primary:hover { filter: brightness(1.08); }
+#lima-dock .lima-reminder-actions > .lima-reminder-secondary:hover { background: var(--lima-hover); }
+#lima-dock .lima-reminder-actions > button:active { transform: scale(.97); }
+#lima-dock .lima-reminder-actions .lima-glyph { inline-size: 12px; block-size: 12px; }
+#lima-dock .lima-services-notice button:focus-visible { outline: 2px solid var(--lima-accent); outline-offset: 1px; }
 /* Results and failures of sidebar actions (LimaSidebar showSidebarNotice). */
 #lima-action-notice {
-  display: flex; align-items: flex-start; gap: 6px; padding: 7px 6px 7px 9px; border-radius: 9px;
-  border: 1px solid var(--lima-line); background: var(--lima-bg); font-size: 12px;
-  animation: lima-reminder-pop 240ms cubic-bezier(.2,.8,.25,1) both;
+  display: flex; align-items: flex-start; gap: 6px; padding: 7px 6px 7px 9px; border-radius: 9px; overflow: clip;
+  border: 1px solid var(--lima-line); background: var(--lima-bg); font-size: 12px; transform-origin: 50% 100%;
 }
 #lima-action-notice[hidden] { display: none; }
 #lima-action-notice[data-tone="bad"] { border-color: var(--lima-error); }
@@ -222,9 +247,10 @@ zen-folder[lima-archiving] > .tab-group-label-container { opacity: .7; }
 .lima-action-buttons { display: flex; gap: 8px; }
 #lima-dock .lima-action-buttons button { font-size: 11px; font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
 #lima-dock .lima-action-close { inline-size: 22px; block-size: 22px; flex: none; }
+/* Panels and toasts that CSS animates rise on the same spring as LimaMotion. */
 @keyframes lima-reminder-pop {
-  from { opacity: 0; transform: translateY(6px) scale(.98); }
-  70% { transform: translateY(-1px); }
+  from { opacity: 0; transform: translateY(14px) scale(.95); }
+  to { opacity: 1; transform: none; }
 }
 #lima-dock .lima-glyph, .lima-dock-rail .lima-glyph {
   width: 15px;
@@ -293,19 +319,37 @@ zen-folder[lima-archiving] > .tab-group-label-container { opacity: .7; }
 #lima-spotify[data-source="browser"] .lima-spotify-icon { border-radius: 0; mask-image: url("resource://lima-ui/icons/audio.svg"); }
 /* Lima's player replaces Zen's media card: same compact shape, every source. */
 :root[lima-window] #zen-media-controls-toolbar { display: none !important; }
+/* The bar: one row, 32px tall (it was 44). */
 #lima-dock .lima-music-bar {
-  display: flex; align-items: center; gap: 4px; padding: 6px 8px; min-inline-size: 0; cursor: pointer;
+  display: flex; align-items: center; gap: 3px; padding: 3px 6px; min-inline-size: 0; cursor: pointer;
 }
+#lima-dock .lima-music-bar .lima-music-btn { width: 24px; height: 24px; }
+#lima-dock .lima-music-bar .lima-music-btn.big { width: 26px; height: 26px; }
+#lima-dock .lima-music-bar .lima-glyph { width: 13px; height: 13px; }
+/* Other sources playing at once: one slim row each, stacked above the bar. */
+.lima-music-stack { display: grid; }
+.lima-music-alt {
+  display: flex; align-items: center; gap: 7px; block-size: 28px; padding: 0 6px 0 9px; box-sizing: border-box;
+  border-block-end: 1px solid color-mix(in srgb, currentColor 10%, transparent); overflow: clip; cursor: pointer;
+  font-size: 11px; color: var(--lima-ink-2); transform-origin: 50% 100%;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+.lima-music-alt:hover { background: var(--lima-hover); color: var(--lima-ink); }
+.lima-music-alt:focus-visible { outline: 2px solid var(--lima-accent); outline-offset: -2px; border-radius: 10px; }
+.lima-music-alt-icon { display: grid; place-items: center; inline-size: 18px; block-size: 18px; flex: none; }
+.lima-music-alt-icon img { inline-size: 16px; block-size: 16px; border-radius: 4px; object-fit: contain; }
+#lima-dock .lima-music-alt-icon .lima-glyph { inline-size: 13px; block-size: 13px; }
+.lima-music-alt-icon .lima-music-mark { mask-image: url("resource://lima-ui/marks/music.svg"); }
+.lima-music-alt-text { flex: 1; min-inline-size: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#lima-dock .lima-music-alt .lima-music-btn { width: 22px; height: 22px; }
+#lima-dock .lima-music-alt .lima-glyph { width: 11px; height: 11px; }
 #lima-dock .lima-music-bar > .lima-music-transport { flex: 1; }
 .lima-music-sources { display: flex; align-items: center; gap: 2px; flex: none; min-inline-size: 0; }
 #lima-dock #lima-music .lima-music-source {
-  position: relative; display: grid; place-items: center; inline-size: 30px; block-size: 30px; padding: 0;
-  border-radius: 8px; opacity: .5;
+  position: relative; display: grid; place-items: center; inline-size: 26px; block-size: 26px; padding: 0; border-radius: 7px;
 }
-#lima-dock #lima-music .lima-music-source[aria-pressed="true"] { opacity: 1; }
-#lima-dock #lima-music .lima-music-source:hover { opacity: 1; }
-.lima-music-source img { inline-size: 22px; block-size: 22px; border-radius: 5px; object-fit: contain; }
-.lima-music-source .lima-glyph { inline-size: 18px; block-size: 18px; }
+.lima-music-source img { inline-size: 19px; block-size: 19px; border-radius: 5px; object-fit: contain; }
+#lima-dock .lima-music-source .lima-glyph { inline-size: 15px; block-size: 15px; }
 .lima-music-source .lima-music-mark { mask-image: url("resource://lima-ui/marks/music.svg"); }
 /* A small note marks each source that's making sound. */
 .lima-music-source[data-playing]::after {
@@ -682,7 +726,12 @@ zen-folder[lima-archiving] > .tab-group-label-container { opacity: .7; }
   color: inherit;
   background: transparent;
 }
-#lima-assistant-toggle[floating] { position: fixed; left: 74px; top: 6px; z-index: 12; background: var(--lima-panel); color: var(--lima-ink); }
+/* Sidebar closed: the Companion rests at the window's left edge, below the
+ * window buttons (LimaAssistant carries it there with the sliding sidebar).
+ * With the sidebar on the right it sits beside the window buttons. */
+:root[zen-right-side="true"] #lima-assistant-toggle[floating] { left: 74px; top: 6px; }
+#lima-assistant-toggle[floating] { position: fixed; left: 10px; top: 44px; z-index: 12; background: var(--lima-panel); color: var(--lima-ink); box-shadow: 0 4px 14px -6px rgb(0 0 0 / .3); }
+#lima-assistant-slot { flex: 0 0 36px; width: 36px; height: 36px; align-self: center; }
 #lima-assistant-toggle:hover,
 #lima-assistant-toggle[aria-expanded="true"] { background: var(--lima-hover); color: var(--lima-ink); }
 #lima-assistant-toggle:focus-visible { outline: 2px solid var(--lima-accent); outline-offset: -2px; }
@@ -1014,9 +1063,9 @@ zen-folder:is([lima-agents], [lima-tabs], [lima-images])[collapsed] > .tab-group
   background: var(--lima-bg); color: var(--lima-ink);
   box-shadow: var(--lima-overlay-shadow);
   font: 12.5px/1.4 -apple-system, BlinkMacSystemFont, sans-serif;
-  animation: lima-update-in 180ms cubic-bezier(.2, .8, .3, 1) both;
+  animation: lima-update-in 560ms linear(0, 0.18 6%, 0.52 13%, 0.86 21%, 1.05 29%, 1.08 34%, 1.07 39%, 1.02 48%, 0.99 57%, 0.985 64%, 1 80%, 1) both; transform-origin: 0 100%;
 }
-@keyframes lima-update-in { from { opacity: 0; transform: translateY(6px); } }
+@keyframes lima-update-in { from { opacity: 0; transform: translateY(16px) scale(.95); } to { opacity: 1; transform: none; } }
 .lima-update-head { display: flex; align-items: flex-start; gap: 10px; }
 .lima-update-icon {
   flex: none; width: 28px; height: 28px; border-radius: 8px; background: var(--lima-select);
@@ -1095,7 +1144,7 @@ zen-folder:is([lima-agents], [lima-tabs], [lima-images])[collapsed] > .tab-group
 .lima-downloads-panel {
   display: grid; gap: 4px; max-height: min(420px, 60vh); padding: 8px; border: 1px solid var(--lima-border); border-radius: 12px;
   background: var(--lima-bg); color: var(--lima-fg); box-shadow: 0 10px 28px rgb(0 0 0 / .16);
-  animation: lima-reminder-pop 200ms cubic-bezier(.2,.8,.25,1) both;
+  animation: lima-reminder-pop 520ms linear(0, 0.18 6%, 0.52 13%, 0.86 21%, 1.05 29%, 1.08 34%, 1.07 39%, 1.02 48%, 0.99 57%, 0.985 64%, 1 80%, 1) both;
 }
 .lima-downloads-panel[hidden], .lima-download-toast[hidden] { display: none !important; }
 .lima-downloads-panel > header { display: flex; align-items: center; gap: 6px; padding: 0 2px 4px; }
@@ -1120,7 +1169,7 @@ zen-folder:is([lima-agents], [lima-tabs], [lima-images])[collapsed] > .tab-group
 .lima-downloads-empty { margin: 6px 4px 8px; font-size: 11px; color: var(--lima-secondary); }
 .lima-download-toast {
   display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--lima-border); border-radius: 10px;
-  background: var(--lima-bg); font-size: 11px; animation: lima-reminder-pop 200ms cubic-bezier(.2,.8,.25,1) both;
+  background: var(--lima-bg); font-size: 11px; overflow: clip; transform-origin: 50% 100%;
 }
 .lima-download-toast-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .lima-download-toast button { appearance: none; border: 0; border-radius: 6px; padding: 2px 6px; background: var(--lima-hover); color: inherit; font: inherit; }

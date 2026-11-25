@@ -1,7 +1,7 @@
 /* Anonymous usage statistics, browser side (the runtime keeps the counts and
- * sends them; see native UsageStats). Off until the user says yes. Lima asks
- * once, after the walkthrough, and never again after an answer; a dismissed
- * question comes back at most every two weeks. Private windows never count. */
+ * sends them; see native UsageStats). On unless the user turns them off:
+ * Lima says so once, after the walkthrough, with Turn Off right there, and
+ * Settings → Privacy turns it off any time. Private windows never count. */
 
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
@@ -10,7 +10,6 @@ ChromeUtils.defineESModuleGetters(lazy, {
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
 });
 
-const ASK_AGAIN = 14 * 24 * 3600 * 1000;
 const PREFS = ["lima.theme", "lima.agent.provider", "lima.tabs.height", "lima.search.hideAI", "lima.search.hideAds",
   "lima.youtube.hideShorts", "lima.search.replaceAddressBar"];
 let started = false;
@@ -46,24 +45,23 @@ export const LimaUsage = {
     lazy.LimaBridge.request("usage.count", { event }).catch(() => {});
   },
 
-  /** The one-time question, in the sidebar dock. */
+  /** Says once, in the sidebar dock, that anonymous counts are shared and
+   * how to turn them off. Nothing waits on an answer. */
   async maybeAsk(win, show) {
     if (lazy.PrivateBrowsingUtils.isWindowPrivate(win)) return;
-    const askedAt = Number(Services.prefs.getStringPref("lima.analytics.askedAt", "0")) || 0;
-    if (Date.now() - askedAt < ASK_AGAIN) return;
+    if (Services.prefs.getBoolPref("lima.analytics.noticeShown", false)) return;
     // Not during the walkthrough.
     if ([...win.gBrowser.tabs].some(tab => tab.linkedBrowser?.currentURI?.spec === "about:lima?view=welcome")) return;
     const state = await lazy.LimaBridge.request("usage.get").catch(() => null);
-    if (!state || state.asked) return;
-    Services.prefs.setStringPref("lima.analytics.askedAt", String(Date.now()));
-    const answer = enabled => lazy.LimaBridge.request("usage.set", { enabled });
+    if (!state || state.asked || !state.enabled) return;
+    Services.prefs.setBoolPref("lima.analytics.noticeShown", true);
     show(win, {
-      title: "Help improve Lima?",
-      detail: "Share anonymous daily counts of the features you use. Never pages, searches, text, files or accounts. Off unless you say yes.",
+      title: "Lima shares anonymous usage counts",
+      detail: "How often each feature is used, once a day. Never pages, searches, text, files or accounts.",
       tone: "ask",
       actions: [
-        ["Share", () => answer(true)],
-        ["No thanks", () => answer(false)],
+        ["OK", () => lazy.LimaBridge.request("usage.set", { enabled: true })],
+        ["Turn Off", () => lazy.LimaBridge.request("usage.set", { enabled: false })],
         ["What's sent?", () => win.gBrowser.selectedTab = win.gBrowser.addTab("about:lima?view=integrations&section=privacy",
           { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal() })],
       ],

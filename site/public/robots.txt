@@ -1,0 +1,6 @@
+# Lima's site is public. Search engines and AI assistants are welcome.
+User-agent: *
+Allow: /
+Disallow: /download
+
+Sitemap: https://lima.liamhosfeld.com/sitemap.xml

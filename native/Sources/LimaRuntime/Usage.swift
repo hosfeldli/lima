@@ -1,9 +1,10 @@
 import Foundation
 import LimaProtocol
 
-/// Anonymous usage statistics, off unless the user turns them on.
+/// Anonymous usage statistics, on unless the user turns them off.
 ///
-/// When on, Lima counts which features were used each day (from a fixed list
+/// Lima says so once (a sidebar notice with Turn Off) and Settings → Privacy
+/// turns it off at any time; anyone who said no before stays off. When on, Lima counts which features were used each day (from a fixed list
 /// of event names), adds the app version, macOS version, the region of the
 /// Mac's language setting and a few settings, and sends one report a day
 /// under a random ID that changes every month. Nothing else: no URLs, page or
@@ -12,8 +13,8 @@ import LimaProtocol
 /// under the current ID. Nothing is counted while it's off.
 public actor UsageStats {
     public struct State: Codable, Sendable, Equatable {
-        public var enabled = false
-        /// The one-time question has been answered.
+        public var enabled = true
+        /// The user chose on or off (in the notice or in Settings).
         public var asked = false
         public var installID = UsageStats.newID()
         public var idMonth = UsageStats.month(Date())
@@ -43,7 +44,11 @@ public actor UsageStats {
     private let endpoint: URL?
 
     public init(state: State?, endpoint: URL?, save: @escaping @Sendable (State) async -> Void) {
-        self.state = state ?? State()
+        var state = state ?? State()
+        // Before 5.0.8 sharing was opt-in; whoever never answered gets the
+        // new default, and whoever said no keeps their answer.
+        if !state.asked { state.enabled = true }
+        self.state = state
         self.endpoint = endpoint
         self.save = save
     }

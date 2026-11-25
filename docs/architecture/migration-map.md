@@ -1,11 +1,10 @@
 # Lima 4.x → 5.0 migration map
 
-`legacy/lima-4` is ray-placement imported with full history (git subtree). It still builds on its own
-(`make -C legacy/lima-4 build`) and stays the 4.x maintenance line. Services move into `native/` one at
-a time behind LimaProtocol contracts; nothing is deleted from legacy until its replacement passes the
-milestone exit gate.
+The Lima 4.x source (ray-placement) was kept in `legacy/lima-4` until every service below had moved
+into `native/`; it was removed after 5.0.7. Its history stays in the ray-placement repository and in this
+repository's history before that removal. The whisper-cli binary it shipped now lives in `browser/vendor/whisper/`.
 
-| 4.x area (`legacy/lima-4/Sources/RayPlacement`) | 5.0 destination | Milestone |
+| 4.x area (`Sources/RayPlacement`) | 5.0 destination | Milestone |
 |---|---|---|
 | Developer Terminal (SwiftTerm) | terminal-service + sidebar terminal | 3 |
 | AIProvider*, AIExecution*, OpenCode adapter | AgentSupervisor CLI adapters (direct API backends removed) | 1, 3 |

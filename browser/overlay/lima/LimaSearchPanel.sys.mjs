@@ -266,6 +266,8 @@ class Panel {
   close({ restoreFocus = true } = {}) {
     if (!this.isOpen) return;
     this.scrim.hidden = true;
+    this.win.clearTimeout(this.holdTimer);
+    this.results.style.removeProperty("min-height");
     this.generation++;
     this.answering = null;
     this.spinner.hidden = true;
@@ -288,6 +290,7 @@ class Panel {
     const suggest = !target && !this.private && Services.prefs.getBoolPref("browser.search.suggest.enabled", true);
     this.set = new ResultSet(text, { webExpected: !!text && suggest });
     this.pending = 0;
+    this.holdHeight();
     const local = rows => {
       if (generation !== this.generation) return;
       this.set.addLocal(rows);
@@ -301,7 +304,7 @@ class Panel {
       Promise.race([Promise.resolve().then(fn), deadline]).catch(() => {}).finally(() => {
         if (generation !== this.generation) return;
         onTimeout?.();
-        if (--this.pending === 0) this.spinner.hidden = true;
+        if (--this.pending === 0) { this.spinner.hidden = true; if (this.win.performance.now() - this.typedAt > 350) this.releaseHeight(); }
       });
     };
 
@@ -694,8 +697,43 @@ class Panel {
 
   // MARK: View
 
+  /* Typing starts each query with only the first rows; tabs, notes, history
+   * and web suggestions follow over the next few hundred milliseconds. So
+   * the list doesn't collapse and regrow on every keystroke, it only grows
+   * while you type, shrinks once you pause (and its sources have settled),
+   * and every change in the panel's height eases instead of jumping. */
+  holdHeight() {
+    this.typedAt = this.win.performance.now();
+    const height = this.results.getBoundingClientRect().height;
+    const held = parseFloat(this.results.style.minHeight) || 0;
+    if (height > held) this.results.style.minHeight = `${height}px`;
+    this.win.clearTimeout(this.holdTimer);
+    this.holdTimer = this.win.setTimeout(() => { if (!this.pending) this.releaseHeight(); else this.holdTimer = this.win.setTimeout(() => this.releaseHeight(), 600); }, 420);
+  }
+
+  releaseHeight() {
+    this.win.clearTimeout(this.holdTimer);
+    if (!this.results.style.minHeight) return;
+    this.resize(() => this.results.style.removeProperty("min-height"));
+  }
+
+  /** Runs `change`, then eases the panel from its old height to the new one. */
+  resize(change) {
+    const before = this.panel.getBoundingClientRect().height;
+    change();
+    const after = this.panel.getBoundingClientRect().height;
+    if (!this.isOpen || Math.abs(before - after) < 2 || this.win.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    this.heightAnimation?.cancel();
+    this.heightAnimation = this.panel.animate([{ height: `${before}px` }, { height: `${after}px` }],
+      { duration: Math.min(260, 140 + Math.abs(before - after) / 3), easing: "cubic-bezier(.2, .8, .25, 1)" });
+  }
+
   paint() {
     if (this.answering) return;
+    this.resize(() => this.paintRows());
+  }
+
+  paintRows() {
     const doc = this.doc;
     const text = parseQuery(this.input.value).text;
     const { sections, headings, hidden } = this.set.layout();

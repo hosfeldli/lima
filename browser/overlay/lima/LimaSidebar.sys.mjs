@@ -9,6 +9,7 @@
  *    workspace or sidebar section. */
 
 import { googleEssentialTabs, refreshGoogleEssentials } from "resource://lima/LimaGoogleEssentials.sys.mjs";
+import { isLeaving, popIn, sinkAway } from "resource://lima/LimaMotion.sys.mjs";
 
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
@@ -67,7 +68,7 @@ export function showSidebarNotice(win, { title, detail = "", tone = "ok", action
     host.prepend(notice);
   }
   win.clearTimeout(notice.limaTimer);
-  const hide = () => { notice.hidden = true; notice.replaceChildren(); };
+  const hide = () => sinkAway(notice, { flow: true, done: () => notice.replaceChildren() });
   notice.dataset.tone = tone;
   notice.setAttribute("role", tone === "bad" ? "alert" : "status");
   notice.replaceChildren(
@@ -75,7 +76,7 @@ export function showSidebarNotice(win, { title, detail = "", tone = "ok", action
       actions.length ? el(doc, "div", { class: "lima-action-buttons" }, ...actions.map(([label, run]) =>
         el(doc, "button", { onclick: () => { hide(); Promise.resolve().then(run).catch(error => failed(win, label, error, run)); } }, label))) : null),
     el(doc, "button", { class: "lima-action-close", title: "Dismiss", "aria-label": "Dismiss", onclick: hide }, glyph(doc, "close")));
-  notice.hidden = false;
+  popIn(notice, { flow: true });
   if (tone !== "bad" && tone !== "ask") notice.limaTimer = win.setTimeout(hide, 6000);
 }
 
@@ -371,6 +372,9 @@ function attachDock(win) {
   // controls: the DJ, the track, its timeline, Spotify DJ or Show Tab,
   // volume and output.
   const sources = el(doc, "span", { class: "lima-music-sources", role: "group", "aria-label": "Playing now" });
+  // Other sources playing at the same time stack above the bar, one slim
+  // row each; clicking a row makes it the one the bar controls.
+  const stack = el(doc, "div", { class: "lima-music-stack", role: "group", "aria-label": "Also playing" });
   const mute = el(doc, "button", { class: "lima-music-btn", title: "Mute", "aria-label": "Mute", onclick: toggleMute }, glyph(doc, "volume"));
   const bar = el(doc, "div", { class: "lima-music-bar", title: "Expand music controls",
     // Buttons stop their own clicks; anywhere else on the bar expands.
@@ -388,7 +392,7 @@ function attachDock(win) {
     el(doc, "div", { class: "lima-music-audio" }, dj, showTab, volume, output), outputs);
   expanded.inert = true;
   const music = el(doc, "div", { id: "lima-music", hidden: true, "aria-label": "Now playing" },
-    bar, el(doc, "div", { class: "lima-music-reveal" }, expanded));
+    stack, bar, el(doc, "div", { class: "lima-music-reveal" }, expanded));
   const spotify = el(doc, "button", { id: "lima-spotify", title: "Music", "aria-label": "Music", "aria-expanded": "false", onclick: toggleSpotify },
     el(doc, "span", { class: "lima-spotify-icon" }));
 
@@ -450,7 +454,46 @@ function attachDock(win) {
     const image = entry.tab?.getAttribute("image");
     return image ? el(doc, "img", { src: image, alt: "" }) : glyph(doc, "audio");
   }
-  /** One icon per source that's playing; the selected one controls the bar. */
+  const tabKeys = new WeakMap();
+  let tabKeySeed = 0;
+  const entryKey = entry => entry.player !== "browser" ? entry.player
+    : entry.tab ? (tabKeys.get(entry.tab) ?? (tabKeys.set(entry.tab, `tab${++tabKeySeed}`), tabKeys.get(entry.tab))) : "browser";
+  /** A slim row for a source that's playing but not in the bar. */
+  function stackRow(entry) {
+    const text = el(doc, "span", { class: "lima-music-alt-text" });
+    const toggle = el(doc, "button", { class: "lima-music-btn", onclick: event => {
+      event.stopPropagation();
+      const current = row.limaEntry;
+      if (current.player === "browser") { current.tab?.toggleMuteAudio(); paintTrack(); return; }
+      lazy.LimaBridge.request("media.control", { action: "playpause", player: current.player })
+        .then(() => refresh(true)).catch(error => flash(error.message));
+    } }, glyph(doc, "pause"));
+    const row = el(doc, "div", { class: "lima-music-alt", role: "button", tabindex: "0", "data-key": entryKey(entry),
+      onclick: () => select(row.limaEntry),
+      onkeydown: event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(row.limaEntry); } } },
+    el(doc, "span", { class: "lima-music-alt-icon" }), text, toggle);
+    row.limaText = text;
+    row.limaToggle = toggle;
+    return row;
+  }
+  function paintStackRow(row, entry) {
+    row.limaEntry = entry;
+    const item = entry.player === "browser" ? null : tracks[entry.player];
+    const label = item ? [item.title, item.artist].filter(Boolean).join(" · ") : entry.label;
+    if (row.limaText.textContent !== label) row.limaText.textContent = label;
+    const icon = row.firstChild;
+    const src = entry.player === "browser" ? entry.tab?.getAttribute("image") ?? "" : entry.player;
+    if (icon.dataset.src !== src) { icon.dataset.src = src; icon.replaceChildren(sourceIcon(entry)); }
+    const muted = entry.player === "browser" && entry.tab?.hasAttribute("muted");
+    const action = entry.player === "browser" ? (muted ? "Unmute" : "Mute") : entry.playing ? "Pause" : "Play";
+    row.limaToggle.firstChild.style.maskImage = `url("${ICON(entry.player === "browser" ? (muted ? "mute" : "volume") : entry.playing ? "pause" : "play")}")`;
+    row.limaToggle.title = `${action} ${NAMES[entry.player]}`;
+    row.limaToggle.setAttribute("aria-label", row.limaToggle.title);
+    row.title = `Control ${entry.label}`;
+    row.setAttribute("aria-label", row.title);
+  }
+  /** The selected source's icon sits in the bar; every other source that's
+   * playing gets a row in the stack, springing in and sinking away. */
   function paintSources() {
     const open = music.hasAttribute("data-open");
     const entries = [];
@@ -462,13 +505,37 @@ function attachDock(win) {
     if (source === "browser" && browserTab?.isConnected && !tabs.includes(browserTab)) tabs.unshift(browserTab);
     for (const tab of tabs) entries.push({ player: "browser", tab, label: tab.label, playing: tab.hasAttribute("soundplaying") });
     if (!entries.length) entries.push({ player: source, tab: source === "browser" ? browserTab : null, label: NAMES[source], playing: false });
-    sources.replaceChildren(...entries.map(entry => {
-      const selected = entry.player === source && (entry.player !== "browser" || !entry.tab || entry.tab === browserTab);
-      const label = selected ? `${entry.label} — ${open ? "collapse" : "expand"} controls` : `Control ${entry.label}`;
-      return el(doc, "button", { class: "lima-music-source", "data-player": entry.player, title: label, "aria-label": label,
-        "aria-pressed": String(selected), ...(selected ? { "aria-expanded": String(open) } : {}), ...(entry.playing ? { "data-playing": "" } : {}),
-        onclick: event => { event.stopPropagation(); if (selected) toggleSpotify(); else select(entry); } }, sourceIcon(entry));
-    }));
+    const isSelected = entry => entry.player === source && (entry.player !== "browser" || !entry.tab || entry.tab === browserTab);
+    const current = entries.find(isSelected) ?? entries[0];
+    const label = `${current.label} — ${open ? "collapse" : "expand"} controls`;
+    const key = entryKey(current);
+    let button = sources.firstChild;
+    if (button?.dataset.key !== key) {
+      button = el(doc, "button", { class: "lima-music-source", "data-key": key, onclick: event => { event.stopPropagation(); toggleSpotify(); } }, sourceIcon(current));
+      sources.replaceChildren(button);
+    }
+    button.dataset.player = current.player;
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.setAttribute("aria-expanded", String(open));
+    button.toggleAttribute("data-playing", current.playing);
+
+    const rows = new Map([...stack.children].filter(row => !isLeaving(row)).map(row => [row.dataset.key, row]));
+    let previous = null;
+    for (const entry of entries) {
+      if (entry === current) continue;
+      let row = rows.get(entryKey(entry));
+      rows.delete(entryKey(entry));
+      const fresh = !row;
+      if (fresh) row = stackRow(entry);
+      paintStackRow(row, entry);
+      const place = previous ? previous.nextSibling : stack.firstChild;
+      if (row !== place) stack.insertBefore(row, place);
+      if (fresh) popIn(row, { flow: true, gap: 0 });
+      previous = row;
+    }
+    for (const row of rows.values()) sinkAway(row, { flow: true, gap: 0, done: () => row.remove() });
+    music.toggleAttribute("data-stacked", entries.length > 1);
   }
   function select(entry) {
     pinned = entry.player;
@@ -774,10 +841,10 @@ function attachServices(win, dock, rail, spotify, mic, hideSpotify) {
     const essential = googleEssentialTabs(win)[service];
     if (essential) {
       win.gBrowser.selectedTab = essential.tab;
-      notice.hidden = true;
+      closeNotice();
     } else if (snapshot?.[service] === "connected") {
       launch(name === "inbox" ? gmailURL : calendarURL);
-      notice.hidden = true;
+      closeNotice();
     } else launch(settingsURL("google"));
   }
   const control = (label, icon, run) => el(doc, "button", { title: label, "aria-label": label, onclick: run }, glyph(doc, icon));
@@ -808,38 +875,53 @@ function attachServices(win, dock, rail, spotify, mic, hideSpotify) {
     if (current?.isConnected && rail.contains(current)) current.focus();
   }
 
+  // Sinks away, then the next queued email (if any) rises in its place.
   function closeNotice() {
-    notice.hidden = true;
     win.clearTimeout(dismissTimer);
+    sinkAway(notice, { flow: true, done: () => win.setTimeout(paint, 120) });
   }
 
+  /* A mail or meeting reminder: which service and when on top, the subject
+   * or meeting in full (two lines), who or how soon, and real buttons. It
+   * stays while the pointer is on it. */
   function remind(kind, title, detail, action, duration, extra) {
     noticeKind = kind;
+    const meeting = kind.startsWith("meeting");
     notice.setAttribute("role", "status");
     notice.dataset.kind = kind;
-    notice.replaceChildren(el(doc, "img", { src: "resource://lima-ui/marks/companion.svg", alt: "" }),
+    action.classList.add("lima-reminder-primary");
+    notice.replaceChildren(
+      el(doc, "div", { class: "lima-reminder-head" },
+        el(doc, "span", { class: "lima-reminder-icon", "aria-hidden": "true" }, glyph(doc, meeting ? "calendar" : "inbox")),
+        el(doc, "span", { class: "lima-reminder-source", text: meeting ? "Calendar" : "Gmail" }),
+        el(doc, "span", { class: "lima-reminder-when", text: kind === "meeting-start" ? "Now" : meeting ? "Up next" : "New" }),
+        control("Dismiss reminder", "close", closeNotice)),
       el(doc, "div", { class: "lima-reminder-copy" }, el(doc, "strong", { text: title }),
-        el(doc, "span", { class: "lima-reminder-detail", text: detail }),
-        el(doc, "div", { class: "lima-reminder-actions" }, action, extra)),
-      control("Dismiss reminder", "close", closeNotice));
-    notice.hidden = false;
+        el(doc, "span", { class: "lima-reminder-detail", text: detail })),
+      el(doc, "div", { class: "lima-reminder-actions" }, action, extra));
+    popIn(notice, { flow: true });
     win.clearTimeout(dismissTimer);
-    dismissTimer = win.setTimeout(() => { closeNotice(); paint(); }, duration);
+    const later = ms => { win.clearTimeout(dismissTimer); dismissTimer = win.setTimeout(closeNotice, ms); };
+    notice.onmouseenter = () => win.clearTimeout(dismissTimer);
+    notice.onmouseleave = () => later(3500);
+    later(duration);
   }
 
   function meetingReminder(meeting, started) {
     const open = el(doc, "button", { onclick: () => { launch(meeting.link || calendarURL); closeNotice(); } }, "Open Calendar");
     let mic;
-    if (started) mic = control("Dictate a meeting note", "mic", () => {
+    if (started) mic = el(doc, "button", { class: "lima-reminder-secondary", title: "Dictate a meeting note", onclick: () => {
       win.clearTimeout(dismissTimer);
       const detail = notice.querySelector(".lima-reminder-detail");
       detail.textContent = "Dictate up to 50 seconds. Apple Speech Recognition may send audio to Apple.";
-      mic.replaceWith(el(doc, "button", { onclick: () => { closeNotice(); startMeetingDictation(win, meeting.title); } },
+      mic.replaceWith(el(doc, "button", { class: "lima-reminder-secondary", onclick: () => { closeNotice(); startMeetingDictation(win, meeting.title); } },
         "Start dictation"));
       notice.querySelector(".lima-reminder-actions button:last-child")?.focus();
-    });
+    } }, glyph(doc, "mic"), "Take notes");
     const minutes = Math.max(1, Math.ceil((meeting.startsAt - Date.now()) / 60000));
-    remind(started ? "meeting-start" : "meeting-soon", meeting.title, started ? "Starting now" : `Starts in ${minutes} min`,
+    const time = at => new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const span = meeting.endsAt ? `${time(meeting.startsAt)} – ${time(meeting.endsAt)}` : time(meeting.startsAt);
+    remind(started ? "meeting-start" : "meeting-soon", meeting.title, started ? span : `In ${minutes} min · ${span}`,
       open, started ? 45000 : 12000, mic);
   }
 

@@ -3,6 +3,8 @@
  * Replaces Zen's download animation and Firefox's auto-opening panel
  * (both turned off in lima.cfg). Private windows list only their own. */
 
+import { popIn, sinkAway } from "resource://lima/LimaMotion.sys.mjs";
+
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   Downloads: "resource://gre/modules/Downloads.sys.mjs",
@@ -192,11 +194,11 @@ export const LimaDownloads = {
       if (!panel.hidden || !download.succeeded) return;
       toast.replaceChildren(glyph(doc, "check"),
         el(doc, "span", { class: "lima-download-toast-name", text: fileName(download) }),
-        el(doc, "button", { onclick: () => { toast.hidden = true; open(download); } }, "Open"),
-        el(doc, "button", { onclick: () => { toast.hidden = true; download.showContainingDirectory(); } }, "Show"));
-      toast.hidden = false;
+        el(doc, "button", { onclick: () => { sinkAway(toast, { flow: true }); open(download); } }, "Open"),
+        el(doc, "button", { onclick: () => { sinkAway(toast, { flow: true }); download.showContainingDirectory(); } }, "Show"));
+      popIn(toast, { flow: true });
       win.clearTimeout(toastTimer);
-      toastTimer = win.setTimeout(() => { toast.hidden = true; }, 6000);
+      toastTimer = win.setTimeout(() => sinkAway(toast, { flow: true }), 6000);
     }
 
     const finished = new WeakSet();
