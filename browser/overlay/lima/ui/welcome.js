@@ -1,6 +1,7 @@
+import { SPRING, SETTLE } from "./motion.sys.mjs";
 import { bridge, call, el, errorText, icon, permissionSheet, setPage } from "./lib.js";
 import { companion, cueCompanion, setCompanionState } from "./companion.js";
-import { PROVIDERS } from "./composer.js";
+import { PROVIDERS, preferredAgent } from "./composer.js";
 import { setupAction } from "./views.js";
 
 /* Lima Basics: a full-viewport walkthrough. Each step pairs short copy and
@@ -33,6 +34,8 @@ export function renderWelcome(app) {
   const completed = new Set();
   // The step's own primary action (save, use this AI); Continue runs it.
   let stepAction = null;
+  let firstTaskChat = null;
+  let firstTaskPage = null;
 
   const mascot = companion("home");
   const bubble = el("span", { class: "welcome-bubble", "aria-hidden": "true" });
@@ -119,12 +122,12 @@ export function renderWelcome(app) {
     if (quiet()) return;
     const offset = direction * 28;
     copy.animate([{ opacity: 0, transform: `translateX(${offset}px)` }, { opacity: 1, transform: "none" }],
-      { duration: 420, easing: "cubic-bezier(.2,.8,.2,1)" });
+      { duration: 420, easing: SETTLE });
     scene.animate([{ opacity: 0, transform: `translateX(${offset * 1.6}px) scale(.96)` }, { opacity: 1, transform: "none" }],
-      { duration: 560, easing: "cubic-bezier(.2,.8,.2,1)" });
+      { duration: 560, easing: SETTLE });
     const words = [...title.querySelectorAll(".welcome-word")];
     words.forEach((word, position) => word.animate([{ opacity: 0, transform: "translateY(.45em) rotate(3deg)" }, { opacity: 1, transform: "none" }],
-      { duration: 460, delay: 60 + position * 55, easing: "cubic-bezier(.2,.9,.25,1.2)", fill: "backwards" }));
+      { duration: 460, delay: 60 + position * 55, easing: SPRING, fill: "backwards" }));
   }
 
   function setTitle(text) {
@@ -196,6 +199,37 @@ export function renderWelcome(app) {
             button("Grammar shortcut (⌘G)", () => bridge.openTab("about:lima?view=integrations&section=writing")),
             button("Accessibility…", () => permissionSheet("accessibility")),
             button("Files & Folders…", () => permissionSheet("files")))));
+      const demo = button(firstTaskChat ? "Watch it work" : "Try it now", async () => {
+        if (firstTaskChat) { bridge.openTab(firstTaskPage); return; }
+        demo.disabled = true;
+        try {
+          const choice = await preferredAgent();
+          if (!(await call("agents.configured")).includes(choice.provider)) {
+            status.textContent = "Connect an AI provider before running the example.";
+            show(STEPS.findIndex(step => step.id === "ai"));
+            return;
+          }
+          const workspace = await call("workspace.create", { ...choice, name: "Lima Walkthrough",
+            task: "Open https://example.com/ with workspace_open_tab and read it with workspace_read_tab. Summarize what the page is for in two sentences in this chat. This is a read-only walkthrough." });
+          firstTaskChat = workspace.conversationID;
+          firstTaskPage = `about:lima?workspace=${encodeURIComponent(workspace.id)}`;
+          demo.textContent = "Watch it work";
+          // The workspace page tells the story as the agent works.
+          bridge.openTab(firstTaskPage);
+          taskCard.dataset.started = "true";
+          status.textContent = "Your agent is on it in the Lima Walkthrough workspace. Its story fills in as it works.";
+        } finally { demo.disabled = false; }
+      }, "primary");
+      const beat = (glyph, text, index) => el("li", { class: "story-beat", style: `--n:${index}` },
+        el("span", { class: "story-dot" }, icon(glyph)), el("span", { class: "story-beat-text" }, el("strong", { text })));
+      const taskCard = el("section", { class: "welcome-first-task", "aria-label": "Your first task" },
+        el("p", { class: "welcome-first-task-title", text: "Try your first task" }),
+        el("p", { class: "muted", text: "An agent does a small, read-only job so you can see how Lima works with you:" }),
+        el("ol", { class: "story-beats" }, beat("tab", "Opens example.com in its own workspace", 0),
+          beat("globe", "Reads the page", 1), beat("chat", "Tells you what it’s for, in two sentences", 2)),
+        el("div", { class: "row" }, demo));
+      if (firstTaskChat) taskCard.dataset.started = "true";
+      content.prepend(taskCard);
       say("Woohoo!");
     }
     animateIn(direction);
@@ -350,6 +384,9 @@ export function renderWelcome(app) {
       content.replaceChildren(paragraph(installed.length
         ? `I found ${installed.map(provider => PROVIDERS[provider.provider]).join(" and ")}. Finish signing in so I can use it.`
         : "I couldn’t find a ready AI provider on this Mac. Install one in Settings, then check again. Everything else works without it."),
+        ...providers.filter(provider => provider.status === "not_installed").map(provider =>
+          setupAction(`install.${provider.provider}`, `Install ${PROVIDERS[provider.provider]}`,
+            `Install the official ${PROVIDERS[provider.provider]} CLI on this Mac?`, recheck)),
         ...installed.filter(provider => ["claude", "codex"].includes(provider.provider)).map(provider =>
           setupAction(provider.provider, `Sign in to ${PROVIDERS[provider.provider]}`, `Start ${PROVIDERS[provider.provider]} sign-in on this Mac?`, recheck)),
         el("div", { class: "row" },
