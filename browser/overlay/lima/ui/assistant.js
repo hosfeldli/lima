@@ -1,9 +1,9 @@
-import { activityStatus, bridge, call, el, errorText, filesPrivacyButton, icon, markdown, onEvent, prefs, relativeTime, setPage, popButton } from "./lib.js";
+import { activityStatus, agentSetupAction, outsideChanges, replyAuthor, bridge, call, el, errorText, filesPrivacyButton, icon, markdown, onEvent, prefs, relativeTime, setPage, popButton } from "./lib.js";
 import { agentControls, attachmentTray, QUEUE_HINT, queuedActions, restoreDraft, sendMode, sentAttachments } from "./composer.js";
 import { mediaStrip } from "./chat.js";
 import { companion, cueCompanion, setCompanionState, watchVisualActivity } from "./companion.js";
 import { workspacePrompts } from "./workspace-prompts.js";
-import { failureActivity, isFolderPermissionError } from "./tool-activity.sys.mjs";
+import { failureActivity, isFolderPermissionError, replyPreview } from "./tool-activity.sys.mjs";
 import { imageGenerationSettingsURL, watchGeneration } from "./studio-production.js";
 
 export async function renderAssistant(app, _initialWorkspace, { home = false } = {}) {
@@ -33,6 +33,13 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
   const prompts = workspacePrompts();
   // Each request is an entry; opening one shows its small chat in place.
   const requestList = el("section", { class: "companion-requests", "aria-label": "Chats", hidden: true });
+  const requestGroups = new Map([
+    ["waiting", el("section", { class: "companion-request-group", hidden: true }, el("h3", { text: "Waiting on you" }))],
+    ["today", el("section", { class: "companion-request-group", hidden: true }, el("h3", { text: "Today" }))],
+    ["done", el("section", { class: "companion-request-group", hidden: true }, el("h3", { text: "Done" }))],
+    ["earlier", el("section", { class: "companion-request-group", hidden: true }, el("h3", { text: "Earlier" }))],
+  ]);
+  requestList.append(el("header", { class: "companion-requests-head" }, el("h2", { text: "Requests" })), ...requestGroups.values());
   const openSchedules = () => bridge.openTab("about:lima?view=schedules");
   const scheduleStrip = el("button", { type: "button", class: "companion-schedules", hidden: true, onclick: openSchedules });
   const threadView = el("section", { class: "companion-thread", hidden: true });
@@ -139,7 +146,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     target.hidden = openAgent.hidden = !shownWorkspace || pending || !!requestError;
     target.textContent = shownWorkspace?.name ?? "";
     activity.update(next);
-    setCompanionState(character, next.motion ?? "idle");
+    setCompanionState(character, next.motion ?? "idle", next.label);
     recovery.replaceChildren(
       requestError && !ready ? el("button", { class: "ghost", onclick: load }, "Retry") : null,
       isFolderPermissionError(requestError ?? next.detail) ? filesPrivacyButton(reportError) : null);
@@ -360,7 +367,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
       conversation = await call("chat.create", { ...agentSettings, companion: true });
       conversation = await call("chat.record", { id: conversation.id, role: "user", text });
     } catch { conversation = { id: `local-${task.requestId}`, title: text, messages: [{ id: "u", role: "user", text, status: "complete" }], local: true }; }
-    const thread = addThread(conversation, { prepend: true });
+    const thread = addThread(conversation);
     thread.task = task;
     task.thread = thread;
     paintTask(task, "working", "Understanding the request…");
@@ -519,7 +526,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
 
   const THREAD_LIMIT = 30;
 
-  function addThread(conversation, { prepend = false } = {}) {
+  function addThread(conversation) {
     const thread = { id: conversation.id, conversation, task: null, entry: null };
     const title = el("span", { class: "companion-entry-title" });
     const state = el("span", { class: "companion-entry-state" });
@@ -536,13 +543,8 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     thread.parts = { title, state, preview, when };
     threads.set(thread.id, thread);
     requestList.hidden = false;
-    if (!requestList.firstChild) {
-      requestList.append(el("header", { class: "companion-requests-head" },
-        el("h2", { text: "Chats" }), el("span", { text: "Click one to follow up" })));
-    }
-    if (prepend) requestList.firstChild.after(thread.entry);
-    else requestList.append(thread.entry);
-    const extra = [...threads.values()].slice(THREAD_LIMIT);
+    const extra = [...threads.values()].sort((a, b) =>
+      (b.conversation.createdAt ?? b.conversation.updatedAt ?? 0) - (a.conversation.createdAt ?? a.conversation.updatedAt ?? 0)).slice(THREAD_LIMIT);
     for (const old of extra) { old.entry.remove(); threads.delete(old.id); }
     paintEntry(thread);
     return thread;
@@ -571,10 +573,20 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     thread.parts.state.textContent = label;
     const messages = (thread.conversation.messages ?? []).filter(message => message.text);
     const replies = messages.filter(message => message.role === "assistant");
-    const latest = replies.at(-1)?.text?.replace(/\s+/g, " ").trim() || thread.conversation.preview || "";
+    const latest = replyPreview(replies.at(-1)?.text ?? "", 200) || thread.conversation.preview || "";
     thread.parts.preview.textContent = latest ? `· ${latest}` : messages.length > 1 ? `· ${messages.length} messages` : "";
     const at = thread.conversation.updatedAt ?? thread.conversation.createdAt;
     thread.parts.when.textContent = at ? relativeTime(at) : "";
+    if (threads.has(thread.id)) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const group = requestGroups.get(state === "blocked" ? "waiting" : state === "complete" || state === "failed" ? "done" :
+        !at || at >= +today ? "today" : "earlier");
+      const next = [...group.querySelectorAll(".companion-entry")].find(row => row !== thread.entry && Number(row.dataset.when) < (at || Date.now()));
+      thread.entry.dataset.when = String(at || Date.now());
+      if (thread.entry.parentElement !== group || thread.entry.nextElementSibling !== (next ?? null)) group.insertBefore(thread.entry, next ?? null);
+      for (const section of requestGroups.values()) section.hidden = section.childElementCount <= 1;
+    }
     if (openThread === thread) paintThread();
   }
 
@@ -628,15 +640,17 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
       return el("div", { class: "companion-msg user" }, sentAttachments(message.attachments), el("div", { class: "bubble", text: message.text }));
     }
     if (message.role === "user") return el("div", { class: "companion-msg user" }, el("div", { class: "bubble", text: message.text }));
-    const node = el("div", { class: "companion-msg assistant", "data-status": message.status });
+    const node = el("div", { class: "companion-msg assistant", "data-status": message.status }, replyAuthor(message));
     if (message.notice) node.append(el("p", { class: "msg-notice" }, icon("redo"), el("span", { text: message.notice })));
+    const outside = outsideChanges(message);
+    if (outside) node.append(outside);
     const images = (message.steps ?? []).flatMap(step => step.images ?? []);
     if (images.length && openThread) node.append(mediaStrip(openThread.id, images.slice(-6)));
-    const body = message.text ? markdown(message.text, { breaks: true }) : el("p", { class: "muted", text: message.status === "streaming" ? "Thinking…" : "" });
+    const body = message.text ? markdown(message.text, { breaks: true, taskReports: true }) : el("p", { class: "muted", text: message.status === "streaming" ? "Thinking…" : "" });
     if (message.status === "streaming") body.classList.add("typing");
     node.append(body);
     if (message.status === "failed" && message.error) {
-      node.append(el("div", { class: "failure" }, el("span", { class: "grow", text: message.error.message }),
+      node.append(el("div", { class: "failure" }, el("span", { class: "grow", text: message.error.message }), agentSetupAction(message.error),
         el("button", { class: "ghost", onclick: async event => {
           event.currentTarget.disabled = true;
           try { openThread.conversation = await call("chat.retry", { id: openThread.id, messageId: message.id }); paintThread(); }

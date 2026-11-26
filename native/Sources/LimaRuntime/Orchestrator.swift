@@ -206,6 +206,7 @@ public actor Orchestrator {
                 "state": .string(task.state.rawValue), "role": .string(task.role.rawValue),
                 "updatedAt": .number(task.updatedAt), "startedAt": task.startedAt.map(JSONValue.number) ?? .null,
                 "recovering": .bool(task.state == .running && task.events.last?.kind == "retry"),
+                "resultSummary": task.report.map { .string(String($0.summary.prefix(160))) } ?? .null,
                 "attention": task.attention.flatMap { try? JSONValue.from($0) } ?? .null,
             ])
         }
@@ -404,12 +405,28 @@ public actor Orchestrator {
     /// Called whenever a conversation changes. Progress, completion and
     /// failure are read from the turn the task is waiting on.
     public func observe(conversationID: String) async {
-        let watching = tasks.values.filter { $0.conversationID == conversationID && $0.state.isActive && $0.sentMessageID != nil }
+        // Paused tasks are watched too: a message you send afterwards resumes them.
+        let watching = tasks.values.filter { $0.conversationID == conversationID && ($0.state.isActive || $0.state == .paused) && $0.sentMessageID != nil }
         guard !watching.isEmpty, let conversation = await executor.conversation(conversationID) else { return }
         for snapshot in watching {
-            guard var task = tasks[snapshot.id], task.state.isActive,
+            guard var task = tasks[snapshot.id], task.state.isActive || task.state == .paused,
                   let index = conversation.messages.firstIndex(where: { $0.id == task.sentMessageID }),
-                  index + 1 < conversation.messages.count, conversation.messages[index + 1].role == .assistant else { continue }
+                  index + 1 < conversation.messages.count else { continue }
+            // "Send now" stopped this reply for the user's next message (or
+            // dropped it before it wrote anything): the task carries on with
+            // that message rather than pausing.
+            let later = conversation.messages[(index + 1)...]
+            let interrupted = later.first?.role == .user
+                || (later.first?.status == .failed && later.first?.error?.kind == .cancelled && later.dropFirst().contains { $0.role == .user })
+            if interrupted, let next = later.last(where: { $0.role == .user }) {
+                task.sentMessageID = next.id
+                task.toolCount = 0
+                if task.state == .paused { task.state = .running; task.attention = nil }
+                append(&task, "redirected", "You sent a new message; the agent continues with it.")
+                await commit(task)
+                continue
+            }
+            guard task.state.isActive, conversation.messages[index + 1].role == .assistant else { continue }
             let reply = conversation.messages[index + 1]
             switch reply.status {
             case .streaming, .queued:

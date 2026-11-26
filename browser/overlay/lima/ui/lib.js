@@ -1,3 +1,4 @@
+import { SPRING, SINK } from "./motion.sys.mjs";
 /* Shared helpers for about:lima pages. `window.lima` is the only bridge to
  * the native runtime (installed by the LimaChild actor). */
 import { ICONS } from "./icons.js";
@@ -98,9 +99,10 @@ export function activityStatus() {
   const indicator = el("span", { class: "activity-indicator", "aria-hidden": "true" });
   const label = el("span", { class: "activity-label" });
   const detail = el("span", { class: "activity-detail" });
-  const elapsed = el("time", { class: "activity-time", hidden: true, "aria-hidden": "true" });
+  const elapsed = el("time", { class: "activity-time", hidden: true, "aria-label": "Elapsed time" });
+  const last = el("span", { class: "activity-last", hidden: true });
   const node = el("div", { class: "activity-status" }, indicator,
-    el("span", { class: "activity-copy", role: "status", "aria-atomic": "true" }, label, detail), elapsed);
+    el("span", { class: "activity-copy", role: "status", "aria-atomic": "true" }, label, detail), elapsed, last);
   let since;
   let timer;
   function tick() {
@@ -109,7 +111,7 @@ export function activityStatus() {
     const seconds = Math.max(0, Math.floor((Date.now() - since) / 1000));
     elapsed.textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
   }
-  function update({ state, label: title, detail: description = "", icon: glyph = "", motion, startedAt }) {
+  function update({ state, label: title, detail: description = "", icon: glyph = "", motion, startedAt, lastResult }) {
     if (!["working", "starting"].includes(state)) startedAt = undefined;
     node.dataset.activity = state;
     indicator.dataset.motion = motion ?? "";
@@ -120,6 +122,9 @@ export function activityStatus() {
     if (label.textContent !== title) label.textContent = title;
     if (detail.textContent !== description) detail.textContent = description;
     detail.hidden = !description;
+    const resultText = lastResult ? `Last result: ${lastResult}` : "";
+    if (last.textContent !== resultText) last.textContent = last.title = resultText;
+    last.hidden = !resultText;
     elapsed.hidden = !startedAt;
     if (startedAt !== since) {
       clearInterval(timer);
@@ -265,9 +270,39 @@ export function installEmbedActions() {
   });
 }
 
+export function replyAuthor(message) {
+  if (!message.provider) return null;
+  const name = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode" }[message.provider] ?? message.provider;
+  return el("p", { class: "reply-author muted", text: `${name} · ${message.reportedModel ?? (message.model && message.model !== "default" ? message.model : "Provider default model")}` });
+}
+
+export function agentSetupAction(error) {
+  if (!["missing_executable", "authentication", "incompatible_version"].includes(error?.kind)) return null;
+  return el("button", { type: "button", class: "ghost", onclick: () => bridge.openTab("about:lima?view=integrations&section=agents") },
+    error.kind === "authentication" ? "Open sign-in setup" : "Open provider setup");
+}
+
+function reportCard(source) {
+  if (source.length > 28000) return null;
+  let report;
+  try { report = JSON.parse(source); } catch { return null; }
+  if (!report || typeof report !== "object" || Array.isArray(report)) return null;
+  const status = { completed: "Completed", failed: "Failed", blocked: "Needs attention" }[report.status] ?? "Task report";
+  const fields = [["actionsTaken", "Actions"], ["artifacts", "Artifacts"], ["verification", "Verification"],
+    ["remainingIssues", "Remaining issues"], ["nextSteps", "Next steps"]];
+  const text = (value, limit) => typeof value === "string" ? value.slice(0, limit) : "";
+  return el("section", { class: "task-report", "aria-label": "Task report", "data-status": String(report.status ?? "") },
+    el("strong", { text: status }), report.summary ? el("p", { text: text(report.summary, 1200) }) : null,
+    ...fields.map(([key, label]) => {
+      const values = Array.isArray(report[key]) ? report[key].map(value => text(value, 500)).filter(Boolean).slice(0, 30) : [];
+      return values.length ? el("div", {}, el("strong", { text: label }), el("ul", {}, values.map(value => el("li", { text: value })))) : null;
+    }),
+    report.needsUser ? el("p", {}, el("strong", { text: "Your input is needed" }), " ", text(report.needsUser, 600)) : null);
+}
+
 /** `breaks`: a single newline is a line break, as in chat replies (Notes keeps
  * Markdown's joined paragraphs). */
-export function markdown(source, { onTaskToggle, attachments, embeds = false, breaks = false } = {}) {
+export function markdown(source, { onTaskToggle, attachments, embeds = false, breaks = false, taskReports = false } = {}) {
   const root = el("div", { class: "md" });
   const lines = String(source ?? "").replace(/\r\n/g, "\n").split("\n");
   let i = 0;
@@ -306,7 +341,11 @@ export function markdown(source, { onTaskToggle, attachments, embeds = false, br
       const closed = i < lines.length;
       i++;
       const data = code.join("\n");
-      root.append((closed && artifactFromBlock(kind, data, el)) || el("pre", {}, el("code", { text: data })));
+      if (taskReports && kind === "lima-report") {
+        const report = reportCard(data);
+        if (report) root.append(report);
+        else if (closed) root.append(el("p", { class: "muted", text: "The task report could not be read." }));
+      } else root.append((closed && artifactFromBlock(kind, data, el)) || el("pre", {}, el("code", { text: data })));
       continue;
     }
     const heading = /^(#{1,6})\s+(.*)$/.exec(line);
@@ -341,7 +380,7 @@ export function markdown(source, { onTaskToggle, attachments, embeds = false, br
       if (item[3] !== undefined) {
         li.className = "task";
         const lineIndex = i;
-        const box = el("input", { type: "checkbox", checked: /x/i.test(item[4]) });
+        const box = el("input", { type: "checkbox", checked: /x/i.test(item[4]), "aria-label": String(item[5] ?? "").replace(/[*_`~]/g, "").trim() || "To-do" });
         if (onTaskToggle) box.addEventListener("change", () => onTaskToggle(lineIndex, box.checked)); else box.disabled = true;
         li.append(box, " ");
       }
@@ -370,7 +409,7 @@ function inline(node, text, attachments) {
   text = String(text);
   let last = 0;
   // Code spans are skipped, so `{{x}}` in code stays literal.
-  for (const match of text.matchAll(/(`[^`]*`)|\{\{([^{}\n]{1,200})\}\}/g)) {
+  for (const match of text.matchAll(/(`[^`]*`)|\{\{([^{}\n]{1,300})\}\}/g)) {
     if (match[2] === undefined) continue;
     if (match.index > last) inlineText(node, text.slice(last, match.index), attachments);
     node.append(valueChip(match[2], el));
@@ -492,7 +531,6 @@ export function permissionSheet(kind, { onGranted } = {}) {
 }
 
 // A springy settle (about 10% overshoot), as a linear() curve.
-const POP_SPRING = "linear(0, 0.22 7%, 0.62 15%, 0.95 23%, 1.1 31%, 1.12 36%, 1.08 43%, 1.01 53%, 0.98 62%, 1 78%, 1)";
 
 /** Shows or hides a composer button with a little pop: it springs out of
  * nothing when it appears and shrinks away when it goes. */
@@ -504,17 +542,26 @@ export function popButton(button, show) {
   if (show) {
     delete button.dataset.leaving;
     button.hidden = false;
-    if (!reduce) button.limaPop = button.animate([{ opacity: 0, transform: "scale(.55)" }, { opacity: 1, transform: "none" }], { duration: 440, easing: POP_SPRING });
+    if (!reduce) button.limaPop = button.animate([{ opacity: 0, transform: "scale(.55)" }, { opacity: 1, transform: "none" }], { duration: 440, easing: SPRING });
     return;
   }
   if (reduce) { button.hidden = true; return; }
   button.dataset.leaving = "true";
   const animation = button.limaPop = button.animate([{ opacity: 1, transform: "none" }, { opacity: 0, transform: "scale(.55)" }],
-    { duration: 170, easing: "cubic-bezier(.4, 0, 1, 1)", fill: "forwards" });
+    { duration: 170, easing: SINK, fill: "forwards" });
   animation.onfinish = () => {
     if (button.limaPop !== animation) return;
     delete button.dataset.leaving;
     button.hidden = true;
     animation.cancel();
   };
+}
+
+/** A warning on a reply that changed files outside its workspace folder. */
+export function outsideChanges(message) {
+  if (!message.outside?.length) return null;
+  const home = /^\/Users\/[^/]+/;
+  return el("details", { class: "msg-outside", role: "note" },
+    el("summary", {}, icon("warning"), `Changed ${message.outside.length} file${message.outside.length === 1 ? "" : "s"} outside this workspace`),
+    el("ul", {}, message.outside.map(path => el("li", {}, el("code", { text: path.replace(home, "~") })))));
 }

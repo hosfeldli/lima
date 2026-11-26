@@ -394,3 +394,29 @@ func orchestrator(_ agents: MockAgents, tasks: [OrchestratedTask] = [], maxActiv
     // With nothing blocked, a later message changes no task.
     #expect(await lima.userReplied(conversationID: "conv-root-r", messageID: message) == nil)
 }
+
+@Test func sendNowRedirectsATaskInsteadOfPausingIt() async throws {
+    let agents = MockAgents()
+    let (lima, _) = orchestrator(agents)
+    let task = try await lima.submit(requestID: nil, title: "Menus", request: "Collect the menus", workspaceID: "food")
+    // Send now: the running reply is stopped for the user's next message, which starts at once.
+    agents.reply("conv-root-food", "Each location posts its menu…", status: .failed, error: AgentFailure(.cancelled, "Interrupted by your next message."))
+    _ = try await agents.send(conversationID: "conv-root-food", text: "This is the one near me in Georgia")
+    await lima.observe(conversationID: "conv-root-food")
+    let redirected = try await lima.get(task.id)
+    #expect(redirected.state == .running && redirected.attention == nil, "no Paused banner while the new reply runs")
+    // The new reply finishing finishes the task.
+    agents.reply("conv-root-food", "Done!")
+    await lima.observe(conversationID: "conv-root-food")
+    #expect(try await lima.get(task.id).state == .completedWithWarnings)
+    // A plain Stop (no new message) still pauses it.
+    let other = try await lima.submit(requestID: nil, title: "Other", request: "Do it", workspaceID: "other")
+    agents.reply("conv-root-other", "Working", status: .failed, error: AgentFailure(.cancelled, "Stopped."))
+    await lima.observe(conversationID: "conv-root-other")
+    #expect(try await lima.get(other.id).state == .paused)
+    // Sending a message after that resumes the paused task.
+    _ = try await agents.send(conversationID: "conv-root-other", text: "Keep going")
+    await lima.observe(conversationID: "conv-root-other")
+    let resumed = try await lima.get(other.id)
+    #expect(resumed.state == .running && resumed.attention == nil)
+}

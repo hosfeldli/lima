@@ -19,6 +19,43 @@ public struct ChatMessage: Codable, Equatable, Sendable {
     public var steps: [ChatStep]? = nil
     /// Files the user attached to this message.
     public var attachments: [ChatAttachment]? = nil
+    public var provider: CLIProvider? = nil
+    public var model: String? = nil
+    public var effort: String? = nil
+    public var reportedModel: String? = nil
+    var recovered: Bool? = nil
+    /// Files this reply changed outside the chat's working folder.
+    public var outside: [String]? = nil
+}
+
+/// How far one run may go before Lima stops it and says so.
+public struct RunLimits: Codable, Equatable, Sendable {
+    public var maxSteps: Int
+    public var maxMinutes: Int
+    public init(maxSteps: Int = 250, maxMinutes: Int = 45) {
+        self.maxSteps = min(max(maxSteps, 10), 2000)
+        self.maxMinutes = min(max(maxMinutes, 2), 600)
+    }
+}
+
+/// Paths a reply's edit tools touched that lie outside `folder`.
+public func changesOutside(_ tools: [String], folder: String) -> [String] {
+    let editing = ["edit", "write", "multiedit", "notebookedit", "apply_patch", "file_change", "patch", "create", "delete", "move", "rename"]
+    let root = URL(fileURLWithPath: folder).standardizedFileURL.path
+    var found: [String] = []
+    for entry in tools {
+        let name = entry.split(separator: ":", maxSplits: 1).first.map { $0.lowercased().trimmingCharacters(in: .whitespaces) } ?? ""
+        guard editing.contains(where: { name.hasSuffix($0) }) else { continue }
+        for match in entry.matches(of: /(?:^|[\s"'(])((?:\/|~\/)[^\s"'),]+)/) {
+            var path = String(match.1)
+            if path.hasPrefix("~/") { path = NSHomeDirectory() + path.dropFirst(1) }
+            let clean = URL(fileURLWithPath: path).standardizedFileURL.path
+            if clean != root, !clean.hasPrefix(root + "/"), !clean.hasPrefix("/tmp/"), !clean.hasPrefix("/private/tmp/"), !found.contains(clean) {
+                found.append(clean)
+            }
+        }
+    }
+    return Array(found.prefix(20))
 }
 
 /// One tool call in a reply, with lines it added/removed and images it saw.
@@ -57,6 +94,7 @@ public struct Conversation: Codable, Equatable, Sendable {
     public var mascot: ChatMascot? = nil
     /// Reasoning effort for this chat's turns (low, medium, high; nil = CLI default).
     public var effort: String? = nil
+    var inheritedContext: String? = nil
     /// A Companion request thread: lives in the Companion window only.
     public var companion: Bool? = nil
     /// Orchestrator tasks this Companion thread handed off.
@@ -96,6 +134,7 @@ public struct ConversationSummary: Codable, Equatable, Sendable {
     public var createdAt: Double? = nil
     /// Companion threads: the latest reply, shortened, for the chat list.
     public var preview: String? = nil
+    public var lastResult: String? = nil
 }
 
 public enum ConversationEvent: Sendable {
@@ -151,6 +190,19 @@ public actor ConversationService {
     private var failover: Failover?
     private var tried: [String: Set<CLIProvider>] = [:] // conversationID → providers that hit a limit this turn
 
+    public private(set) var limits = RunLimits()
+    public func setLimits(_ limits: RunLimits) { self.limits = limits }
+
+    /// Stops a run that reached a limit; the reply keeps its work and says why.
+    private func stopForLimit(_ id: String, replyID: String, reason: String) async {
+        guard activeReply[id] == replyID, let run = running[id],
+              let reply = conversations[id]?.messages.first(where: { $0.id == replyID }) else { return }
+        activeReply[id] = nil
+        run.cancel()
+        let note = "\n\n_Lima stopped this run: \(reason) Send “continue” to keep going, or raise the limit in Settings → AI providers._"
+        try? await finishTurn(id, replyID: replyID, result: .completed(text: reply.text + note))
+    }
+
     public func setRunConfigurator(_ configurator: @escaping RunConfigurator) { self.configurator = configurator }
     public func setFailover(_ failover: Failover?) { self.failover = failover }
 
@@ -172,18 +224,34 @@ public actor ConversationService {
     public func list() -> [ConversationSummary] {
         conversations.values.sorted { $0.updatedAt > $1.updatedAt }.map { conversation in
             let reply = conversation.messages.last { $0.role == .assistant }
+            let settled = conversation.messages.last { $0.role == .assistant && $0.status == .complete }
             return ConversationSummary(id: conversation.id, title: conversation.title, provider: conversation.provider,
                 updatedAt: conversation.updatedAt, running: running[conversation.id] != nil, workspaceID: conversation.workspaceID,
                 lastStatus: reply?.status, lastMessageID: reply?.id, lastCreatedAt: reply?.createdAt,
                 lastErrorKind: reply?.error?.kind, lastProgress: reply?.progress, mascot: conversation.mascot,
                 companion: conversation.companion, taskIDs: conversation.taskIDs, createdAt: conversation.createdAt,
-                preview: conversation.companion == true ? reply.map { Self.preview($0.text) } : nil)
+                preview: conversation.companion == true ? reply.map { Self.preview($0.text) } : nil,
+                lastResult: settled.map { Self.preview($0.text, limit: 160) })
         }
     }
 
-    static func preview(_ text: String) -> String {
-        let flat = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        return flat.count > 120 ? String(flat.prefix(119)) + "…" : flat
+    /// One line for a reply: its lima-report's summary when it has one,
+    /// otherwise its prose without code blocks, so lists never show raw JSON.
+    static func preview(_ text: String, limit: Int = 120) -> String {
+        var summary: String?
+        if let start = text.range(of: "```lima-report") {
+            let body = text[start.upperBound...].drop { $0 != "\n" }.dropFirst()
+            let json = body.range(of: "\n```").map { body[..<$0.lowerBound] } ?? body
+            if let data = String(json).data(using: .utf8),
+               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let value = object["summary"] as? String, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                summary = value
+            }
+        }
+        let prose = text.replacingOccurrences(of: #"```[\s\S]*?(```|$)"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"[#*_`>|]+"#, with: "", options: .regularExpression)
+        let flat = (summary ?? prose).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return flat.count > limit ? String(flat.prefix(limit - 1)) + "…" : flat
     }
 
     public func get(_ id: String) throws -> Conversation {
@@ -192,12 +260,19 @@ public actor ConversationService {
     }
 
     public func create(provider: CLIProvider, model: String?, workingDirectory: String?, workspaceID: String? = nil, title: String? = nil,
-                       companion: Bool = false) async throws -> Conversation {
+                       companion: Bool = false, inherit parent: Conversation? = nil) async throws -> Conversation {
         let now = Self.now()
         var conversation = Conversation(
             id: UUID().uuidString, title: title ?? "New conversation", provider: provider, model: model, cliSessionID: nil,
             workingDirectory: workingDirectory ?? NSHomeDirectory(), messages: [], createdAt: now, updatedAt: now, workspaceID: workspaceID
         )
+        if let parent {
+            conversation.effort = parent.effort
+            let context = parent.messages.filter { $0.status == .complete && !$0.text.isEmpty }.suffix(8).map {
+                "\($0.role == .user ? "User" : "Assistant"): \(String($0.text.prefix(900)))"
+            }.joined(separator: "\n\n")
+            if !context.isEmpty { conversation.inheritedContext = context }
+        }
         if companion { conversation.companion = true }
         try await save(conversation)
         return conversation
@@ -263,13 +338,16 @@ public actor ConversationService {
     public func send(_ id: String, text: String, mode: SendMode = .queue, attachments: [ChatAttachment] = []) async throws -> Conversation {
         var conversation = try get(id)
         if conversation.mascot == nil { conversation.mascot = ChatMascot.suggested(for: text) }
+        let busy = running[id] != nil || conversation.messages.contains { $0.status == .streaming }
         var message = ChatMessage(id: UUID().uuidString, role: .user, text: text, createdAt: Self.now(),
-                                  status: running[id] == nil ? .complete : .queued, error: nil, tools: [])
+                                  status: busy ? .queued : .complete, error: nil, tools: [])
         if !attachments.isEmpty { message.attachments = attachments }
         conversation.messages.append(message)
         if conversation.title == "New conversation" { conversation.title = Self.title(from: text) }
         try await save(conversation)
-        if running[id] == nil { try await startTurn(id, userMessageID: message.id) }
+        if !busy || (running[id] == nil && activeReply[id] == nil) {
+            try await startTurn(id, userMessageID: message.id)
+        }
         else if mode == .interrupt { return try await interrupt(id, messageID: message.id) }
         else { queues[id, default: []].append(message.id) }
         return try get(id)
@@ -284,9 +362,9 @@ public actor ConversationService {
             throw ConversationError.messageNotFound(messageID)
         }
         queues[id]?.removeAll { $0 == messageID }
-        if let run = running[id] {
+        let run = running.removeValue(forKey: id)
+        if activeReply[id] != nil {
             // The stopped run's late events find no active reply and are dropped.
-            running[id] = nil
             if let replyID = activeReply.removeValue(forKey: id),
                let replyIndex = conversation.messages.firstIndex(where: { $0.id == replyID }) {
                 if conversation.messages[replyIndex].text.isEmpty && conversation.messages[replyIndex].tools.isEmpty {
@@ -297,8 +375,8 @@ public actor ConversationService {
                     conversation.messages[replyIndex].error = AgentFailure(.cancelled, "Interrupted by your next message.")
                 }
             }
-            run.cancel()
         }
+        run?.cancel()
         guard let index = conversation.messages.firstIndex(where: { $0.id == messageID }) else { throw ConversationError.messageNotFound(messageID) }
         let message = conversation.messages.remove(at: index)
         let position = conversation.messages.firstIndex { $0.role == .user && $0.status == .queued } ?? conversation.messages.endIndex
@@ -341,15 +419,18 @@ public actor ConversationService {
 
     /// Retry the turn that produced a failed assistant message.
     public func retry(_ id: String, assistantMessageID: String) async throws -> Conversation {
-        var conversation = try get(id)
-        guard let index = conversation.messages.firstIndex(where: { $0.id == assistantMessageID }) else { throw ConversationError.messageNotFound(assistantMessageID) }
+        let conversation = try get(id)
+        guard running[id] == nil, !conversation.messages.contains(where: { $0.status == .streaming }) else {
+            throw ConversationError.notEditable("Wait for the current reply to finish before retrying.")
+        }
+        guard let index = conversation.messages.firstIndex(where: {
+            $0.id == assistantMessageID && $0.role == .assistant && $0.status == .failed
+        }) else { throw ConversationError.messageNotFound(assistantMessageID) }
         guard let userIndex = conversation.messages[..<index].lastIndex(where: { $0.role == .user }) else {
             throw ConversationError.notEditable("no user message precedes this reply")
         }
-        let userID = conversation.messages[userIndex].id
-        conversation.messages.remove(at: index)
-        try await save(conversation)
-        if running[id] == nil { try await startTurn(id, userMessageID: userID) }
+        let reply = conversation.messages[index]
+        try await startTurn(id, userMessageID: conversation.messages[userIndex].id, retrying: reply)
         return try get(id)
     }
 
@@ -374,10 +455,17 @@ public actor ConversationService {
     @discardableResult
     public func cancel(_ id: String) async -> [String] {
         queues[id] = nil
-        running[id]?.cancel()
         guard var conversation = conversations[id] else { return [] }
         let queued = conversation.messages.filter { $0.role == .user && $0.status == .queued }
-        guard !queued.isEmpty else { return [] }
+        var stoppingStartup = false
+        if let run = running[id] { run.cancel() }
+        else if let replyID = activeReply.removeValue(forKey: id),
+                let index = conversation.messages.firstIndex(where: { $0.id == replyID }) {
+            conversation.messages[index].status = .failed
+            conversation.messages[index].error = AgentFailure(.cancelled, "Cancelled before the agent started.")
+            stoppingStartup = true
+        }
+        guard stoppingStartup || !queued.isEmpty else { return [] }
         conversation.messages.removeAll { $0.role == .user && $0.status == .queued }
         try? await save(conversation)
         return queued.map(\.text)
@@ -468,62 +556,118 @@ public actor ConversationService {
 
     // MARK: Turn execution
 
-    private func startTurn(_ id: String, userMessageID: String, notice: String? = nil) async throws {
+    private func startTurn(_ id: String, userMessageID: String, notice: String? = nil, retrying: ChatMessage? = nil, recovered: Bool = false) async throws {
         if notice == nil { tried[id] = nil }
         var conversation = try get(id)
+        if let retrying {
+            conversation.messages.removeAll { $0.id == retrying.id }
+            conversation.cliSessionID = nil
+        }
         guard let userIndex = conversation.messages.firstIndex(where: { $0.id == userMessageID }) else { return }
         conversation.messages[userIndex].status = .complete
         var reply = ChatMessage(id: UUID().uuidString, role: .assistant, text: "", createdAt: Self.now(), status: .streaming, error: nil, tools: [])
         reply.notice = notice
+        let provider = retrying?.provider ?? conversation.provider
+        let model = retrying?.provider != nil ? retrying?.model : conversation.model
+        let effort = retrying?.provider != nil ? retrying?.effort : conversation.effort
+        reply.provider = provider
+        reply.model = model
+        reply.effort = effort
+        if recovered { reply.recovered = true }
         conversation.messages.insert(reply, at: userIndex + 1)
-        try await save(conversation)
+        activeReply[id] = reply.id
+        do { try await save(conversation) }
+        catch {
+            if activeReply[id] == reply.id { activeReply[id] = nil }
+            throw error
+        }
 
-        guard let executable = await executable(for: conversation.provider) else {
+        guard activeReply[id] == reply.id else { return }
+        guard let executable = await executable(for: provider) else {
+            guard activeReply[id] == reply.id else { return }
             try await finishTurn(id, replyID: reply.id, result: .failed(AgentFailure(.missingExecutable,
-                "\(conversation.provider.rawValue) CLI is not installed or not on PATH. Install it, then retry.")))
+                "\(Self.providerName(provider)) is not installed or Lima could not find it. Open AI provider settings to install it, then retry.")))
             return
         }
 
         // Without a resumable CLI session, give the CLI the transcript.
         let requestText = Self.withAttachments(Self.providerPrompt(conversation.messages[userIndex].text), conversation.messages[userIndex].attachments)
+        let session = retrying == nil ? conversation.cliSessionID : nil
         let prompt: String
-        if conversation.cliSessionID == nil, userIndex > 0 {
+        if session == nil {
             let transcript = conversation.messages[..<userIndex]
                 .filter { !$0.text.isEmpty && ($0.status == .complete || $0.error?.kind == .cancelled) }
                 .map { "\($0.role == .user ? "User" : $0.status == .complete ? "Assistant" : "Assistant (interrupted)"): \($0.text)" }
                 .joined(separator: "\n\n")
-            prompt = "Conversation so far:\n\n\(transcript)\n\nUser: \(requestText)"
+            let context = [
+                conversation.inheritedContext.map { "Recent context from the workspace's main chat:\n\($0)" },
+                transcript.isEmpty ? nil : "Conversation so far:\n\(transcript)",
+            ].compactMap { $0 }.joined(separator: "\n\n")
+            prompt = context.isEmpty ? requestText : "\(context)\n\nUser: \(requestText)"
         } else {
             prompt = requestText
         }
 
         var request = AgentRunRequest(
-            provider: conversation.provider, prompt: prompt, model: conversation.model,
-            cliSessionID: conversation.provider == .opencode ? nil : conversation.cliSessionID,
+            provider: provider, prompt: prompt, model: model,
+            cliSessionID: provider == .opencode ? nil : session,
             workingDirectory: URL(fileURLWithPath: conversation.workingDirectory), mode: .chat
         )
-        request.effort = conversation.effort
+        request.effort = effort
         if let configurator {
-            let extras = await configurator(conversation)
+            var configured = conversation
+            configured.provider = provider
+            configured.model = model
+            configured.effort = effort
+            configured.cliSessionID = session
+            let extras = await configurator(configured)
             request.extraArguments = extras.arguments
             request.extraEnvironment = extras.environment
             if let preamble = extras.preamble { request.prompt = preamble + "\n\n" + request.prompt }
         }
+        guard activeReply[id] == reply.id, conversations[id] != nil else { return }
         let run = AgentRun(request: request, executable: executable, searchPath: discovery.searchPaths)
         running[id] = run
-        activeReply[id] = reply.id
 
         Task { [weak self] in
             for await event in run.events { await self?.handle(event, conversationID: id, replyID: reply.id) }
         }
+        let replyID = reply.id
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(180))
+            await self?.recoverStalledStart(id, replyID: replyID)
+        }
+        let minutes = limits.maxMinutes
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Double(minutes) * 60))
+            await self?.stopForLimit(id, replyID: replyID, reason: "it ran for \(minutes) minutes, the most one run may take.")
+        }
+    }
+
+    private func recoverStalledStart(_ id: String, replyID: String) async {
+        guard activeReply[id] == replyID, let run = running[id],
+              let reply = conversations[id]?.messages.first(where: { $0.id == replyID }),
+              reply.text.isEmpty, reply.tools.isEmpty, reply.steps?.isEmpty != false else { return }
+        activeReply[id] = nil
+        run.cancel()
+        try? await finishTurn(id, replyID: replyID, result: .failed(AgentFailure(.connection, "The agent stopped responding before it produced any work.")))
     }
 
     private func handle(_ event: AgentStreamEvent, conversationID id: String, replyID: String) async {
         guard activeReply[id] == replyID, var conversation = conversations[id], let index = conversation.messages.firstIndex(where: { $0.id == replyID }) else { return }
         switch event {
         case .session(let session):
-            conversation.cliSessionID = session
+            let reply = conversation.messages[index]
+            if reply.provider == conversation.provider && reply.model == conversation.model {
+                conversation.cliSessionID = session
+            }
             conversation.messages[index].progress = .connected
+            conversations[id] = conversation
+            emit(.updated(conversation))
+        case .model(let model):
+            let value = String(model.prefix(160))
+            guard !value.isEmpty, conversation.messages[index].reportedModel != value else { return }
+            conversation.messages[index].reportedModel = value
             conversations[id] = conversation
             emit(.updated(conversation))
         case .progress(let progress):
@@ -556,6 +700,9 @@ public actor ConversationService {
             conversation.messages[index].steps = (conversation.messages[index].steps ?? []) + [ChatStep(tool: entry)]
             conversations[id] = conversation
             emit(.updated(conversation))
+            if conversation.messages[index].tools.count >= limits.maxSteps {
+                await stopForLimit(id, replyID: replyID, reason: "it took \(limits.maxSteps) steps, the most one run may take.")
+            }
         case .completed, .failed:
             try? await finishTurn(id, replyID: replyID, result: event)
         }
@@ -570,8 +717,19 @@ public actor ConversationService {
         case .completed(let text):
             if !text.isEmpty { conversation.messages[index].text = text }
             conversation.messages[index].status = .complete
+            let outside = changesOutside(conversation.messages[index].tools, folder: conversation.workingDirectory)
+            conversation.messages[index].outside = outside.isEmpty ? nil : outside
         case .failed(let failure):
             if failure.kind == .rateLimited, try await switchProvider(&conversation, replyIndex: index, failure: failure) { return }
+            let reply = conversation.messages[index]
+            if (failure.kind == .processCrashed || failure.kind == .connection),
+               reply.recovered != true, reply.text.isEmpty, reply.tools.isEmpty, reply.steps?.isEmpty != false,
+               let userID = conversation.messages[..<index].last(where: { $0.role == .user })?.id {
+                running[id] = nil
+                try await startTurn(id, userMessageID: userID, notice: "Lima restarted the agent after it stopped responding.",
+                                    retrying: reply, recovered: true)
+                return
+            }
             conversation.messages[index].status = .failed
             conversation.messages[index].error = failure
             // A rejected resume shouldn't poison the next turn.

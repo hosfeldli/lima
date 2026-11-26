@@ -149,6 +149,7 @@ public struct AgentRunRequest: Sendable {
 
 public enum AgentStreamEvent: Equatable, Sendable {
     case session(String)
+    case model(String)
     case progress(AgentProgress)
     case delta(String)
     case tool(name: String, detail: String)
@@ -233,7 +234,9 @@ public struct AgentEventParser: Sendable {
     private mutating func parseClaude(_ object: [String: Any]) -> [AgentStreamEvent] {
         switch object["type"] as? String {
         case "system":
-            if object["subtype"] as? String == "init", let id = object["session_id"] as? String { return [.session(id)] }
+            if object["subtype"] as? String == "init", let id = object["session_id"] as? String {
+                return [.session(id)] + ((object["model"] as? String).map { [.model($0)] } ?? [])
+            }
         case "stream_event":
             let event = object["event"] as? [String: Any]
             if event?["type"] as? String == "message_start" { return [.progress(.thinking)] }
@@ -289,7 +292,9 @@ public struct AgentEventParser: Sendable {
     private mutating func parseCodex(_ object: [String: Any]) -> [AgentStreamEvent] {
         switch object["type"] as? String {
         case "thread.started":
-            if let id = object["thread_id"] as? String { return [.session(id)] }
+            if let id = object["thread_id"] as? String {
+                return [.session(id)] + ((object["model"] as? String).map { [.model($0)] } ?? [])
+            }
         case "turn.started":
             return [.progress(.thinking)]
         case "item.started", "item.completed":
@@ -352,6 +357,9 @@ public struct AgentEventParser: Sendable {
         }
         switch object["type"] as? String {
         case "step_start":
+            if let model = (object["part"] as? [String: Any])?["modelID"] as? String ?? object["model"] as? String {
+                events.append(.model(model))
+            }
             events.append(.progress(.thinking))
         case "text":
             if let part = object["part"] as? [String: Any], let text = part["text"] as? String {

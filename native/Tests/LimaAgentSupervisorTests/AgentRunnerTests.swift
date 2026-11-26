@@ -398,3 +398,18 @@ func waitIdle(_ service: ConversationService, _ id: String) async throws -> Conv
     request.effort = "ludicrous"
     #expect(!AgentCommandLine.arguments(for: request).contains("--effort"), "unknown levels are dropped")
 }
+
+@Test func replyPreviewShowsAReportsSummaryNotItsJSON() {
+    let reply = "Done.\n\n```lima-report\n{\"status\":\"completed\",\"summary\":\"Booked three hotels.\"}\n```"
+    #expect(ConversationService.preview(reply) == "Booked three hotels.")
+    #expect(ConversationService.preview("Here:\n```swift\nlet x = 1\n```\n**Ready** to ship") == "Here: Ready to ship")
+    #expect(ConversationService.preview("```lima-report\n{broken\n```").isEmpty)
+}
+
+@Test func editsOutsideTheWorkingFolderAreListed() {
+    let tools = ["Edit: /Users/me/project/src/a.swift", "Write: /Users/me/.zshrc", "Read: /etc/hosts",
+                 "Bash: rm -rf /Users/me/other", "apply_patch: /Users/me/other/b.txt", "Write: /tmp/scratch.txt",
+                 "Edit: /Users/me/project/../secrets.txt"]
+    #expect(changesOutside(tools, folder: "/Users/me/project") == ["/Users/me/.zshrc", "/Users/me/other/b.txt", "/Users/me/secrets.txt"])
+    #expect(RunLimits(maxSteps: 1, maxMinutes: 99_999) == RunLimits(maxSteps: 10, maxMinutes: 600))
+}

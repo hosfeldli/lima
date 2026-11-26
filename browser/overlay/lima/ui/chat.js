@@ -1,7 +1,8 @@
+import { SPRING } from "./motion.sys.mjs";
 /* AI chat tab: one conversation per URL (about:lima?chat=<id>). For a
  * workspace or helper agent it is the agent's chat; a live line says where
  * the agent is working (the sidebar shows the same with the prism). */
-import { activityStatus, bridge, call, el, errorText, filesPrivacyButton, icon, markdown, onEvent, prefs, setPage, popButton } from "./lib.js";
+import { activityStatus, agentSetupAction, outsideChanges, replyAuthor, bridge, call, el, errorText, filesPrivacyButton, icon, markdown, onEvent, prefs, setPage, popButton } from "./lib.js";
 import { failureActivity, isFolderPermissionError, stepParts, toolActivity } from "./tool-activity.sys.mjs";
 
 import { agentControls, attachmentTray, composerMenu, preferredAgent, QUEUE_HINT, queuedActions, restoreDraft, sentAttachments, sendMode } from "./composer.js";
@@ -73,7 +74,7 @@ async function mountWorkspaceChats(app, chatId) {
       tabs.set(chat.id, tab);
       if (!matchMedia("(prefers-reduced-motion: reduce)").matches && strip.childElementCount) {
         tab.animate([{ opacity: 0, transform: "scale(.7)" }, { opacity: 1, transform: "none" }],
-          { duration: 420, easing: "linear(0, 0.22 7%, 0.62 15%, 0.95 23%, 1.1 31%, 1.12 36%, 1.08 43%, 1.01 53%, 0.98 62%, 1 78%, 1)" });
+          { duration: 420, easing: SPRING });
       }
     }
     tab.limaChat = chat;
@@ -243,6 +244,45 @@ async function initializeChat(app, chatId, compact, signal) {
     },
   }, Object.entries(MASCOTS).map(([value, text]) => el("option", { value, text })));
   const prompts = workspacePrompts({ workspace: () => workspace?.id ?? "", signal });
+  const permissions = el("details", { class: "workspace-permissions", hidden: true });
+  const permissionRows = el("ul", { class: "list" });
+  const permissionTitle = el("summary", { text: "Agent permissions" });
+  permissions.append(permissionTitle, permissionRows);
+  let grants = [];
+  let grantRequest = 0;
+  let grantTimer;
+  function paintPermissions() {
+    const now = Date.now();
+    const active = grants.filter(grant => grant.expiresAt > now);
+    permissions.hidden = !active.length;
+    permissionTitle.textContent = `Agent permissions (${active.length})`;
+    for (const row of permissionRows.children) {
+      const grant = active.find(item => item.id === row.dataset.grant);
+      row.hidden = !grant;
+      if (grant) row.querySelector("time").textContent = `${Math.ceil((grant.expiresAt - now) / 60_000)} min left`;
+    }
+  }
+  async function refreshPermissions() {
+    if (!workspace) return;
+    const request = ++grantRequest;
+    const result = await call("workspace.permissions", { id: workspace.id }).catch(() => null);
+    if (!result || signal.aborted || request !== grantRequest) return;
+    grants = result;
+    permissionRows.replaceChildren(...grants.map(grant => el("li", { "data-grant": grant.id },
+      el("div", { class: "grow" }, el("strong", { text: grant.request }),
+        el("div", { class: "muted", text: [grant.site, ...grant.paths, ...grant.actions].filter(Boolean).join(" · ") || grant.detail || "" })),
+      el("time", { class: "muted" }),
+      el("button", { type: "button", class: "ghost", onclick: async event => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try { await call("workspace.revokePermission", { id: workspace.id, grantId: grant.id }); await refreshPermissions(); }
+        catch (error) { button.disabled = false; reportError(error); }
+      } }, "Revoke"))));
+    clearInterval(grantTimer);
+    if (grants.length) grantTimer = setInterval(paintPermissions, 30000);
+    paintPermissions();
+  }
+  signal.addEventListener("abort", () => clearInterval(grantTimer), { once: true });
   const sendButton = el("button", { class: "send", title: "Send (↩)", onclick: () => send("queue"), disabled: true, hidden: true }, "Send");
   // Files dropped or pasted in; long pastes become a text attachment.
   const tray = attachmentTray({ conversation: () => chatId, input, onChange: () => draw() });
@@ -283,7 +323,7 @@ async function initializeChat(app, chatId, compact, signal) {
   const body = el("div", { class: "chat-body solo" },
     el("section", { class: "chat-main" }, el("div", { class: "mod-head chat-views", role: "tablist" }, chatTab, progressTab, agentsTab, stepsTab, filesTab),
       messages, progress, agents, steps, files,
-      el("div", { class: "composer" }, prompts.node, activity.node, recovery,
+      el("div", { class: "composer" }, prompts.node, permissions, activity.node, recovery,
         el("div", { class: "composer-box" }, tray.node, input, completionMenu.node,
           el("div", { class: "composer-row" }, controls.provider, controls.model, controls.effort, el("span", { class: "spacer" }), stopButton, nowButton, sendButton)), queueHint,
         el("p", { class: "ai-disclaimer", text: "AI can make mistakes. Check important details." }))));
@@ -420,8 +460,10 @@ async function initializeChat(app, chatId, compact, signal) {
       return el("div", { class: "msg user" }, sentAttachments(message.attachments), el("div", { class: "bubble", text: message.text }),
         el("button", { class: "ghost edit", title: "Edit and resend", onclick: e => edit(message, e.currentTarget.parentElement) }, "Edit"));
     }
-    const node = el("div", { class: "msg assistant" });
+    const node = el("div", { class: "msg assistant" }, replyAuthor(message));
     if (message.notice) node.append(el("p", { class: "msg-notice", role: "note" }, icon("redo"), el("span", { text: message.notice })));
+    const outside = outsideChanges(message);
+    if (outside) node.append(outside);
     // Every step stays visible: what it did, lines it changed (+/−) and
     // images it saw. Long runs fold the earlier steps.
     const cwd = workspace?.directory ?? conversation.workingDirectory ?? "";
@@ -441,22 +483,24 @@ async function initializeChat(app, chatId, compact, signal) {
           el("ol", { class: "steps-list" }, earlier.map(row))) : null,
         el("ol", { class: "steps-list" }, recent.map((step, index) => row(step, earlier.length + index)))));
     }
-    const body = markdown(message.text, { onTaskToggle: () => {}, breaks: true });
+    const body = markdown(message.text, { onTaskToggle: () => {}, breaks: true, taskReports: true });
     if (message.status === "streaming") body.classList.add("typing");
     node.append(body);
     if (message.status === "failed" && message.error) {
       node.append(el("div", { class: "failure" },
         el("strong", { text: message.error.kind === "cancelled" ? "Response interrupted" : failureActivity(message.error, "Reply failed").label }),
         el("span", { class: "grow", text: message.error.message }),
+        agentSetupAction(message.error),
         message.error.kind === "cancelled" ? null : el("button", { onclick: async event => {
-          event.currentTarget.disabled = true;
+          const button = event.currentTarget;
+          button.disabled = true;
           requestError = undefined;
           const revision = eventRevision;
           try {
             const response = await call("chat.retry", { id: chatId, messageId: message.id });
             if (eventRevision === revision) conversation = response;
           }
-          catch (error) { reportError(error); }
+          catch (error) { button.disabled = false; reportError(error); }
           draw();
         } }, "Retry Message")));
     } else if (message.status === "complete" && message.text) {
@@ -622,7 +666,7 @@ async function initializeChat(app, chatId, compact, signal) {
       : pendingRequest && !runningReply() ? { state: "starting", label: "Sending request", icon: "send", motion: "think" }
       : (visualActivity ?? { state: "idle", label: "Ready", motion: "idle" });
     activity.update(next);
-    setCompanionState(character, next.motion ?? "idle");
+    setCompanionState(character, next.motion ?? "idle", next.label);
     const working = ["starting", "working"].includes(next.state);
     if (chatTab.hasAttribute("data-working") !== working) {
       chatTab.toggleAttribute("data-working", working);
@@ -639,6 +683,7 @@ async function initializeChat(app, chatId, compact, signal) {
 
   const unsubscribe = onEvent(message => {
     const data = message.data;
+    if (message.event === "workspace.permissionsChanged") refreshPermissions();
     if (message.event === "task.updated" && workspace && (data?.workspaceID === (workspace.parentID ?? workspace.id) ||
         (!!shownTaskID && (data?.id === shownTaskID || data?.parentID === shownTaskID)))) {
       if (currentView === "progress") drawProgress();
@@ -657,7 +702,7 @@ async function initializeChat(app, chatId, compact, signal) {
           const body = messageElements.get(target.id)?.querySelector(".typing");
           if (!body) return;
           const atBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 60;
-          body.replaceChildren(...markdown(target.text, { onTaskToggle: () => {}, breaks: true }).childNodes);
+          body.replaceChildren(...markdown(target.text, { onTaskToggle: () => {}, breaks: true, taskReports: true }).childNodes);
           if (atBottom) messages.scrollTop = messages.scrollHeight;
         });
       }
@@ -683,7 +728,7 @@ async function initializeChat(app, chatId, compact, signal) {
       const avatar = [...agents.children].find(row => row.dataset.agentChat === data.id)?.firstElementChild;
       if (avatar) avatar.dataset.variant = data.mascot ?? "classic";
     } else if (message.event === "workspace.updated" && data.id === workspace?.id) {
-      workspace = data; draw(); drawWorkspaceModules();
+      workspace = data; draw(); drawWorkspaceModules(); refreshPermissions();
     } else if (workspace && ["workspace.created", "workspace.deleted"].includes(message.event)) {
       drawWorkspaceModules();
     } else if (workspace && message.event === "terminal.command") {
@@ -723,6 +768,7 @@ async function initializeChat(app, chatId, compact, signal) {
     loaded = true;
     draw();
     drawWorkspaceModules();
+      refreshPermissions();
     controls.show(conversation, false).then(draw);
     if (workspace?.browserTestURL) controls.provider.disabled = true;
     autosize();
