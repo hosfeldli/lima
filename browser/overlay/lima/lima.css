@@ -176,7 +176,7 @@ zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon
    theme, flip those images to the light foreground so Terminal, Note and
    Image tabs match the rest of the chrome. Masks already use currentColor. */
 :root[lima-window][lima-theme="dark"]:not([zen-private-window="true"]) :is(
-  .tabbrowser-tab:is([image*="lima-ui/icons/"], [image*="lima-ui%2Ficons%2F"], [lima-icon*="lima-ui/icons/"]) .tab-icon-image,
+  .tabbrowser-tab:is([image*="lima-ui/icons/"], [image*="lima-ui%2Ficons%2F"], [lima-icon*="lima-ui/icons/"], [image$="lima-ui/marks/lima-mark.svg"]) .tab-icon-image,
   .lima-menuitem[image^="resource://lima-ui/icons/"] > .menu-icon,
   img.urlbarView-favicon[src*="lima-ui/icons/"]
 ) {

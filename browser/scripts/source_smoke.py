@@ -197,13 +197,17 @@ const compiled = COMPILED;
       const sleeping = win.gBrowser.addTab("about:lima?note=smoke", { triggeringPrincipal: principal, inBackground: true, createLazyBrowser: true });
       win.gBrowser.setIcon(sleeping, "resource://lima-ui/icons/note.svg");
       const loaded = win.gBrowser.addTab("about:lima?view=notes", { triggeringPrincipal: principal, inBackground: true });
-      for (let i = 0; i < 50 && !loaded.getAttribute("image"); i++) await new Promise(resolve => win.setTimeout(resolve, 100));
+      // Wait for the page's own icon (a slow machine briefly shows Lima's mark first).
+      for (let i = 0; i < 100 && !/lima-ui\/icons\//.test(loaded.getAttribute("image") ?? ""); i++) await new Promise(resolve => win.setTimeout(resolve, 100));
       const filter = tab => win.getComputedStyle(tab.querySelector(".tab-icon-image")).filter;
       const result = { sleeping: filter(sleeping), loaded: filter(loaded), image: loaded.getAttribute("image") };
+      // Lima's mark, shown before a page sets its icon, turns light as well.
+      win.gBrowser.setIcon(loaded, "resource://lima-ui/marks/lima-mark.svg");
+      result.mark = filter(loaded);
       win.gBrowser.removeTab(sleeping);
       win.gBrowser.removeTab(loaded);
       Services.prefs.setStringPref("lima.theme", before);
-      return (/invert/.test(result.sleeping) && /invert/.test(result.loaded)) || result;
+      return (/invert/.test(result.sleeping) && /invert/.test(result.loaded) && /invert/.test(result.mark)) || result;
     })(),
     // Downloads live in the sidebar rail; Zen's animation and Firefox's panel are off.
     downloadsRail: (() => {
