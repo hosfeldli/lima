@@ -28,7 +28,7 @@ async function decode(fragment) {
 }
 
 function inline(node, text) {
-  const pattern = /(`[^`]+`)|\{\{([^{}\n]{1,200})\}\}|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)|\*\*([^*]+)\*\*|\*([^*]+)\*|~~([^~]+)~~|!\[([^\]]*)\]\([^)]*\)/g;
+  const pattern = /(`[^`]+`)|\{\{([^{}\n]{1,300})\}\}|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)|\*\*([^*]+)\*\*|\*([^*]+)\*|~~([^~]+)~~|!\[([^\]]*)\]\([^)]*\)/g;
   let last = 0;
   for (const match of text.matchAll(pattern)) {
     if (match.index > last) node.append(text.slice(last, match.index));

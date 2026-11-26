@@ -33,8 +33,9 @@ export function artifactFromBlock(kind, source, el) {
   if (kind === "calculator") {
     const node = calculator(spec, el);
     if (!node) return null;
-    // Shown only inside a note being edited (CSS): change the numbers and formulas as JSON.
-    article.append(node, el("button", { type: "button", class: "ghost artifact-edit", onclick: () => editArtifact(article, kind, source, el) }, "Edit"));
+    article.classList.add("has-actions");
+    article.append(el("div", { class: "artifact-actions", role: "toolbar", "aria-label": "Calculator" }, node.limaCopy,
+      el("button", { type: "button", class: "ghost artifact-edit", onclick: () => editCalculator(article, spec, el) }, "Edit")), node);
   } else if (kind === "map") {
     const map = offlineMap(spec, title, el);
     if (!map) return null;
@@ -68,28 +69,100 @@ export function artifactFromBlock(kind, source, el) {
   return article;
 }
 
-/** Swaps a block for its JSON in a text box; Save re-renders it in place. */
-function editArtifact(article, kind, source, el) {
-  let pretty = source;
-  try { pretty = JSON.stringify(JSON.parse(source), null, 2); } catch {}
-  const box = el("textarea", { class: "artifact-source", rows: Math.min(18, pretty.split("\n").length + 1), spellcheck: "false", "aria-label": "Calculator settings" });
-  box.value = pretty;
+function editCalculator(article, spec, el) {
+  const original = [...article.childNodes];
+  const field = (label, value, type = "text") => {
+    const input = Array.isArray(type)
+      ? el("select", {}, type.map(option => el("option", { value: option, selected: option === (value || type[0]), text: option[0].toUpperCase() + option.slice(1) })))
+      : el("input", { type, value: String(value ?? ""), ...(type === "number" ? { step: "any" } : {}) });
+    return { input, label: el("label", { class: "calc-edit-field" }, label, input) };
+  };
+  const title = field("Title", spec.title), note = field("Note", spec.note);
+  const inputs = [], rows = [];
+  const fields = {
+    input: [["Label", "label"], ["Variable", "id"], ["Kind", "type", ["number", "slider", "toggle"]], ["Starting value", "value", "number"], ["Unit", "unit"],
+      ["Minimum", "min", "number"], ["Maximum", "max", "number"], ["Step", "step", "number"]],
+    row: [["Label", "label"], ["Formula", "value"], ["Result variable", "id"], ["Unit", "unit"], ["Decimals", "decimals", "number"]],
+  };
   const error = el("p", { class: "artifact-error", role: "alert", hidden: true });
+  const group = (kind, name, entries, values, maximum) => {
+    const list = el("div", { class: "calc-edit-list" });
+    const add = el("button", { type: "button", class: "ghost", onclick: () => append({}) }, `Add ${kind}`);
+    function append(value) {
+      const controls = fields[kind].map(([label, key, type]) => ({ key, type, ...field(label, value[key] ?? (key === "value" ? value.formula : ""), type) }));
+      const entry = { value, controls };
+      const remove = el("button", { type: "button", class: "ghost", "aria-label": `Remove ${kind}`, onclick: () => {
+        values.splice(values.indexOf(entry), 1);
+        row.remove();
+        add.disabled = false;
+        add.focus();
+      } }, "Remove");
+      const row = el("div", { class: "calc-edit-row" }, controls.map(control => control.label), remove);
+      values.push(entry);
+      list.append(row);
+      add.disabled = values.length >= maximum;
+      return controls[0].input;
+    }
+    entries.slice(0, maximum).forEach(append);
+    add.addEventListener("click", () => values.at(-1)?.controls[0].input.focus());
+    return el("fieldset", {}, el("legend", { text: name }), list, add);
+  };
+  const read = ({ value, controls }) => {
+    const entry = { ...value };
+    for (const { input, key, type } of controls) {
+      const text = input.value.trim();
+      if (!text || (key === "type" && text === "number")) delete entry[key];
+      else entry[key] = type === "number" ? Number(text) : text;
+    }
+    return entry;
+  };
   const save = () => {
-    let next;
-    try { next = JSON.stringify(JSON.parse(box.value)); } catch { error.hidden = false; error.textContent = "That isn't valid JSON yet."; return; }
-    const fresh = artifactFromBlock(kind, next, el);
-    if (!fresh) { error.hidden = false; error.textContent = "Add at least one input (id, label, value) and one row (label, value)."; return; }
+    const next = { ...spec, title: title.input.value, note: note.input.value, inputs: inputs.map(read), rows: rows.map(read) };
+    const seen = new Set();
+    const ids = [...next.inputs.map(input => input.id), ...next.rows.map(row => row.id).filter(Boolean)];
+    const invalidIDs = ids.some(id => {
+      if (!CALC_ID.test(id ?? "") || seen.has(id)) return true;
+      seen.add(id);
+      return false;
+    });
+    const incomplete = !next.inputs.length || !next.rows.length ||
+      next.inputs.some(input => !input.label || !Number.isFinite(input.value) ||
+        (input.min ?? -Infinity) > (input.max ?? Infinity) || (input.step !== undefined && input.step <= 0)) ||
+      next.rows.some(row => !row.label || !row.value || (row.decimals !== undefined &&
+        (!Number.isInteger(row.decimals) || row.decimals < 0 || row.decimals > 6)));
+    const fresh = !invalidIDs && !incomplete && artifactFromBlock("calculator", JSON.stringify(next), el);
+    if (!fresh) {
+      error.hidden = false;
+      error.textContent = "Enter a label and starting value for each input, a label and formula for each result, and use unique variable names.";
+      return;
+    }
     article.replaceWith(fresh);
+    fresh.limaLive = true;
     fresh.dispatchEvent(new Event("input", { bubbles: true }));
   };
-  const original = [...article.childNodes];
-  article.replaceChildren(
-    el("p", { class: "artifact-hint", text: "Inputs are number boxes (id, label, value). Each row's value is a formula using input ids, such as 250 * servings / 4." }),
-    box, error,
-    el("div", { class: "row" }, el("button", { type: "button", class: "primary", onclick: save }, "Save"),
-      el("button", { type: "button", class: "ghost", onclick: () => article.replaceChildren(...original) }, "Cancel")));
-  box.focus();
+  article.replaceChildren(el("div", { class: "calc-editor" }, title.label,
+    group("input", "Inputs", spec.inputs, inputs, 8), group("row", "Results", spec.rows, rows, 60), note.label, error,
+    el("div", { class: "row" },
+      el("button", { type: "button", class: "primary", onclick: save }, "Save"),
+      el("button", { type: "button", class: "ghost", onclick: () => article.replaceChildren(...original) }, "Cancel"))));
+  title.input.focus();
+}
+
+function copyResult(el, label, text) {
+  return el("button", { type: "button", class: "ghost result-copy", "aria-label": label, title: label,
+    onmousedown: event => event.preventDefault(),
+    onclick: async event => {
+      const button = event.currentTarget;
+      const value = text();
+      if (!value) return;
+      try {
+        await navigator.clipboard.writeText(value);
+        button.textContent = "Copied";
+      } catch {
+        button.textContent = "Copy failed";
+      }
+      setTimeout(() => { button.textContent = "Copy"; }, 1400);
+    } }, "Copy");
 }
 
 function stringItems(items) {
@@ -253,33 +326,64 @@ function offlineMap(spec, title, el) {
         button(label, `Center map on ${label}`, () => { update(x, y, .025); selectPin(pins[index], label); }))))) : null);
 }
 
-/* Calculators: number boxes and rows computed from them, such as a recipe
- * whose ingredients scale with the servings you enter. Formulas are plain
- * arithmetic read by a small parser (no script runs): numbers, the ids of
- * inputs and earlier rows, + − × ÷ % ^, parentheses, and round, ceil,
- * floor, min, max, abs and sqrt. */
-const CALC_FUNCTIONS = {
+/* Calculators: inputs and rows computed from them, such as a recipe whose
+ * ingredients scale with the servings you enter. Formulas are read by a
+ * small parser (no script runs). They can use numbers, the names of values
+ * in the note, + - * / % ^, comparisons (< <= > >= == !=, giving 1 or 0),
+ * and/or/not, parentheses, the constants pi, yes and no, and the functions
+ * in CALC_FUNCTIONS. */
+export const CALC_FUNCTIONS = {
   round: (x, digits = 0) => { const f = 10 ** Math.max(0, Math.min(6, Math.trunc(digits))); return Math.round(x * f) / f; },
   ceil: Math.ceil, floor: Math.floor, min: Math.min, max: Math.max, abs: Math.abs, sqrt: Math.sqrt,
+  if: (test, then, otherwise = 0) => (test ? then : otherwise),
+  sum: (...values) => values.reduce((total, value) => total + value, 0),
+  avg: (...values) => values.length ? values.reduce((total, value) => total + value, 0) / values.length : NaN,
+  pow: Math.pow, clamp: (x, low, high) => Math.min(Math.max(x, low), high),
+  pct: (part, whole) => part / whole * 100, log: Math.log10, ln: Math.log, exp: Math.exp, sign: Math.sign,
+  not: x => (x ? 0 : 1),
 };
+const CALC_CONSTANTS = { pi: Math.PI, yes: 1, no: 0, true: 1, false: 0 };
+const KEYWORDS = new Set(["and", "or", "as", "in", "step"]);
 
 export function evaluateFormula(source, scope) {
   const text = String(source ?? "");
-  if (!text.trim() || text.length > 300) throw new Error("formula");
+  if (!text.trim()) throw new Error("Empty formula");
+  if (text.length > 300) throw new Error("Formula is too long");
   const tokens = [];
-  const pattern = /\s*(?:(\d+(?:\.\d+)?|\.\d+)|([A-Za-z_][A-Za-z0-9_]*)|([-+*/%^(),×÷]))/y;
+  const pattern = /\s*(?:(\d+(?:\.\d+)?|\.\d+)|([A-Za-z_][A-Za-z0-9_]*)|(<=|>=|==|!=|[-+*/%^(),×÷<>]))/y;
   let match;
   while (pattern.lastIndex < text.length && (match = pattern.exec(text))) {
     if (match[1] !== undefined) tokens.push({ number: Number(match[1]) });
-    else if (match[2] !== undefined) tokens.push({ name: match[2] });
+    else if (match[2] !== undefined) tokens.push(KEYWORDS.has(match[2]) ? { op: match[2] } : { name: match[2] });
     else tokens.push({ op: match[3] === "×" ? "*" : match[3] === "÷" ? "/" : match[3] });
-    if (tokens.length > 200) throw new Error("formula");
+    if (tokens.length > 200) throw new Error("Formula is too long");
   }
-  if (text.slice(pattern.lastIndex).trim()) throw new Error("formula");
+  const rest = text.slice(pattern.lastIndex).trim();
+  if (rest) throw new Error(`Can't read “${rest.slice(0, 12)}”`);
   let at = 0;
   const peek = () => tokens[at];
   const take = op => (peek()?.op === op ? (at++, true) : false);
-  const expect = op => { if (!take(op)) throw new Error("formula"); };
+  const expect = op => { if (!take(op)) throw new Error(`Expected “${op}”`); };
+  const either = () => {
+    let value = both();
+    while (take("or")) { const right = both(); value = value || right ? 1 : 0; }
+    return value;
+  };
+  function both() {
+    let value = compare();
+    while (take("and")) { const right = compare(); value = value && right ? 1 : 0; }
+    return value;
+  }
+  function compare() {
+    const left = expression();
+    for (const op of ["<=", ">=", "==", "!=", "<", ">"]) {
+      if (!take(op)) continue;
+      const right = expression();
+      const close = Math.abs(left - right) < 1e-9;
+      return { "<=": left <= right || close, ">=": left >= right || close, "==": close, "!=": !close, "<": left < right && !close, ">": left > right && !close }[op] ? 1 : 0;
+    }
+    return left;
+  }
   function expression() {
     let value = term();
     for (;;) {
@@ -309,25 +413,27 @@ export function evaluateFormula(source, scope) {
   }
   function primary() {
     const token = tokens[at++];
-    if (!token) throw new Error("formula");
+    if (!token) throw new Error("The formula ends too soon");
     if (token.number !== undefined) return token.number;
-    if (token.op === "(") { const value = expression(); expect(")"); return value; }
+    if (token.op === "(") { const value = either(); expect(")"); return value; }
     if (token.name !== undefined) {
       if (peek()?.op === "(") {
         const fn = Object.hasOwn(CALC_FUNCTIONS, token.name) ? CALC_FUNCTIONS[token.name] : null;
-        if (!fn) throw new Error("formula");
+        if (!fn) throw new Error(`No function named “${token.name}”`);
         at++;
         const args = [];
-        if (!take(")")) { do args.push(expression()); while (take(",")); expect(")"); }
+        if (!take(")")) { do args.push(either()); while (take(",")); expect(")"); }
         return fn(...args);
       }
-      if (!Object.hasOwn(scope, token.name)) throw new Error("formula");
-      return scope[token.name];
+      if (Object.hasOwn(scope, token.name)) return scope[token.name];
+      if (Object.hasOwn(CALC_CONSTANTS, token.name)) return CALC_CONSTANTS[token.name];
+      throw new Error(`Nothing is named “${token.name}”`);
     }
-    throw new Error("formula");
+    throw new Error(`Unexpected “${token.op}”`);
   }
-  const value = expression();
-  if (at !== tokens.length || !Number.isFinite(value)) throw new Error("formula");
+  const value = either();
+  if (at !== tokens.length) throw new Error(`Unexpected “${tokens[at].op ?? tokens[at].name ?? tokens[at].number}”`);
+  if (!Number.isFinite(value)) throw new Error("The result isn't a number (dividing by zero?)");
   return value;
 }
 
@@ -337,7 +443,8 @@ const CALC_ID = /^[A-Za-z_][A-Za-z0-9_]{0,39}$/;
 export function calculatorSpec(spec) {
   const inputs = (Array.isArray(spec.inputs) ? spec.inputs : []).slice(0, 8).filter(input => CALC_ID.test(input?.id ?? "")).map(input => ({
     id: input.id, label: typeof input.label === "string" ? input.label.slice(0, 80) : input.id,
-    value: Number.isFinite(input.value) ? input.value : 1,
+    type: ["slider", "toggle"].includes(input.type) ? input.type : "number",
+    value: input.type === "toggle" ? (input.value ? 1 : 0) : Number.isFinite(input.value) ? input.value : 1,
     min: Number.isFinite(input.min) ? input.min : undefined, max: Number.isFinite(input.max) ? input.max : undefined,
     step: Number.isFinite(input.step) && input.step > 0 ? input.step : "any",
     unit: typeof input.unit === "string" ? input.unit.slice(0, 20) : "",
@@ -359,27 +466,36 @@ function calculator(spec, el) {
   const calc = calculatorSpec(spec);
   if (!calc) return null;
   const outputs = calc.rows.map(row => el("output", { class: "calc-value" }));
-  const boxes = calc.inputs.map(input => el("input", { type: "number", value: String(input.value), step: String(input.step),
-    ...(input.min !== undefined ? { min: String(input.min) } : {}), ...(input.max !== undefined ? { max: String(input.max) } : {}),
-    "aria-label": input.label, oninput: () => compute() }));
+  const readouts = calc.inputs.map(input => input.type === "slider" ? el("output", { class: "calc-readout", text: String(input.value) }) : null);
+  const boxes = calc.inputs.map((input, index) => {
+    if (input.type === "toggle") {
+      return el("input", { type: "checkbox", role: "switch", class: "calc-toggle", checked: !!input.value, "aria-label": input.label, onchange: () => compute() });
+    }
+    const slider = input.type === "slider";
+    return el("input", { type: slider ? "range" : "number", value: String(input.value), step: String(input.step),
+      min: String(input.min ?? (slider ? 0 : "")), max: String(input.max ?? (slider ? 100 : "")),
+      "aria-label": input.label, oninput: () => { if (readouts[index]) readouts[index].textContent = boxes[index].value; compute(); } });
+  });
+  const inputValue = (input, index) => {
+    if (input.type === "toggle") return boxes[index].checked ? 1 : 0;
+    const value = Number(boxes[index].value);
+    return Number.isFinite(value) && boxes[index].value !== "" ? value : input.value;
+  };
   function compute() {
     // Values defined elsewhere in the note are usable here too.
     const host = node.closest(".md, .page-body");
     const scope = host ? Object.fromEntries(Object.entries(noteScope(host)).filter(([key]) => !calc.inputs.some(input => input.id === key))) : {};
-    calc.inputs.forEach((input, index) => {
-      const value = Number(boxes[index].value);
-      scope[input.id] = Number.isFinite(value) && boxes[index].value !== "" ? value : input.value;
-    });
+    calc.inputs.forEach((input, index) => { scope[input.id] = inputValue(input, index); });
     calc.rows.forEach((row, index) => {
       try {
         const value = evaluateFormula(row.formula, scope);
         if (row.id) scope[row.id] = value;
         outputs[index].textContent = formatNumber(value, row.decimals);
         outputs[index].removeAttribute("data-error");
-      } catch {
+      } catch (error) {
         outputs[index].textContent = "—";
         outputs[index].dataset.error = "true";
-        outputs[index].title = `Can't read the formula “${row.formula}”`;
+        outputs[index].title = `${error.message} in “${row.formula}”`;
       }
     });
     const figure = node.closest("figure[data-artifact]");
@@ -391,10 +507,17 @@ function calculator(spec, el) {
   }
   const node = el("div", { class: "calculator" },
     el("div", { class: "calc-inputs" }, calc.inputs.map((input, index) =>
-      el("label", { class: "calc-input" }, el("span", { text: input.label }), boxes[index], input.unit ? el("span", { class: "calc-unit", text: input.unit }) : null))),
+      el("label", { class: "calc-input", "data-type": input.type }, el("span", { text: input.label }), boxes[index], readouts[index],
+        input.unit ? el("span", { class: "calc-unit", text: input.unit }) : null))),
     el("table", { class: "calc-rows" }, el("tbody", {}, calc.rows.map((row, index) =>
       el("tr", {}, el("th", { scope: "row", text: row.label }), el("td", {}, outputs[index], row.unit ? el("span", { class: "calc-unit", text: ` ${row.unit}` }) : null))))),
     calc.note ? el("p", { class: "calc-note", text: calc.note }) : null);
+  node.limaCopy = copyResult(el, "Copy calculator as text", () => [
+      typeof spec.title === "string" ? spec.title : "",
+      ...calc.inputs.map((input, index) => `${input.label}: ${input.type === "toggle" ? (inputValue(input, index) ? "yes" : "no") : inputValue(input, index)}${input.unit ? ` ${input.unit}` : ""}`),
+      ...calc.rows.map((row, index) => `${row.label}: ${outputs[index].textContent}${row.unit ? ` ${row.unit}` : ""}`),
+      calc.note,
+    ].filter(Boolean).join("\n"));
   node.limaCompute = compute;
   // Once in a note, read its values (they may be defined below this block).
   queueMicrotask(compute);
@@ -415,71 +538,210 @@ export const CALCULATOR_TEMPLATE = JSON.stringify({
 
 /* Note values: light grey blocks that name a number or compute one, so a
  * note works like a small low-code flow. In Markdown:
- *   {{budget := 120}}   defines "budget" (an adjustable number)
- *   {{budget / 4}}      shows a live result
- * Formulas can use defined values and the input and row ids of calculators
- * in the same note; everything recomputes when any of them changes. */
-const DEFINE = /^\s*([A-Za-z_][A-Za-z0-9_]{0,39})\s*:=\s*(-?\d+(?:\.\d+)?)\s*$/;
+ *   {{budget := 120}}                         a number you can change
+ *   {{guests := 4 in 1..12}}                  a slider (add "step 2" for steps)
+ *   {{vegan := yes}}                          a switch (1 when on, 0 when off)
+ *   {{size := medium in small=1, medium=1.5, large=2}}   a choice; its value is the number
+ *   {{budget / guests}}                       a live result
+ *   {{each = budget / guests as $}}           a named result other formulas can use
+ * Results take a display format after "as": $ € £ (money), % (percent sign),
+ * 0 / 0.0 / 0.00 (decimals), or a short unit such as g or kg, e.g. "as 0.0 kg".
+ * Formulas can also use calculator inputs and rows, and facts about the note:
+ * tasks and done (its checklist), and for each table column with numbers,
+ * <column>_sum, <column>_avg, <column>_min, <column>_max and <column>_count
+ * (the column's header in lower case, spaces as _). */
+const NAME = "[A-Za-z_][A-Za-z0-9_]{0,39}";
+const NUMBER = "-?\\d+(?:\\.\\d+)?";
+const FORMAT = /^(?:([$€£%])|(0(?:\.0{1,6})?|int))?\s*([A-Za-zµ°%/²³]{1,12})?$/;
+
+/** What a {{…}} block holds, or { kind: "result" } for anything else. */
+export function parseValueSource(source) {
+  const text = String(source ?? "").trim().slice(0, 300);
+  let match = new RegExp(`^(${NAME})\\s*:=\\s*(${NUMBER})\\s+in\\s+(${NUMBER})\\s*\\.\\.\\s*(${NUMBER})(?:\\s+step\\s+(\\d+(?:\\.\\d+)?))?$`).exec(text);
+  if (match) {
+    const [min, max] = [Number(match[3]), Number(match[4])].sort((a, b) => a - b);
+    const step = match[5] ? Number(match[5]) : 1;
+    return { kind: "slider", name: match[1], value: Math.min(max, Math.max(min, Number(match[2]))), min, max, step: step > 0 ? step : 1 };
+  }
+  match = new RegExp(`^(${NAME})\\s*:=\\s*([^=]+?)\\s+in\\s+(.+)$`).exec(text);
+  if (match) {
+    const options = match[3].split(",").map(part => /^\s*([^=,]{1,30}?)\s*=\s*(-?\d+(?:\.\d+)?)\s*$/.exec(part)).filter(Boolean)
+      .map(([, label, value]) => ({ label, value: Number(value) })).slice(0, 20);
+    if (options.length >= 2 && options.length === match[3].split(",").length) {
+      const choice = options.find(option => option.label === match[2].trim()) ?? options[0];
+      return { kind: "choice", name: match[1], choice: choice.label, value: choice.value, options };
+    }
+  }
+  match = new RegExp(`^(${NAME})\\s*:=\\s*(yes|no|on|off|true|false)$`, "i").exec(text);
+  if (match) return { kind: "toggle", name: match[1], value: /^(yes|on|true)$/i.test(match[2]) ? 1 : 0 };
+  match = new RegExp(`^(${NAME})\\s*:=\\s*(${NUMBER})$`).exec(text);
+  if (match) return { kind: "number", name: match[1], value: Number(match[2]) };
+  let formula = text, name = null, format = "";
+  const as = /\s+as\s+([^]*)$/.exec(formula);
+  if (as && FORMAT.test(as[1].trim())) { format = as[1].trim(); formula = formula.slice(0, as.index); }
+  match = new RegExp(`^(${NAME})\\s*=(?!=)\\s*([^]+)$`).exec(formula);
+  if (match) { name = match[1]; formula = match[2]; }
+  return { kind: "result", name, formula: formula.trim(), format };
+}
+
+/** The Markdown source for an input block holding `value`. */
+export function valueSource(spec, value) {
+  if (spec.kind === "slider") return `${spec.name} := ${value} in ${spec.min}..${spec.max}${spec.step !== 1 ? ` step ${spec.step}` : ""}`;
+  if (spec.kind === "toggle") return `${spec.name} := ${value ? "yes" : "no"}`;
+  if (spec.kind === "choice") return `${spec.name} := ${value} in ${spec.options.map(option => `${option.label}=${option.value}`).join(", ")}`;
+  return `${spec.name} := ${value}`;
+}
+
+/** A number shown with a block's format ("" is up to two decimals). */
+export function formatValue(value, format = "") {
+  const [, money, decimals, unit] = FORMAT.exec(String(format).trim()) ?? [];
+  const places = money && money !== "%" ? 2 : decimals === "int" ? 0 : decimals ? (decimals.split(".")[1] ?? "").length : null;
+  const text = Number(value.toFixed(places ?? 2)).toLocaleString(undefined,
+    places === null ? { maximumFractionDigits: 2 } : { minimumFractionDigits: places, maximumFractionDigits: places });
+  if (money === "%") return `${text}%${unit ? ` ${unit}` : ""}`;
+  if (money) return `${value < 0 ? "−" : ""}${money}${text.replace(/^-/, "")}${unit ? ` ${unit}` : ""}`;
+  return unit ? `${text} ${unit}` : text;
+}
 
 /** The grey block for one {{…}} source. */
 export function valueChip(source, el) {
-  const text = String(source).slice(0, 200);
-  const define = DEFINE.exec(text);
-  if (define) {
-    const box = el("input", { type: "number", value: define[2], step: "any", "aria-label": define[1], class: "note-value-input" });
-    const chip = el("span", { class: "note-value", contenteditable: "false", "data-value-source": text, "data-define": define[1] },
-      el("span", { class: "note-value-name", text: define[1] }), box);
-    chip.limaLive = true;
-    box.addEventListener("input", () => {
-      if (box.value === "" || !Number.isFinite(Number(box.value))) return;
-      chip.dataset.valueSource = `${define[1]} := ${Number(box.value)}`;
+  const text = String(source).slice(0, 300);
+  const spec = parseValueSource(text);
+  if (spec.kind !== "result") {
+    const chip = el("span", { class: "note-value", contenteditable: "false", "data-value-source": text, "data-define": spec.name, "data-kind": spec.kind });
+    const changed = value => {
+      chip.dataset.valueSource = valueSource(spec, value);
       chip.dispatchEvent(new Event("input", { bubbles: true }));
       chip.dispatchEvent(new CustomEvent("lima-recalc", { bubbles: true }));
-    });
-    // Typing in the box mustn't move the note's caret or start a new line.
-    box.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); box.blur(); } event.stopPropagation(); });
+    };
+    let control;
+    if (spec.kind === "toggle") {
+      control = el("input", { type: "checkbox", role: "switch", class: "note-value-toggle", checked: !!spec.value, "aria-label": spec.name,
+        onchange: () => changed(control.checked ? 1 : 0) });
+    } else if (spec.kind === "choice") {
+      control = el("select", { class: "note-value-select", "aria-label": spec.name, onchange: () => changed(control.value) },
+        spec.options.map(option => el("option", { value: option.label, selected: option.label === spec.choice, text: option.label })));
+    } else if (spec.kind === "slider") {
+      const readout = el("output", { class: "note-value-readout", text: String(spec.value) });
+      control = el("input", { type: "range", class: "note-value-range", min: String(spec.min), max: String(spec.max), step: String(spec.step),
+        value: String(spec.value), "aria-label": spec.name, oninput: () => { readout.textContent = control.value; changed(Number(control.value)); } });
+      chip.append(el("span", { class: "note-value-name", text: spec.name }), control, readout);
+    } else {
+      control = el("input", { type: "number", value: String(spec.value), step: "any", "aria-label": spec.name, class: "note-value-input",
+        oninput: () => { if (control.value !== "" && Number.isFinite(Number(control.value))) changed(Number(control.value)); } });
+    }
+    if (!chip.firstChild) chip.append(el("span", { class: "note-value-name", text: spec.name }), control);
+    chip.limaValue = () => spec.kind === "toggle" ? (control.checked ? 1 : 0)
+      : spec.kind === "choice" ? spec.options.find(option => option.label === control.value)?.value ?? spec.value
+      : Number(control.value);
+    chip.limaLive = true;
+    // Typing in the block mustn't move the note's caret or start a new line.
+    control.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); control.blur(); } event.stopPropagation(); });
     return chip;
   }
-  const chip = el("span", { class: "note-value result", contenteditable: "false", "data-value-source": text, title: text.trim() },
-    el("span", { class: "note-value-out", text: "…" }));
+  // A result: click (or Enter) copies it.
+  const out = el("span", { class: "note-value-out", text: "…" });
+  const chip = el("span", { class: "note-value result", contenteditable: "false", "data-value-source": text, role: "button", tabindex: "0",
+    ...(spec.name ? { "data-result-name": spec.name } : {}) },
+    spec.name ? el("span", { class: "note-value-name", text: spec.name }) : null, out);
+  const copy = async () => {
+    if (chip.hasAttribute("data-error")) return;
+    try { await navigator.clipboard.writeText(out.textContent); chip.dataset.copied = "true"; } catch {}
+    setTimeout(() => chip.removeAttribute("data-copied"), 1200);
+  };
+  chip.addEventListener("click", copy);
+  chip.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); copy(); } });
   chip.limaLive = true;
   return chip;
 }
 
-/** Every named number in `root`: calculator boxes and rows, and defined values. */
+const columnName = header => header.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 30);
+const cellNumber = text => {
+  const clean = String(text).replace(/[$€£,\s%]/g, "").replace(/^\((.*)\)$/, "-$1");
+  return /^-?\d+(?:\.\d+)?$/.test(clean) ? Number(clean) : null;
+};
+
+/** Facts about the note itself: its checklist and its tables' number columns. */
+export function noteFacts(root) {
+  const facts = {};
+  const boxes = [...root.querySelectorAll("li > input[type=checkbox], .interactive-checklist input[type=checkbox]")];
+  facts.tasks = boxes.length;
+  facts.done = boxes.filter(box => box.checked).length;
+  for (const table of root.querySelectorAll("table:not(.calc-rows)")) {
+    if (table.closest(".rich-artifact")) continue;
+    const rows = [...table.rows];
+    const headers = [...(rows.shift()?.cells ?? [])].map(cell => columnName(cell.textContent));
+    headers.forEach((name, column) => {
+      if (!/^[a-z_]/.test(name)) return;
+      const values = rows.map(row => cellNumber(row.cells[column]?.textContent ?? "")).filter(value => value !== null);
+      if (!values.length) return;
+      const total = values.reduce((sum, value) => sum + value, 0);
+      Object.assign(facts, { [`${name}_sum`]: total, [`${name}_avg`]: total / values.length, [`${name}_min`]: Math.min(...values),
+        [`${name}_max`]: Math.max(...values), [`${name}_count`]: values.length });
+    });
+  }
+  return facts;
+}
+
+/** Every named number in `root`: note facts, calculator inputs and rows, and value blocks. */
 export function noteScope(root) {
-  const scope = {};
+  const scope = noteFacts(root);
+  for (const figure of root.querySelectorAll("figure[data-artifact='calculator']")) Object.assign(scope, figure.limaValues ?? {});
   for (const chip of root.querySelectorAll(".note-value[data-define]")) {
-    const value = Number(chip.querySelector("input")?.value);
+    const value = chip.limaValue ? chip.limaValue() : parseValueSource(chip.dataset.valueSource).value;
     if (Number.isFinite(value)) scope[chip.dataset.define] = value;
   }
-  for (const figure of root.querySelectorAll("figure[data-artifact='calculator']")) Object.assign(scope, figure.limaValues ?? {});
+  for (const chip of root.querySelectorAll(".note-value[data-result-name]")) {
+    if (Number.isFinite(chip.limaResult)) scope[chip.dataset.resultName] = chip.limaResult;
+  }
   return scope;
 }
 
-/** Recomputes every result block in `root`; a block naming another's result works too. */
+/** Recomputes every result block in `root`. Named results feed later ones,
+ * in whatever order they appear; a loop or a missing name shows why. */
 export function evaluateValues(root) {
   const scope = noteScope(root);
-  const results = [...root.querySelectorAll(".note-value.result")];
-  for (const chip of results) {
+  const results = [...root.querySelectorAll(".note-value.result")].map(chip => ({ chip, spec: parseValueSource(chip.dataset.valueSource) }));
+  for (const { spec } of results) if (spec.name) delete scope[spec.name];
+  let pending = results;
+  const errors = new Map();
+  while (pending.length) {
+    const next = [];
+    for (const item of pending) {
+      try {
+        const value = evaluateFormula(item.spec.formula, scope);
+        item.value = value;
+        if (item.spec.name) scope[item.spec.name] = value;
+      } catch (error) { errors.set(item, error.message); next.push(item); }
+    }
+    if (next.length === pending.length) break;
+    pending = next;
+  }
+  for (const item of results) {
+    const { chip, spec } = item;
     const out = chip.querySelector(".note-value-out");
-    const expression = chip.dataset.valueSource;
-    try {
-      const value = evaluateFormula(expression, scope);
-      out.textContent = formatNumber(value, 2);
+    if (item.value !== undefined) {
+      chip.limaResult = item.value;
+      out.textContent = formatValue(item.value, spec.format);
       chip.removeAttribute("data-error");
-    } catch {
+      chip.title = `${spec.formula} — click to copy`;
+      chip.setAttribute("aria-label", `${spec.name ? `${spec.name}: ` : ""}${out.textContent}. Copy`);
+    } else {
+      chip.limaResult = NaN;
       out.textContent = "?";
       chip.dataset.error = "true";
+      const reason = errors.get(item) ?? "Can't compute";
+      chip.title = /Nothing is named/.test(reason) && spec.name && reason.includes(`“${spec.name}”`) ? "This result uses itself" : `${reason} in “${spec.formula}”`;
+      chip.setAttribute("aria-label", `${spec.name ? `${spec.name}: ` : ""}${chip.title}`);
     }
   }
 }
 
-/** Keeps `root`'s results live as values, calculators and blocks change. */
+/** Keeps `root`'s results live as values, calculators, checklists and tables change. */
 export function wireValues(root) {
   if (root.limaValuesWired) { root.limaRecalc?.(); return; }
   root.limaValuesWired = true;
-  // One pass: calculators first (they may read defined values), then results.
+  // One pass: calculators first (they may read values), then results.
   // Calculators announce their own changes; a pass already running ignores them.
   const run = () => {
     if (root.limaRecalculating) return;
@@ -487,10 +749,21 @@ export function wireValues(root) {
     try {
       for (const calculator of root.querySelectorAll(".calculator")) calculator.limaCompute?.();
       evaluateValues(root);
+      // A calculator may read a named result computed just now.
+      if (root.querySelector(".calculator") && root.querySelector(".note-value[data-result-name]")) {
+        for (const calculator of root.querySelectorAll(".calculator")) calculator.limaCompute?.();
+        evaluateValues(root);
+      }
     } finally { root.limaRecalculating = false; }
   };
+  let timer = 0;
   root.limaRecalc = run;
   root.addEventListener("lima-recalc", run);
-  root.addEventListener("input", event => { if (event.target.closest?.(".calculator, .note-value")) queueMicrotask(run); });
+  root.addEventListener("input", event => {
+    if (event.target.closest?.(".calculator, .note-value")) queueMicrotask(run);
+    // Typing in a table or ticking a to-do changes the note's facts.
+    else { clearTimeout(timer); timer = setTimeout(run, 150); }
+  });
+  root.addEventListener("change", event => { if (event.target.matches?.("input[type=checkbox]")) queueMicrotask(run); });
   run();
 }

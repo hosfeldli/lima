@@ -48,4 +48,30 @@ body.shared-note { display: grid; grid-template-rows: auto 1fr auto; min-height:
 .note-value-name::after { content: " ="; color: var(--muted); }
 .note-value-input { width: 6ch; border: 0; background: transparent; font: inherit; color: inherit; text-align: end; }
 .note-value-input:focus-visible { outline: 2px solid var(--accent); border-radius: 4px; }
-.note-value.result::before { content: "="; color: var(--muted); font-weight: 500; }
+.note-value.result:not([data-result-name])::before { content: "="; color: var(--muted); font-weight: 500; }
+.note-value.result { cursor: copy; }
+.note-value.result:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.note-value.result[data-copied]::after { content: "Copied"; margin-inline-start: 2px; color: var(--muted); font-size: .82em; }
+.note-value[data-error] { color: var(--muted); border-style: dashed; cursor: help; }
+/* Sliders, switches and choices, as in Lima. */
+.note-value-range, .calc-input[data-type="slider"] input { width: 9ch; height: 14px; padding: 0; border: 0; background: none; accent-color: var(--fg); }
+.calc-input[data-type="slider"] input { width: 140px; height: 20px; }
+.note-value-readout, .calc-readout { min-width: 2.2ch; text-align: end; font-variant-numeric: tabular-nums; }
+.note-value-select { height: 22px; border: 0; border-radius: 4px; background: color-mix(in srgb, var(--fg) 7%, transparent); color: inherit; font: inherit; }
+.note-value .note-value-toggle, .calc-input .calc-toggle {
+  appearance: none; position: relative; flex: none; width: 26px; height: 15px; margin: 0; padding: 0; border: 0; border-radius: 999px;
+  background: color-mix(in srgb, var(--fg) 34%, var(--bg)); cursor: pointer;
+}
+.note-value .note-value-toggle::after, .calc-input .calc-toggle::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 11px; height: 11px; border-radius: 50%; background: var(--bg); transition: transform 180ms ease;
+}
+.note-value .note-value-toggle:checked, .calc-input .calc-toggle:checked { background: var(--fg); }
+.note-value .note-value-toggle:checked::after { transform: translateX(11px); }
+.calc-input .calc-toggle { width: 34px; height: 20px; }
+.calc-input .calc-toggle::after { width: 16px; height: 16px; }
+.calc-input .calc-toggle:checked::after { transform: translateX(14px); }
+/* Calculator actions: only Copy on the shared page (editing stays in Lima). */
+.rich-artifact.has-actions { position: relative; }
+.artifact-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 2px; }
+.artifact-actions .artifact-edit { display: none; }
+.artifact-actions button { height: 26px; padding: 0 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); color: var(--fg); font: 600 12px/1 var(--sans); cursor: pointer; }

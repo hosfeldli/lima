@@ -1,13 +1,17 @@
 /* Notes: index (organized by the bookmark tree), classic editor and canvas. */
 import { bar, bridge, call, debounce, el, errorText, hydrateEmbeds, icon, installEmbedActions, markdown, noteEmbed, onEvent, relativeTime, setPage } from "./lib.js";
-import { artifactFromBlock, CALCULATOR_TEMPLATE, noteScope, valueChip, wireValues } from "./rich-content.js";
+import { artifactFromBlock, CALCULATOR_TEMPLATE, evaluateFormula, noteFacts, noteScope, parseValueSource, valueChip, wireValues } from "./rich-content.js";
 
 installEmbedActions();
 
 const attachmentCache = new Map();
 function attachmentURL(id) {
   if (!attachmentCache.has(id)) {
-    attachmentCache.set(id, call("notes.attachment.get", { id }).then(r => `data:image/png;base64,${r.data}`));
+    attachmentCache.set(id, call("notes.attachment.get", { id }).then(result =>
+      `data:image/png;base64,${result.data}`).catch(error => {
+      attachmentCache.delete(id);
+      throw error;
+    }));
   }
   return attachmentCache.get(id);
 }
@@ -17,16 +21,30 @@ function attachmentURL(id) {
 /** Excerpt without Markdown syntax. */
 const plain = text => String(text).split(/\n+/).map(line => line.replace(/[#*_`>~]|\[( |x)\]|^\s*[-+]\s/g, "").trim()).filter(Boolean).join(" · ");
 
+/** Notes help: the value-block syntax, with live examples. */
+export function renderNotesHelp(app) {
+  setPage("Values & formulas", "calc");
+  const body = markdown(NOTES_HELP);
+  body.classList.add("page-body", "notes-help-body");
+  app.replaceChildren(el("main", { class: "page narrow notes-help" }, el("h1", { text: "Values & formulas in notes" }), body));
+}
+
+const NOTES_HELP = "Light grey blocks make a note live: change a value and everything that uses it updates. Type **@** in a note to add one, or write them yourself between double braces. Try the examples below; they're live.\n\n## Values you can change\n\n| Write | You get |\n| --- | --- |\n| `{{budget := 120}}` | A number: {{budget := 120}} |\n| `{{guests := 4 in 1..12}}` | A slider: {{guests := 4 in 1..12}} |\n| `{{vegan := yes}}` | A switch (1 on, 0 off): {{vegan := yes}} |\n| `{{size := medium in small=1, medium=1.5, large=2}}` | A choice: {{size := medium in small=1, medium=1.5, large=2}} |\n\n## Results\n\n| Write | You get |\n| --- | --- |\n| `{{budget / guests}}` | {{budget / guests}} |\n| `{{each = budget / guests as $}}` | A named result: {{each = budget / guests as $}} |\n| `{{each * size as $}}` | Uses the result above: {{each * size as $}} |\n| `{{if(vegan, 0, guests * 2) as int}}` | {{if(vegan, 0, guests * 2) as int}} eggs |\n\nAfter **as**, show a result as money (`$`, `\u20ac`, `\u00a3`), a percent (`%`), with set decimals (`0`, `0.0`, `0.00`) or with a unit (`kg`, `min`).\n\n## Formulas\n\nUse `+ - * / % ^` and parentheses, comparisons `< <= > >= == !=` (1 when true, 0 when false), `and`, `or`, `not(x)`, and `if(test, then, else)`. Functions: `round(x, digits)`, `ceil`, `floor`, `min`, `max`, `sum`, `avg`, `abs`, `sqrt`, `pow`, `clamp(x, low, high)`, `pct(part, whole)`, `log`, `ln` and `exp`, plus `pi`, `yes` and `no`.\n\n## Facts about the note\n\nEvery note offers these without writing anything:\n\n- `tasks` and `done` count its checklist: {{done}} of {{tasks}} done, {{done / tasks * 100 as %}}.\n- Each table column of numbers gives `<column>_sum`, `_avg`, `_min`, `_max` and `_count`.\n\n- [x] Try a slider\n- [ ] Add a value with @\n\n| Item | Cost |\n| --- | --- |\n| Flour | 4.50 |\n| Berries | 12.25 |\n\nThe table above adds up to {{cost_sum as $}}.\n\n## Calculators\n\nFor a block of inputs and rows, choose **Insert \u2192 Calculator**, then **Edit** it. Inputs can be numbers, sliders or switches, and rows can use any value in the note.\n\n```calculator\n{\"title\": \"Pancakes\", \"inputs\": [{\"id\": \"servings\", \"label\": \"Servings\", \"type\": \"slider\", \"value\": 4, \"min\": 1, \"max\": 12}], \"rows\": [{\"label\": \"Flour\", \"value\": \"servings * 50\", \"unit\": \"g\", \"decimals\": 0}, {\"label\": \"Eggs\", \"value\": \"ceil(servings / 2)\", \"decimals\": 0}]}\n```\n\nIf a block shows **?**, point at it to see why, for example a name that isn't defined yet.";
+
 export async function renderIndex(app) {
   setPage("Notes", "note");
   const body = el("div", { class: "page narrow" });
   const filter = el("input", { type: "search", placeholder: "Filter notes", style: { minWidth: "220px" } });
+  const moveStatus = el("span", { class: "muted", role: "status" });
+  let lastMove = null;
+  let moving = false;
+  const undoMove = el("button", { type: "button", class: "ghost", hidden: true, onclick: () => undoIndexMove() }, "Undo move");
   app.replaceChildren(
     bar("Notes",
       filter,
       el("button", { onclick: () => createNote("classic") }, "New Note"),
       el("button", { onclick: () => createNote("canvas") }, "New Canvas"),
-      el("button", { class: "ghost", onclick: newFolder }, "New Folder")),
+      el("button", { class: "ghost", onclick: newFolder }, "New Folder"), moveStatus, undoMove),
     el("div", { class: "prism-rule" }),
     body
   );
@@ -39,6 +57,35 @@ export async function renderIndex(app) {
   async function newFolder() {
     const title = prompt("Folder name");
     if (title) { await bridge.browser("createFolder", { title }); load(); }
+  }
+
+  async function moveInIndex(noteId, destination) {
+    if (moving) return;
+    moving = true;
+    try {
+      const before = await bridge.browser("noteLocation", { noteId });
+      if (!before || before.guid === destination) return;
+      await bridge.browser("moveNote", { noteId, folderGuid: destination, expectedGuid: before.guid });
+      lastMove = { noteId, before: before.guid, after: destination };
+      undoMove.hidden = false;
+      moveStatus.textContent = "Note moved";
+      load();
+    } catch (error) { moveStatus.textContent = errorText(error); }
+    finally { moving = false; }
+  }
+
+  async function undoIndexMove() {
+    if (!lastMove || moving) return;
+    moving = true;
+    try {
+      const { noteId, before, after } = lastMove;
+      await bridge.browser("moveNote", { noteId, folderGuid: before, expectedGuid: after });
+      lastMove = null;
+      undoMove.hidden = true;
+      moveStatus.textContent = "Note move undone";
+      load();
+    } catch (error) { moveStatus.textContent = errorText(error); }
+    finally { moving = false; }
   }
 
   async function load() {
@@ -80,7 +127,7 @@ export async function renderIndex(app) {
           ondragover: e => e.preventDefault(),
           ondrop: async e => {
             const id = e.dataTransfer.getData("text/lima-note");
-            if (id) { await bridge.browser("moveNote", { noteId: id, folderGuid: folder.guid }); load(); }
+            if (id) { e.preventDefault(); moveInIndex(id, folder.guid); }
           },
         }, el("h3", {}, folder.title, el("span", { class: "count", text: String(rows.length) })), list));
       }
@@ -102,7 +149,16 @@ export async function renderIndex(app) {
 
   let filterTimer;
   filter.addEventListener("input", () => { clearTimeout(filterTimer); filterTimer = setTimeout(load, 160); });
-  onEvent(m => { if (["notes.changed", "notes.deleted", "notes.bookmarks"].includes(m.event)) load(); });
+  const keydown = event => {
+    if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === "z" &&
+        lastMove && !event.target.closest?.("input, textarea, [contenteditable]")) {
+      event.preventDefault();
+      undoIndexMove();
+    }
+  };
+  document.addEventListener("keydown", keydown);
+  const off = onEvent(m => { if (["notes.changed", "notes.deleted", "notes.bookmarks"].includes(m.event)) load(); });
+  window.addEventListener("pagehide", () => { off(); document.removeEventListener("keydown", keydown); }, { once: true });
   load();
 }
 
@@ -125,6 +181,73 @@ function trashedNotice(note, rerender) {
   if (!note.trashedAt) return null;
   return el("div", { class: "notice warn" }, "This note is in the trash. ",
     el("button", { onclick: async () => { await bridge.browser("restoreNote", { noteId: note.id }); rerender(); } }, "Restore"));
+}
+
+/** A bookmark move and its inverse use the same authoritative folder tree. */
+function placement(noteId, status, onLocation = () => {}) {
+  const path = el("span", { class: "muted", text: "Notebook" });
+  const directories = el("select", { "aria-label": "Move note to folder", hidden: true });
+  let lastMove = null;
+  let revision = 0;
+  let busy = false;
+  const undoButton = el("button", { type: "button", class: "ghost", hidden: true, onclick: () => undo() }, "Undo move");
+  const refresh = async () => {
+    const snapshot = ++revision;
+    const current = await bridge.browser("noteLocation", { noteId });
+    if (snapshot !== revision) return current;
+    path.textContent = current?.path ?? "Notebook";
+    moveButton.hidden = !current;
+    undoButton.hidden = !lastMove || lastMove.after !== current?.guid;
+    if (current) onLocation(current);
+    return current;
+  };
+  const attempt = async run => {
+    if (busy) return;
+    busy = true;
+    try { await run(); } catch (error) { status.textContent = errorText(error); }
+    finally { busy = false; }
+  };
+  const change = run => attempt(async () => {
+    const before = await refresh();
+    if (!before) return;
+    await run(before);
+    const after = await refresh();
+    if (after && before.guid !== after.guid) {
+      lastMove = { before: before.guid, after: after.guid };
+      undoButton.hidden = false;
+      status.textContent = after.archived ? "Note archived" : `Note moved to ${after.path}`;
+    }
+  });
+  const undo = (keyboard = false) => {
+    if (!lastMove || undoButton.hidden || busy || (keyboard && lastMove.interveningEdit)) return false;
+    attempt(async () => {
+      const { before, after } = lastMove;
+      await bridge.browser("moveNote", { noteId, folderGuid: before, expectedGuid: after });
+      lastMove = null;
+      await refresh();
+      status.textContent = "Note move undone";
+    });
+    return true;
+  };
+  directories.addEventListener("change", () => {
+    const folderGuid = directories.value;
+    directories.hidden = true;
+    moveButton.focus();
+    if (folderGuid) change(before => bridge.browser("moveNote", { noteId, folderGuid, expectedGuid: before.guid }));
+  });
+  const moveButton = el("button", { type: "button", class: "ghost", onclick: () => attempt(async () => {
+    const [current, tree] = await Promise.all([refresh(), bridge.browser("noteFolders")]);
+    directories.replaceChildren(el("option", { value: "", text: "Choose a folder…" }),
+      tree.folders.filter(folder => folder.guid !== current?.guid).map(folder =>
+        el("option", { value: folder.guid, text: folder.path ?? folder.title })));
+    directories.hidden = false;
+    directories.focus();
+  }) }, "Move");
+  const node = el("div", { class: "note-placement" }, path, moveButton, directories, undoButton);
+  const off = onEvent(({ event }) => { if (event === "notes.bookmarks" && node.isConnected) refresh().catch(() => {}); });
+  window.addEventListener("pagehide", off, { once: true });
+  refresh().catch(error => { status.textContent = errorText(error); });
+  return { node, change, undo, noteEdited() { if (lastMove) lastMove.interveningEdit = true; } };
 }
 
 // MARK: Page (OneNote-style): title, date, and a WYSIWYG body that
@@ -278,21 +401,76 @@ async function renderClassic(app, note) {
   };
   document.addEventListener("mousedown", event => { if (!event.target.closest?.(".fmt-menu-wrap")) for (const entry of menus) entry.close(); });
 
-  const imageFile = el("input", { type: "file", accept: "image/*", hidden: true, onchange: async () => {
-    const file = imageFile.files?.[0];
+  const imageFile = el("input", { type: "file", accept: "image/*", hidden: true, onchange: () => {
+    const files = [...imageFile.files];
     imageFile.value = "";
-    if (!file) return;
-    if (file.size > 25_000_000) { status.textContent = "That image is larger than 25 MB."; return; }
-    status.textContent = "Adding image…";
-    try {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      let binary = "";
-      for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-      const { id } = await call("notes.attachment.put", { data: btoa(binary) });
-      insertImage(id, file.name.replace(/\.[^.]+$/, ""));
-      status.textContent = "";
-    } catch (error) { status.textContent = errorText(error); }
+    addImageFiles(files);
   } });
+  async function encodeImage(file) {
+    const image = await createImageBitmap(file);
+    try {
+      const canvas = document.createElement("canvas");
+      let scale = Math.min(1, 2400 / Math.max(image.width, image.height));
+      const context = canvas.getContext("2d");
+      for (let attempt = 0; attempt < 8; attempt++, scale *= 0.75) {
+        canvas.width = Math.max(1, Math.round(image.width * scale));
+        canvas.height = Math.max(1, Math.round(image.height * scale));
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        const data = canvas.toDataURL("image/png").split(",")[1];
+        // The bridge accepts a 4 MiB JSON frame, including base64 and metadata.
+        if (data && data.length < 3_900_000) return data;
+      }
+      throw new Error("This image is too large to attach.");
+    } finally { image.close(); }
+  }
+  async function addImageFiles(files, range = selectionRange) {
+    for (const file of files) {
+      if (file.size > 25_000_000) { status.textContent = "That image is larger than 25 MB."; continue; }
+      status.textContent = "Adding image…";
+      try {
+        const data = await encodeImage(file);
+        const { id } = await call("notes.attachment.put", { data });
+        if (!body.isConnected) return;
+        selectBody();
+        if (range && body.contains(range.commonAncestorContainer)) {
+          const selection = getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+        insertImage(id, file.name.replace(/\.[^.]+$/, ""));
+        const selection = getSelection();
+        range = selection.rangeCount ? selection.getRangeAt(0).cloneRange() : null;
+        status.textContent = "";
+      } catch (error) { status.textContent = errorText(error); }
+    }
+  }
+  const imageFiles = transfer => Array.from(transfer?.items ?? []).filter(item =>
+    item.kind === "file" && item.type.startsWith("image/")).map(item => item.getAsFile()).filter(Boolean);
+  body.addEventListener("paste", event => {
+    const files = imageFiles(event.clipboardData);
+    if (!files.length) return;
+    event.preventDefault();
+    addImageFiles(files);
+  });
+  body.addEventListener("dragover", event => {
+    if ([...event.dataTransfer.items].some(item => item.kind === "file" && item.type.startsWith("image/"))) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+    }
+  });
+  body.addEventListener("drop", event => {
+    const files = imageFiles(event.dataTransfer);
+    if (!files.length) return;
+    event.preventDefault();
+    const caret = document.caretPositionFromPoint?.(event.clientX, event.clientY);
+    let range = selectionRange;
+    if (caret && body.contains(caret.offsetNode)) {
+      range = document.createRange();
+      range.setStart(caret.offsetNode, caret.offset);
+      range.collapse(true);
+    }
+    addImageFiles(files, range);
+  });
   async function imageFromAddress() {
     const value = window.prompt("Image address (HTTPS) or a file path on this Mac");
     if (!value?.trim()) return;
@@ -332,15 +510,13 @@ async function renderClassic(app, note) {
   let archived = false;
   const archivedNotice = el("div", { class: "notice", hidden: true }, "This note is archived. ",
     el("button", { onclick: () => setArchived(false) }, "Restore"));
-  async function setArchived(value) {
-    try {
-      await bridge.browser(value ? "archiveNote" : "unarchiveNote", { noteId: note.id });
-      archived = value;
-      archivedNotice.hidden = !value;
-      status.textContent = value ? "Archived" : "Restored from the archive";
-    } catch (error) { status.textContent = errorText(error); }
+  const organization = placement(note.id, status, current => {
+    archived = current.archived;
+    archivedNotice.hidden = !archived;
+  });
+  function setArchived(value) {
+    return organization.change(() => bridge.browser(value ? "archiveNote" : "unarchiveNote", { noteId: note.id }));
   }
-  bridge.browser("noteArchived", { noteId: note.id }).then(value => { archived = value === true; archivedNotice.hidden = !archived; }).catch(() => {});
 
   const insertMenu = menu(icon("plus"), "Insert", () => [
     { label: "Table", icon: "table", run: insertTable },
@@ -348,6 +524,7 @@ async function renderClassic(app, note) {
     { label: "Image from an address…", icon: "globe", run: imageFromAddress, dirty: false },
     { label: "Calculator", icon: "calc", run: insertCalculator },
     { label: "Value or formula (@)", icon: "hash", run: () => { document.execCommand("insertText", false, "@"); openPicker(); }, dirty: false },
+    { label: "Values & formulas help", icon: "calc", run: () => bridge.openTab("about:lima?view=notes-help"), dirty: false },
     { label: "Embed a page…", icon: "link", run: insertEmbed },
   ]);
   const columnCount = () => { const columns = currentColumns(); return columns ? columns.querySelectorAll(":scope > .note-column").length : 1; };
@@ -371,7 +548,13 @@ async function renderClassic(app, note) {
   async function copyShareLink() {
     try {
       const current = draft();
-      const markdown = current.markdown.replace(/!\[([^\]]*)\]\(lima-attachment:[^)]+\)/g, "![$1](omitted)");
+      const images = /!\[([^\]]*)\]\(lima-attachment:[^)]+\)/g;
+      const embeds = /^::embed\s+(\S+).*$/gm;
+      const imageCount = [...current.markdown.matchAll(images)].length;
+      const embedCount = [...current.markdown.matchAll(embeds)].length;
+      const omitted = [imageCount ? `${imageCount} attached image(s)` : "", embedCount ? `${embedCount} embedded preview(s)` : ""].filter(Boolean);
+      if (omitted.length && !window.confirm(`The share link leaves out ${omitted.join(" and ")}. Anyone with the link can read the remaining content. Copy it?`)) return;
+      const markdown = current.markdown.replace(images, "![$1](omitted)").replace(embeds, "[Embedded preview omitted]");
       const json = JSON.stringify({ v: 1, t: current.title || "Untitled", m: markdown });
       const stream = new Blob([json]).stream().pipeThrough(new CompressionStream("deflate-raw"));
       const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
@@ -380,9 +563,7 @@ async function renderClassic(app, note) {
       const link = `https://lima.liamhosfeld.com/n#${btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
       if (link.length > 60000) { status.textContent = "This note is too long to share as a link."; return; }
       await navigator.clipboard.writeText(link);
-      status.textContent = /lima-attachment:/.test(current.markdown)
-        ? "Share link copied (images aren't included). Anyone with it can read this note."
-        : "Share link copied. Anyone with it can read this note.";
+      status.textContent = omitted.length ? `Share link copied. Left out ${omitted.join(" and ")}.` : "Share link copied. Anyone with it can read this note.";
     } catch (error) { status.textContent = errorText(error); }
   }
 
@@ -414,7 +595,17 @@ async function renderClassic(app, note) {
   const picker = el("div", { class: "value-picker", role: "listbox", "aria-label": "Insert a value", hidden: true });
   let pickerItems = [];
   let pickerIndex = 0;
-  function closePicker() { picker.hidden = true; pickerItems = []; }
+  function closePicker() { picker.hidden = true; pickerItems = []; delete picker.dataset.mode; }
+  // Where the @ was typed. Focusing the page again would put the caret at
+  // its start, so the form puts this back before it inserts.
+  let pickerRange = null;
+  function returnToPicker() {
+    body.focus();
+    if (!pickerRange || !body.contains(pickerRange.commonAncestorContainer)) return selectBody();
+    const selection = getSelection();
+    selection.removeAllRanges();
+    selection.addRange(pickerRange);
+  }
   function insertValue(source) {
     // Replace the @ that opened the picker with the block.
     const selection = getSelection();
@@ -440,51 +631,99 @@ async function renderClassic(app, note) {
     }
     wireValues(body);
   }
+  /* Choosing a kind opens a small form in the picker; Insert turns it into
+   * the block's Markdown ({{…}}) and checks it before it goes in. */
+  const KINDS = {
+    number: { label: "Number", detail: "a value you can change", fields: [["name", "Name", "budget"], ["value", "Value", "120"]],
+      source: f => `${f.name} := ${f.value}` },
+    slider: { label: "Slider", detail: "a number on a range", fields: [["name", "Name", "guests"], ["value", "Value", "4"], ["min", "From", "1"], ["max", "To", "12"], ["step", "Step", "1"]],
+      source: f => `${f.name} := ${f.value} in ${f.min}..${f.max}${f.step && Number(f.step) !== 1 ? ` step ${f.step}` : ""}` },
+    toggle: { label: "Switch", detail: "on (1) or off (0)", fields: [["name", "Name", "vegan"], ["value", "On", "", "checkbox"]],
+      source: f => `${f.name} := ${f.value ? "yes" : "no"}` },
+    choice: { label: "Choice", detail: "named options, each a number", fields: [["name", "Name", "size"], ["options", "Options", "small=1, medium=1.5, large=2"]],
+      source: f => `${f.name} := ${(f.options.split(",")[0] ?? "").split("=")[0].trim()} in ${f.options}` },
+    formula: { label: "Formula", detail: "computed from values", fields: [["formula", "Formula", "budget / guests"], ["name", "Name (optional)", "each"], ["format", "Show as (optional)", "$, %, 0.0 or a unit"]],
+      source: f => `${f.name ? `${f.name} = ` : ""}${f.formula}${f.format ? ` as ${f.format}` : ""}` },
+  };
+  function pickerForm(kind) {
+    const spec = KINDS[kind];
+    const names = Object.keys(noteScope(body));
+    const inputs = {};
+    const error = el("p", { class: "value-form-error", role: "alert", hidden: true });
+    const insert = () => {
+      const values = Object.fromEntries(Object.entries(inputs).map(([key, input]) => [key, input.type === "checkbox" ? input.checked : input.value.trim()]));
+      const source = spec.source(values);
+      const parsed = parseValueSource(source);
+      let problem = "";
+      if (kind !== "formula" && (parsed.kind !== (kind === "toggle" ? "toggle" : kind) || !parsed.name)) {
+        problem = kind === "choice" ? "Give it a name and two or more options written as name=number." : "Give it a name (letters, digits and _) and numbers.";
+      } else if (kind === "formula") {
+        if (values.name && !/^[A-Za-z_][A-Za-z0-9_]{0,39}$/.test(values.name)) problem = "A name uses letters, digits and _.";
+        else if (parsed.kind !== "result" || parsed.format !== values.format) problem = "Show as takes $, €, £, %, 0, 0.0, 0.00 or a short unit.";
+        else {
+          // Only the shape is checked here: names defined later in the note are fine.
+          const stand = Object.fromEntries((parsed.formula.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []).map(name => [name, 1]));
+          try { evaluateFormula(parsed.formula, stand); }
+          catch (reason) { if (!/isn't a number/.test(reason.message)) problem = reason.message; }
+        }
+      } else if (names.includes(parsed.name)) problem = `“${parsed.name}” is already used in this note.`;
+      if (problem) { error.textContent = problem; error.hidden = false; return; }
+      closePicker();
+      returnToPicker();
+      insertValue(source);
+    };
+    const form = el("form", { class: "value-form", onsubmit: event => { event.preventDefault(); insert(); } },
+      el("p", { class: "value-form-title", text: spec.label }),
+      spec.fields.map(([key, label, placeholder, type]) => {
+        inputs[key] = el("input", type === "checkbox" ? { type: "checkbox" } : { type: "text", placeholder, autocomplete: "off", spellcheck: "false" });
+        return el("label", { class: `value-form-field${type === "checkbox" ? " inline" : ""}` }, el("span", { text: label }), inputs[key]);
+      }),
+      kind === "formula" && names.length ? el("p", { class: "value-form-hint", text: `Values here: ${names.slice(0, 10).join(", ")}${names.length > 10 ? "…" : ""}` }) : null,
+      error,
+      el("div", { class: "value-form-actions" },
+        el("button", { type: "button", class: "ghost", onclick: () => { closePicker(); returnToPicker(); } }, "Cancel"),
+        el("button", { type: "submit", class: "primary" }, "Insert")));
+    form.addEventListener("keydown", event => { if (event.key === "Escape") { event.preventDefault(); closePicker(); returnToPicker(); } event.stopPropagation(); });
+    picker.replaceChildren(form);
+    picker.dataset.mode = "form";
+    Object.values(inputs)[0]?.focus();
+  }
   function choosePicker(index) {
     const item = pickerItems[index];
-    closePicker();
-    if (!item) return;
-    selectBody();
-    if (item.kind === "use") { insertValue(item.name); return; }
-    const names = Object.keys(noteScope(body));
-    if (item.kind === "new") {
-      const answer = window.prompt("A name and a number, such as budget = 120");
-      const match = /^\s*([A-Za-z_][A-Za-z0-9_]{0,39})\s*[:=]+\s*(-?\d+(?:\.\d+)?)\s*$/.exec(answer ?? "");
-      if (!match) { if (answer) status.textContent = "Use a name and a number, such as budget = 120."; return; }
-      selectBody();
-      insertValue(`${match[1]} := ${match[2]}`);
-      return;
-    }
-    const formula = window.prompt(names.length ? `A formula using ${names.slice(0, 8).join(", ")}${names.length > 8 ? "…" : ""}` : "A formula, such as 120 / 4");
-    if (!formula?.trim()) return;
-    selectBody();
-    insertValue(formula.trim().slice(0, 200));
+    if (!item) { closePicker(); return; }
+    if (item.kind === "use") { closePicker(); selectBody(); insertValue(item.name); return; }
+    pickerForm(item.kind);
   }
   function paintPicker() {
+    delete picker.dataset.mode;
     picker.replaceChildren(...pickerItems.map((item, index) => el("button", { type: "button", role: "option", class: "value-picker-item",
       "aria-selected": String(index === pickerIndex), onmousedown: event => event.preventDefault(), onclick: () => choosePicker(index) },
       el("span", { class: "value-picker-label", text: item.label }), item.detail ? el("span", { class: "value-picker-detail", text: item.detail }) : null)));
   }
   function openPicker() {
+    // The note's own values first, then facts (checklist, table columns).
     const scope = noteScope(body);
+    const facts = noteFacts(body);
+    const entries = Object.entries(scope).sort(([a], [b]) => Number(Object.hasOwn(facts, a)) - Number(Object.hasOwn(facts, b)));
     pickerItems = [
-      ...Object.entries(scope).slice(0, 12).map(([name, value]) => ({ kind: "use", name, label: name, detail: String(Math.round(value * 100) / 100) })),
-      { kind: "new", label: "New value…", detail: "a number you can change" },
-      { kind: "formula", label: "Formula…", detail: "computed from values" },
+      ...entries.slice(0, 10).map(([name, value]) => ({ kind: "use", name, label: name,
+        detail: `${Object.hasOwn(facts, name) ? "note · " : ""}${Math.round(value * 100) / 100}` })),
+      ...Object.entries(KINDS).map(([kind, spec]) => ({ kind, label: `${spec.label}…`, detail: spec.detail })),
     ];
     pickerIndex = 0;
+    pickerRange = getSelection().rangeCount ? getSelection().getRangeAt(0).cloneRange() : null;
     paintPicker();
     const rect = getSelection().rangeCount ? getSelection().getRangeAt(0).getBoundingClientRect() : body.getBoundingClientRect();
-    picker.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - 240))}px`;
-    picker.style.top = `${Math.min(rect.bottom + 6, innerHeight - 220)}px`;
+    picker.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - 280))}px`;
+    picker.style.top = `${Math.min(rect.bottom + 6, innerHeight - 320)}px`;
     picker.hidden = false;
   }
   body.addEventListener("input", event => {
     if (event.inputType === "insertText" && event.data === "@") openPicker();
-    else if (!picker.hidden) closePicker();
+    else if (!picker.hidden && picker.dataset.mode !== "form") closePicker();
   });
   body.addEventListener("keydown", event => {
-    if (picker.hidden) return;
+    if (picker.hidden || picker.dataset.mode === "form") return;
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       pickerIndex = (pickerIndex + (event.key === "ArrowDown" ? 1 : pickerItems.length - 1)) % pickerItems.length;
@@ -492,40 +731,85 @@ async function renderClassic(app, note) {
     } else if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); choosePicker(pickerIndex); }
     else if (event.key === "Escape") { event.preventDefault(); closePicker(); }
   }, true);
-  body.addEventListener("blur", () => setTimeout(closePicker, 150));
+  // Leaving the page closes the picker, but not moving into its form.
+  body.addEventListener("blur", () => setTimeout(() => { if (!picker.contains(document.activeElement)) closePicker(); }, 150));
 
   /* Images: click one to resize it (S, M, L or full width). */
+  const sizeSteps = [["25%", "S"], ["50%", "M"], ["75%", "L"], ["100%", "Full"]];
+  const resizeHandle = el("button", { type: "button", class: "image-resize-handle", title: "Drag to resize image",
+    "aria-label": "Resize image", hidden: true });
   const sizeBar = el("div", { class: "image-size", role: "toolbar", "aria-label": "Image size", hidden: true },
-    [["25%", "S"], ["50%", "M"], ["75%", "L"], ["", "Full"]].map(([width, label]) => el("button", { type: "button", class: "fmt", title: width ? `${width} wide` : "Full width",
+    sizeSteps.map(([width, label]) => el("button", { type: "button", class: "fmt", title: width === "100%" ? "Full width" : `${width} wide`,
       onmousedown: event => event.preventDefault(),
       onclick: () => {
         const img = sizeBar.limaImage;
         if (!img?.isConnected) return;
-        if (width) { img.dataset.width = width; img.style.width = width; } else { delete img.dataset.width; img.style.removeProperty("width"); }
-        placeSizeBar(img);
-        markDirty();
+        setImageWidth(img, width);
       } }, label)));
+  function setImageWidth(img, width) {
+    img.dataset.width = width;
+    img.style.width = width;
+    placeSizeBar(img);
+    markDirty();
+  }
   function placeSizeBar(img) {
     const rect = img.getBoundingClientRect();
     sizeBar.limaImage = img;
     sizeBar.hidden = false;
+    resizeHandle.hidden = false;
+    resizeHandle.style.top = `${rect.bottom - 14}px`;
+    resizeHandle.style.left = `${rect.right - 14}px`;
     sizeBar.style.top = `${Math.max(8, rect.top + 8)}px`;
     sizeBar.style.left = `${rect.left + 8}px`;
-    for (const button of sizeBar.children) button.setAttribute("aria-pressed", String(button.title === (img.dataset.width ? `${img.dataset.width} wide` : "Full width")));
+    for (const button of sizeBar.children) button.setAttribute("aria-pressed", String(button.title === (!img.dataset.width || img.dataset.width === "100%" ? "Full width" : `${img.dataset.width} wide`)));
   }
+  resizeHandle.addEventListener("pointerdown", event => {
+    const img = sizeBar.limaImage;
+    if (event.button !== 0 || !img?.isConnected) return;
+    event.preventDefault();
+    const parentWidth = img.parentElement.getBoundingClientRect().width;
+    if (!parentWidth) return;
+    const original = img.style.width;
+    const rect = img.getBoundingClientRect();
+    resizeHandle.setPointerCapture(event.pointerId);
+    const move = e => {
+      const fraction = Math.max(0.25, Math.min(1, (rect.width + e.clientX - event.clientX) / parentWidth));
+      img.style.width = `${fraction * 100}%`;
+      placeSizeBar(img);
+    };
+    const finish = e => {
+      resizeHandle.removeEventListener("pointermove", move);
+      resizeHandle.removeEventListener("pointerup", finish);
+      resizeHandle.removeEventListener("pointercancel", finish);
+      if (e.type === "pointerup") {
+        const snap = Math.max(1, Math.min(4, Math.round((rect.width + e.clientX - event.clientX) / parentWidth * 4)));
+        setImageWidth(img, sizeSteps[snap - 1][0]);
+      } else { img.style.width = original; placeSizeBar(img); }
+    };
+    resizeHandle.addEventListener("pointermove", move);
+    resizeHandle.addEventListener("pointerup", finish);
+    resizeHandle.addEventListener("pointercancel", finish);
+  });
+  resizeHandle.addEventListener("keydown", event => {
+    const img = sizeBar.limaImage;
+    if (!img?.isConnected || !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+    event.preventDefault();
+    const index = sizeSteps.findIndex(([width]) => width === (img.dataset.width ?? "100%"));
+    setImageWidth(img, sizeSteps[Math.max(0, Math.min(3, index + (event.key === "ArrowRight" ? 1 : -1)))][0]);
+  });
   body.addEventListener("click", event => {
-    const img = event.target.closest?.("img");
+    const img = event.target.closest?.("img[data-src]");
     if (img && body.contains(img)) { placeSizeBar(img); img.classList.add("selected-image"); }
-    else sizeBar.hidden = true;
+    else sizeBar.hidden = resizeHandle.hidden = true;
     for (const other of body.querySelectorAll("img.selected-image")) if (other !== img) other.classList.remove("selected-image");
   });
-  addEventListener("scroll", () => { sizeBar.hidden = true; }, { passive: true, capture: true });
+  addEventListener("scroll", () => { sizeBar.hidden = resizeHandle.hidden = true; }, { passive: true, capture: true });
 
   setPage(note.title || "Untitled", "note");
   app.replaceChildren(el("div", { class: "page-wrap" },
     trashedNotice(note, () => renderNote(app, note.id)) ?? "", archivedNotice,
-    toolbar, sizeBar, picker,
-    el("article", { class: "page-sheet" }, title, el("div", { class: "page-date", text: dateLine(note.createdAt) }), body)));
+    toolbar, sizeBar, resizeHandle, picker,
+    el("article", { class: "page-sheet" }, title, el("div", { class: "page-date", text: dateLine(note.createdAt) }), organization.node, body)));
   document.execCommand("defaultParagraphSeparator", false, "p");
 
   function paint() {
@@ -788,6 +1072,7 @@ async function renderClassic(app, note) {
   }, 300);
 
   function markDirty() {
+    organization.noteEdited();
     dirty = true;
     body.classList.toggle("empty", !body.textContent.trim() && !body.querySelector("img, table, [data-artifact], [data-note-embed]"));
     if (!conflicted) save();
@@ -837,9 +1122,12 @@ async function renderClassic(app, note) {
   });
   const flush = () => { if (dirty) save.flush(); };
   const onKey = event => {
-    if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "s") return;
-    event.preventDefault();
-    flush();
+    if (!(event.metaKey || event.ctrlKey)) return;
+    const key = event.key.toLowerCase();
+    if (key === "z" && !event.shiftKey && !event.defaultPrevented &&
+        !event.target.closest?.("input, textarea, select") && organization.undo(true)) {
+      event.preventDefault();
+    } else if (key === "s") { event.preventDefault(); flush(); }
   };
   document.addEventListener("keydown", onKey);
   body.addEventListener("blur", flush);
@@ -889,6 +1177,15 @@ async function renderCanvas(app, note) {
   const wrap = el("div", { class: "canvas-wrap", tabindex: "0" }, surface);
   const title = el("input", { class: "note-title", value: note.title, style: { padding: "10px 16px 4px", fontSize: "18px" } });
 
+  let archived = false;
+  const archive = el("button", { class: "ghost", onclick: () =>
+    organization.change(() => bridge.browser(archived ? "unarchiveNote" : "archiveNote", { noteId: note.id })) }, "Archive");
+  const organization = placement(note.id, status, location => {
+    archived = location.archived;
+    archive.textContent = archived ? "Restore from archive" : "Archive";
+  });
+  if (!note.trashedAt) organization.node.append(archive);
+
   setPage(note.title || "Untitled Canvas", "note");
   app.replaceChildren(
     bar("",
@@ -904,6 +1201,7 @@ async function renderCanvas(app, note) {
       el("button", { class: "ghost", onclick: () => history("notes.redo") }, "Redo")),
     trashedNotice(note, () => renderNote(app, note.id)) ?? "",
     title,
+    organization.node,
     wrap
   );
 
@@ -911,6 +1209,7 @@ async function renderCanvas(app, note) {
     if (!edits.length) return;
     try {
       note = await call("notes.apply", { id: note.id, edits, author: "user" });
+      organization.noteEdited();
       status.textContent = label ?? "";
       draw();
     } catch (error) {
@@ -1062,7 +1361,10 @@ async function renderCanvas(app, note) {
 
   wrap.addEventListener("keydown", e => {
     if (document.activeElement?.isContentEditable || e.target === title) return;
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") { e.preventDefault(); history(e.shiftKey ? "notes.redo" : "notes.undo"); }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+      e.preventDefault();
+      if (e.shiftKey || !organization.undo(true)) history(e.shiftKey ? "notes.redo" : "notes.undo");
+    }
     if ((e.key === "Backspace" || e.key === "Delete") && selected) { e.preventDefault(); apply([{ removeBlock: { id: selected } }], "Deleted"); selected = null; }
   });
   const saveTitle = debounce(() => apply([{ setTitle: { _0: title.value || "Untitled Canvas" } }]), 500);
