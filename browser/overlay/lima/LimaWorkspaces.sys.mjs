@@ -498,18 +498,23 @@ class Workspaces {
   }
 
   /** Each web tab sits in the folder its entry names (or in Tabs itself). */
+  /* Agent folders sit at the top of the workspace, beside Tabs, so one
+   * "Marketing" folder holds both pages and notes. Unfiled pages live in
+   * Tabs; unfiled notes at the workspace's top level. */
   #arrangeTabFolders(win, workspace, tabs) {
-    const tabsFolder = this.folderFor(workspace.id, "tabs", win);
-    if (!tabsFolder) return;
+    const folder = this.folderFor(workspace.id, "folder", win);
+    if (!folder) return;
     for (const entry of workspace.tabs) {
-      if (!/^https?:/.test(entry.url)) continue;
-      const tab = tabs.find(item => sameURL(tabURL(item), entry.url));
+      const web = /^https?:/.test(entry.url);
+      if (!web && !entry.url.startsWith("about:lima?note=")) continue;
+      const tab = tabs.find(item => web ? sameURL(tabURL(item), entry.url) : tabURL(item) === entry.url);
       if (!tab) continue;
       // Only when the agent (re)files it: a tab you dragged elsewhere stays put.
       const wanted = entry.folder ?? "";
       if (tab.limaFiledAs === wanted) continue;
       tab.limaFiledAs = wanted;
-      const target = entry.folder ? this.#tabSubfolder(win, tabsFolder, workspace.id, entry.folder) : tabsFolder;
+      const home = web ? this.folderFor(workspace.id, "tabs", win) ?? folder : folder;
+      const target = entry.folder ? this.#tabSubfolder(win, folder, workspace.id, entry.folder) : home;
       if (tab.group !== target && (entry.folder || tab.group?.hasAttribute("lima-tab-folder"))) {
         try { preserveFolderDisclosure(target, () => target.addTabs([tab])); } catch (error) { log(`tab folder: ${error}`); }
       }
@@ -925,7 +930,9 @@ class Workspaces {
     const workspace = this.#workspaces.get(id);
     const container = workspace?.parentID ? this.folderFor(id, "folder", win) : this.folderFor(id, "tabs", win);
     if (!container) return [];
-    return this.#allTabs(container).filter(tab => /^https?:/.test(tabURL(tab)) && (!workspace?.parentID || tab.group === container));
+    const filed = workspace?.parentID ? [] : [...win.document.querySelectorAll(`zen-folder[lima-tabs-of="${win.CSS.escape(id)}"]`)]
+      .filter(folder => !folder.parentElement?.closest?.(`zen-folder[lima-tabs-of="${win.CSS.escape(id)}"]`)).flatMap(folder => this.#allTabs(folder));
+    return [...new Set([...this.#allTabs(container), ...filed])].filter(tab => /^https?:/.test(tabURL(tab)) && (!workspace?.parentID || tab.group === container));
   }
 
   async #act(win, request) {

@@ -363,7 +363,6 @@ extension Runtime {
             try await self.ensureTerminal(try await self.workspaces.get(try target(params, context))).publicView
         }
         register("workspace.create") { [unowned self] params, context in
-            Task { await self.usage.count("workspace.created") }
             if context.origin != .browser, context.workspaceID == nil {
                 try await self.requireMCPScope("workspaces:create", context: context, unbound: true,
                                                action: "create the workspace “\(params.optionalString("name") ?? "Workspace")”")
@@ -417,7 +416,6 @@ extension Runtime {
             return workspace.publicView
         }
         register("agent.spawn") { [unowned self] params, context in
-            Task { await self.usage.count("agent.spawned") }
             let parent = try await self.workspaces.get(try target(params, context))
             // Inside a Lima task the Orchestrator owns helpers: it records the
             // assignment, applies dependencies and collects the result.
@@ -714,7 +712,8 @@ extension Runtime {
             }
             let workspace = try await self.workspaces.update(id) { workspace in
                 for move in moves {
-                    guard let url = move["url"]?.stringValue, let scheme = URL(string: url)?.scheme, ["http", "https"].contains(scheme) else { continue }
+                    guard let url = move["url"]?.stringValue, let scheme = URL(string: url)?.scheme,
+                          ["http", "https"].contains(scheme) || url.hasPrefix("about:lima?note=") else { continue }
                     let folder = Workspace.tabFolder(move["folder"]?.stringValue)
                     if let index = workspace.tabs.firstIndex(where: { $0.url == url }) { workspace.tabs[index].folder = folder }
                     else if let title = move["title"]?.stringValue { workspace.tabs.append(.init(url: url, title: title, folder: folder)) }

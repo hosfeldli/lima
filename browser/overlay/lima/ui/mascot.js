@@ -74,11 +74,15 @@ export function setMascotTheme(value) {
 }
 export const mascotTheme = () => theme;
 
-/** Applies a character's colours and its look's attributes. */
+/** Applies a character's colours and its look's attributes. Both the light
+ * and dark palettes are set; CSS picks one from the page's theme, so a
+ * mascot follows light and dark mode the moment it changes. */
 export function paintLook(character) {
   const look = character.limaLook;
   if (!look) return;
-  for (const [name, value] of Object.entries(mascotColors(look))) character.style.setProperty(name, value);
+  for (const [mode, dark] of [["light", false], ["dark", true]]) {
+    for (const [name, value] of Object.entries(mascotColors(look, dark))) character.style.setProperty(`${name}-${mode}`, value);
+  }
   character.dataset.look = "";
   character.dataset.ears = look.ears;
   character.dataset.eyes = look.eyes;

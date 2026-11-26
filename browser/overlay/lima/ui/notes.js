@@ -46,10 +46,14 @@ export async function renderIndex(app) {
       const [tree, notes] = await Promise.all([bridge.browser("noteFolders"), call("notes.list")]);
       const byId = new Map(notes.map(n => [n.id, n]));
       const q = filter.value.trim().toLowerCase();
-      const match = n => !q || n.title.toLowerCase().includes(q) || (byId.get(n.id)?.excerpt ?? "").toLowerCase().includes(q);
+      // Full text: notes whose content matches, from Lima's search index.
+      const found = q ? new Set((await call("search.query", { query: q, limit: 200 }).catch(() => ({ results: [] }))).results
+        .filter(result => result.source === "note").map(result => result.action?.payload?.id)) : null;
+      const match = n => !q || n.title.toLowerCase().includes(q) || (byId.get(n.id)?.excerpt ?? "").toLowerCase().includes(q) || found.has(n.id);
       const content = [];
       for (const folder of tree.folders) {
-        const rows = folder.notes.filter(match);
+        // A folder whose name matches shows all of its notes.
+        const rows = q && folder.title.toLowerCase().includes(q) ? folder.notes : folder.notes.filter(match);
         if (q && !rows.length) continue;
         const list = el("ul", { class: "list" });
         for (const entry of rows) {
@@ -96,7 +100,8 @@ export async function renderIndex(app) {
     }
   }
 
-  filter.addEventListener("input", load);
+  let filterTimer;
+  filter.addEventListener("input", () => { clearTimeout(filterTimer); filterTimer = setTimeout(load, 160); });
   onEvent(m => { if (["notes.changed", "notes.deleted", "notes.bookmarks"].includes(m.event)) load(); });
   load();
 }

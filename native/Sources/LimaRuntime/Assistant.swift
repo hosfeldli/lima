@@ -5,7 +5,6 @@ import LimaProtocol
 extension Runtime {
     func registerAssistant() {
         register("assistant.plan") { [unowned self] params, context in
-            Task { await self.usage.count("companion.request") }
             guard context.origin == .browser else { throw BridgeError(.notAuthorized, "Only Lima can plan a handoff.") }
             let text = try params.string("text")
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw BridgeError(.badRequest, "Describe the work.") }

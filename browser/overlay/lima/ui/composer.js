@@ -122,6 +122,19 @@ export function agentControls({ onChange, onError } = {}) {
     const store = await hydration;
     return show(next ?? { provider: selected.provider || store.provider, model: memory[selected.provider || store.provider] }, fallback);
   }
+  // A provider or model added in Settings (or a CLI signed in elsewhere)
+  // shows up here too: the lists reload when you come back to this tab or
+  // open one of the menus.
+  let refreshedAt = Date.now();
+  const freshen = () => {
+    if (Date.now() - refreshedAt < 3000 || !provider.isConnected) return;
+    refreshedAt = Date.now();
+    const current = settings();
+    refresh(current.provider ? current : undefined, !current.provider).catch?.(() => {});
+  };
+  for (const control of [provider, model]) control.addEventListener("mousedown", freshen);
+  addEventListener("focus", freshen);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) freshen(); });
   return { provider, model, effort, show, settings, ready, refresh, settled: () => changes };
 }
 

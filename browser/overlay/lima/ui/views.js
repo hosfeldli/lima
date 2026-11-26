@@ -197,9 +197,9 @@ export async function renderIntegrations(app, section) {
   const groups = [
     ["general", "General", "appearance theme dark light mode animation preferences tabs size height compact large", [
       card("Appearance", el("label", { class: "row" }, "Theme", theme),
-        el("label", { class: "row" }, "Companion Animations", personality),
-        el("label", { class: "row" }, "Mascot style", mascotStyle),
-        el("p", { class: "muted", text: "Each workspace gets its own mascot. Graphite keeps them in Lima's greys; Pastel gives each its own soft colour. Off keeps them still, and Lima respects macOS Reduce Motion." }),
+        el("label", { class: "row" }, "Pip’s animations", personality),
+        el("label", { class: "row" }, "Pip’s style", mascotStyle),
+        el("p", { class: "muted", text: "Pip is Lima’s companion, and each workspace gets a Pip of its own. Graphite keeps them in Lima's greys; Pastel gives each its own soft colour. Off keeps them still, and Lima respects macOS Reduce Motion." }),
         el("label", { class: "row appearance-checkbox" }, overlay, "Show agent click and typing markers on webpages")),
       card("Tabs", tabSizeSettings()),
     ]],
@@ -216,15 +216,16 @@ export async function renderIntegrations(app, section) {
       card("Gmail & Google Calendar", googleSettings()), card("GitHub", services),
       card("Messages", messagesSettings()),
     ]],
-    ["privacy", "Privacy", "privacy usage statistics analytics telemetry anonymous share data delete tracking", [
-      card("Your data stays on your Mac", privacySummary()), card("Anonymous usage statistics", usageSettings()),
+    ["privacy", "Privacy", "privacy data tracking legal license terms disclaimer trademark", [
+      card("Your data stays on your Mac", privacySummary()),
+      card("Legal & notices", legalNotices()),
     ]],
     ["data", "Data & permissions", "backup recovery encryption MCP storage grants permission", [
       card("MCP for external agents", mcp), card("Encrypted storage", storage),
     ]],
     ["updates", "Updates", "version download release restart stable check", [card(null, updateSettings())]],
   ];
-  const aliases = { google: "connections", grammar: "writing", usage: "privacy", browsing: "search" };
+  const aliases = { google: "connections", grammar: "writing", browsing: "search" };
   let active = aliases[section] ?? (groups.some(([id]) => id === section) ? section : "general");
   const search = el("input", { type: "search", placeholder: "Search settings", "aria-label": "Search settings" });
   const nav = el("nav", { class: "settings-nav", "aria-label": "Settings categories" });
@@ -364,6 +365,27 @@ function searchSettings() {
   ];
 }
 
+/** Standard notices that hold for every user, with links to the full texts. */
+function legalNotices() {
+  const notices = [
+    ["AI can make mistakes.", "Agents and answers can be wrong or out of date. Check important details before you rely on them."],
+    ["You approve what agents do.", "Purchases, messages, account changes and commands you approve are your decisions and your responsibility."],
+    ["Other services have their own terms.", "Your AI provider, Google, websites and other services you use through Lima are governed by their own terms and privacy policies."],
+    ["No tracking.", "Lima collects no usage statistics, analytics or telemetry."],
+    ["Google is the default search engine.", "For new installs. Change it in Settings → Search; Lima never changes your choice."],
+    ["Provided as is.", "Lima is free software provided without warranties of any kind, to the extent the law allows."],
+    ["Not affiliated.", "Lima isn't affiliated with or endorsed by Mozilla, Zen, Anthropic, OpenAI, Spotify, Apple or Google. Their names and logos are trademarks of their owners."],
+    ["Open source.", "Lima is open source under the Mozilla Public License 2.0, built on Zen and Firefox under the same license. Bundled components keep their own licenses."],
+  ];
+  const link = (label, url) => el("button", { class: "ghost", onclick: () => bridge.openTab(url) }, label);
+  return el("div", { class: "legal-notices" },
+    el("ul", { class: "privacy-facts" }, notices.map(([title, text]) => el("li", {}, icon("check"), el("span", {}, el("strong", { text: title }), " ", text)))),
+    el("div", { class: "row" },
+      link("Licenses", "about:license"),
+      link("Privacy", "https://github.com/hosfeldli/lima/blob/main/docs/PRIVACY.md"),
+      link("Terms, privacy and policies (PDF)", "https://lima.liamhosfeld.com/legal")));
+}
+
 /** What Lima keeps and where: plain facts, first. */
 function privacySummary() {
   const facts = [
@@ -375,37 +397,6 @@ function privacySummary() {
     "Page cleanup (hiding AI answers, ads and Shorts) runs on your Mac and sends nothing anywhere.",
   ];
   return el("ul", { class: "privacy-facts" }, facts.map(text => el("li", {}, icon("check"), el("span", { text }))));
-}
-
-/** Anonymous usage statistics: on by default, previewable, deletable, and off with one click. */
-function usageSettings() {
-  const box = el("input", { type: "checkbox" });
-  const status = el("p", { class: "muted", role: "status" });
-  const preview = el("pre", { class: "usage-preview", hidden: true });
-  const paint = state => {
-    box.checked = state?.enabled === true;
-    status.textContent = !state?.enabled ? "Off. Nothing is counted or sent."
-      : state.lastSent ? `On. Last report sent ${new Date(state.lastSent).toLocaleDateString()}.` : "On. The first report goes out tomorrow.";
-  };
-  box.addEventListener("change", async () => {
-    try { paint(await call("usage.set", { enabled: box.checked })); } catch (error) { status.textContent = errorText(error); }
-  });
-  const show = el("button", { class: "ghost", onclick: async () => {
-    if (!preview.hidden) { preview.hidden = true; return; }
-    try { preview.textContent = JSON.stringify(await call("usage.preview"), null, 2); preview.hidden = false; }
-    catch (error) { status.textContent = errorText(error); }
-  } }, "See exactly what's sent");
-  const remove = el("button", { class: "ghost", onclick: async () => {
-    if (!confirm("Delete every report sent from this Mac and start over with a new anonymous ID?")) return;
-    try { paint(await call("usage.delete")); status.textContent = "Deleted. Lima's server no longer has any report from this Mac."; }
-    catch (error) { status.textContent = errorText(error); }
-  } }, "Delete my data");
-  call("usage.get").then(paint).catch(error => { status.textContent = errorText(error); });
-  return el("div", { class: "usage-settings" },
-    el("label", { class: "row appearance-checkbox" }, box, "Share anonymous usage statistics"),
-    el("p", { class: "muted", text: "Helps decide what to build next. Once a day Lima sends how many times each feature was used (for example: searches opened, chats sent, workspaces created), the Lima and macOS versions, your region from macOS's language settings, and a few settings such as light or dark mode." }),
-    el("p", { class: "muted", text: "Never sent: web pages, searches, chat or note text, file names, accounts, contacts or your IP address (the server doesn't keep it). Reports use a random ID that changes every month and are deleted after 13 months." }),
-    status, el("div", { class: "row" }, show, remove), preview);
 }
 
 function updateSettings() {

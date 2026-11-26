@@ -9,7 +9,7 @@ import { setupAction } from "./views.js";
  * leave the same layout and controls, standing still. */
 
 const STEPS = [
-  { id: "meet", eyebrow: "Welcome", title: "Hi, I’m Lima.", mood: null },
+  { id: "meet", eyebrow: "Welcome to Lima", title: "Hi, I’m Pip.", mood: null },
   { id: "about", eyebrow: "About you", title: "Nice to meet you.", mood: "write" },
   { id: "import", eyebrow: "Move in", title: "Bring your browser with you.", mood: "tabs" },
   { id: "default", eyebrow: "Links", title: "Open every link in Lima.", mood: "read" },
@@ -18,7 +18,7 @@ const STEPS = [
   { id: "workspace", eyebrow: "Workspaces", title: "Hand off the big stuff.", mood: "delegate" },
   { id: "ready", eyebrow: "All set", title: "You’re ready.", mood: "complete" },
 ];
-const GREETINGS = ["Hi there!", "That tickles.", "Ready when you are.", "I like it here.", "Boop.", "Let’s go!"];
+const GREETINGS = ["Hi, I’m Pip!", "That tickles.", "Ready when you are.", "Pip, at your service.", "Boop.", "Let’s go!"];
 const quiet = () => matchMedia("(prefers-reduced-motion: reduce)").matches || document.documentElement.dataset.limaPersonality === "off";
 
 export function renderWelcome(app) {
@@ -162,9 +162,9 @@ export function renderWelcome(app) {
     scene.replaceChildren(SCENES[id === "import" ? "moveIn" : id]());
 
     if (id === "meet") {
-      content.replaceChildren(paragraph("Your browser, your notes, and your AI helpers, all in one calm place."),
-        paragraph("I’ll show you around in about a minute. I check what’s already set up on this Mac, so you only see what you need."));
-      if (!focus) setTimeout(() => { if (ticket === generation) say("Hi!"); }, 700);
+      content.replaceChildren(paragraph("I’m Lima’s companion. Lima is your browser, your notes and your AI helpers, all in one calm place."),
+        paragraph("I’ll show you around in about a minute. I check what’s already set up on this Mac, so you only see what you need. You’ll find me in the sidebar, and every workspace gets a Pip of its own."));
+      if (!focus) setTimeout(() => { if (ticket === generation) say("Hi, I’m Pip!"); }, 700);
     }
     if (id === "about") showAbout(ticket);
     if (id === "import") content.replaceChildren(

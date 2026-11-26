@@ -36,7 +36,6 @@ export const LimaStartup = {
     initialized = true;
     step("sidebar routing", () => lazy.disableSpaceRouting());
     step("blocked sites", () => ChromeUtils.importESModule("resource://lima/LimaBlockedSites.sys.mjs").LimaBlockedSites.start());
-    step("usage", () => ChromeUtils.importESModule("resource://lima/LimaUsage.sys.mjs").LimaUsage.start());
     // Gecko builds its accessibility tree only once a client asks, so the
     // first ⌘G (or VoiceOver read) in a note or Lima page could find nothing.
     // Keeping the service on exposes Lima's pages and notes from the start.
@@ -120,6 +119,19 @@ export const LimaStartup = {
     Services.obs.addObserver(async function onFirstWindow(win) {
       Services.obs.removeObserver(onFirstWindow, "browser-delayed-startup-finished");
       step("urlbar", () => log(`urlbar provider ${lazy.LimaUrlbar.register() ? "registered" : "not registered"}`));
+      // Lima's preferred search engine: Google, set once on a new install.
+      // An existing profile (or anyone who picked another engine) is never changed.
+      (async () => {
+        if (Services.prefs.getBoolPref("lima.search.preferredApplied", false)) return;
+        Services.prefs.setBoolPref("lima.search.preferredApplied", true);
+        if (Services.prefs.getBoolPref("lima.welcome.finished", false) || Services.prefs.getBoolPref("lima.welcome.created", false)) return;
+        const { SearchService } = ChromeUtils.importESModule("moz-src:///toolkit/components/search/SearchService.sys.mjs");
+        await SearchService.init();
+        const google = SearchService.getEngineByName("Google");
+        if (google && (await SearchService.getDefault())?.name !== "Google") {
+          await SearchService.setDefault(google, SearchService.CHANGE_REASON.UNKNOWN ?? SearchService.CHANGE_REASON.USER);
+        }
+      })().catch(error => log(`preferred search engine: ${error}`));
       try {
         const hello = await lazy.LimaBridge.request("host.hello");
         const provider = Services.prefs.getStringPref("lima.agent.provider", "claude");

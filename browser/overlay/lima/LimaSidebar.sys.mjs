@@ -16,7 +16,6 @@ ChromeUtils.defineESModuleGetters(lazy, {
   BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.sys.mjs",
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
   LimaDownloads: "resource://lima/LimaDownloads.sys.mjs",
-  LimaUsage: "resource://lima/LimaUsage.sys.mjs",
   LimaNotesBookmarks: "resource://lima/LimaNotesBookmarks.sys.mjs",
   LimaSearchPanel: "resource://lima/LimaSearchPanel.sys.mjs",
   LimaTabs: "resource://lima/LimaTabs.sys.mjs",
@@ -433,7 +432,6 @@ function attachDock(win) {
   let browserTab = null;
   let browserController = null;
   const NAMES = { Spotify: "Spotify", Music: "Music", browser: "Browser audio" };
-  let countedSource;
   // A source the user picked from the icons stays selected while it plays.
   let pinned = null;
   function choose() {
@@ -447,16 +445,13 @@ function attachDock(win) {
       const next = playing ?? tracks[source] ?? candidates.sort((a, b) => b.updatedAt - a.updatedAt)[0];
       if (next) { source = next.player; track = next; } else track = null;
     }
-    if (track?.state === "Playing" && countedSource !== source) {
-      countedSource = source;
-      lazy.LimaUsage.count({ Spotify: "music.spotify", Music: "music.appleMusic", browser: "music.tab" }[source], win);
-    }
   }
 
   const privateWindow = lazy.PrivateBrowsingUtils.isWindowPrivate(win);
   const playingTabs = () => privateWindow ? [] : [...win.gBrowser.tabs].filter(tab => !tab.closing && tab.hasAttribute("soundplaying"));
   function sourceIcon(entry) {
-    if (entry.player === "Spotify") return el(doc, "img", { src: "resource://lima-ui/marks/spotify-dj.svg", alt: "" });
+    // Spotify's own logo marks the source; the DJ mark stays on the DJ button.
+    if (entry.player === "Spotify") return el(doc, "span", { class: "lima-glyph lima-spotify-mark" });
     if (entry.player === "Music") return el(doc, "span", { class: "lima-glyph lima-music-mark" });
     const image = entry.tab?.getAttribute("image");
     return image ? el(doc, "img", { src: image, alt: "" }) : glyph(doc, "audio");
@@ -618,6 +613,8 @@ function attachDock(win) {
     artist.textContent = track?.title ? track.artist : `${NAMES[source]} is idle`;
     const icon = track?.state === "Playing" ? "pause" : "play";
     for (const node of music.querySelectorAll('.lima-glyph[data-role="pp"], .lima-music-btn[title="Play / pause"] .lima-glyph')) node.style.maskImage = `url("${ICON(icon)}")`;
+    // The sidebar's Music shortcut lets out little notes while anything plays.
+    spotify.toggleAttribute("data-playing", track?.state === "Playing" || playingTabs().length > 0);
     music.toggleAttribute("data-playing", track?.state === "Playing");
     if (track?.positionMs != null && music.dataset.personality === "full") {
       const elapsed = track.state === "Playing" ? Math.max(0, Date.now() - track.updatedAt) : 0;
@@ -1171,7 +1168,5 @@ export const LimaSidebar = {
     try { attachFolderBehaviour(win); } catch (error) { log(`folders: ${error}\n${error.stack}`); }
     try { attachKeys(win); } catch (error) { log(`keys: ${error}`); }
     try { lazy.LimaSearchPanel.install(win); } catch (error) { log(`search: ${error}`); }
-    // The one-time usage-sharing question, once the window has settled.
-    win.setTimeout(() => lazy.LimaUsage.maybeAsk(win, showSidebarNotice).catch(() => {}), 20000);
   },
 };

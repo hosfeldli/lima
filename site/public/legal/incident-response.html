@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Incident Response Policy · Lima</title>
+  <meta name="description" content="How security incidents are classified, contained, fixed and disclosed.">
+  <link rel="canonical" href="https://lima.liamhosfeld.com/legal/incident-response">
+  <link rel="icon" href="/lima.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/legal.css">
+</head>
+<body class="legal">
+  <header class="legal-head">
+    <a class="brand" href="/" aria-label="Lima home"><img src="/lima.svg" alt="" width="26" height="26"><span>Lima</span></a>
+    <nav class="legal-crumbs" aria-label="Breadcrumb"><a href="/legal">Legal</a><span aria-hidden="true">/</span><span>Incident Response Policy</span></nav>
+    <a class="button primary legal-download" href="/download">Download for macOS</a>
+  </header>
+  <main class="legal-doc">
+    <div class="legal-doc-head">
+      <h1>Incident Response Policy</h1>
+      <p class="legal-meta">Effective November 26, 2026 · Liam Hosfeld</p>
+      <p class="legal-summary">How security incidents are classified, contained, fixed and disclosed.</p>
+      <a class="button ghost legal-pdf" href="/legal/incident-response.pdf" download>Download PDF</a>
+    </div>
+    <div class="legal-layout">
+      
+      <article class="legal-body">
+<p>A security incident is any event that could let someone run code through Lima, bypass its approvals, tamper with its updates, or expose shared data. Liam Hosfeld owns the response and can be reached at <a href="mailto:lima.issues@gmail.com">lima.issues@gmail.com</a>.</p>
+<div class="table"><table><thead><tr><th>Severity</th><th>Examples</th><th>Respond within</th><th>Fix shipped within</th></tr></thead><tbody><tr><td>Critical</td><td>Update signing key or Developer ID exposed; a malicious update; remote code execution through a page or agent</td><td>1 hour</td><td>24 hours, as a critical update</td></tr><tr><td>High</td><td>Approval bypass; workspace isolation broken</td><td>4 hours</td><td>72 hours</td></tr><tr><td>Medium</td><td>Information leak needing user action; denial of service of the runtime</td><td>2 business days</td><td>Next release</td></tr><tr><td>Low</td><td>Hardening gaps without a working exploit</td><td>5 business days</td><td>When scheduled</td></tr></tbody></table></div>
+<h2 id="response-steps">Response steps</h2>
+<ol><li>Record the report or alert, the time and the affected versions in a private incident log.</li><li>Triage: confirm it and set the severity.</li><li>Contain: for exposed signing material, revoke the Developer ID certificate with Apple, rotate the update key, pause the release workflow, and pull the affected release from the update feed.</li><li>Fix: ship the fix through the normal signed release, marked critical when the severity is Critical or High.</li><li>Notify: tell affected users through the release notes and this website, and notify regulators and individuals where the law requires (within 72 hours under the GDPR).</li><li>Review: within 14 days, write down the cause, what worked and what changes, then track those changes to done.</li></ol>
+<h2 id="kept-ready">Kept ready</h2>
+<p>Offline backups of the Developer ID certificate and the update key with their passwords, and hardware-key sign-in for GitHub, Google Cloud and Apple.</p>
+      </article>
+    </div>
+  </main>
+  <footer class="legal-foot">
+    <p>Published by Liam Hosfeld · <a href="mailto:lima.issues@gmail.com">lima.issues@gmail.com</a> · Effective November 26, 2026</p>
+    <p><a href="/">Lima</a> · <a href="/legal">Legal</a> · <a href="https://github.com/hosfeldli/lima">Source on GitHub</a></p>
+  </footer>
+</body>
+</html>

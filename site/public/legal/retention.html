@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Data Retention and Deletion Policy · Lima</title>
+  <meta name="description" content="How long Lima keeps what, where, and how to delete it.">
+  <link rel="canonical" href="https://lima.liamhosfeld.com/legal/retention">
+  <link rel="icon" href="/lima.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/legal.css">
+</head>
+<body class="legal">
+  <header class="legal-head">
+    <a class="brand" href="/" aria-label="Lima home"><img src="/lima.svg" alt="" width="26" height="26"><span>Lima</span></a>
+    <nav class="legal-crumbs" aria-label="Breadcrumb"><a href="/legal">Legal</a><span aria-hidden="true">/</span><span>Data Retention and Deletion Policy</span></nav>
+    <a class="button primary legal-download" href="/download">Download for macOS</a>
+  </header>
+  <main class="legal-doc">
+    <div class="legal-doc-head">
+      <h1>Data Retention and Deletion Policy</h1>
+      <p class="legal-meta">Effective November 26, 2026 · Liam Hosfeld</p>
+      <p class="legal-summary">How long Lima keeps what, where, and how to delete it.</p>
+      <a class="button ghost legal-pdf" href="/legal/retention.pdf" download>Download PDF</a>
+    </div>
+    <div class="legal-layout">
+      
+      <article class="legal-body">
+<p>Lima's data lives only on your Mac and stays until you delete it. We hold no copy of your data on any server.</p>
+<div class="table"><table><thead><tr><th>Data</th><th>Where</th><th>Kept</th><th>How it's deleted</th></tr></thead><tbody><tr><td>Notes, chats, workspaces, Companion memory, personal details</td><td>Encrypted store on your Mac</td><td>Until you delete them</td><td>Delete them in Lima; trashed notes stay restorable until you empty them from the trash</td></tr><tr><td>Recorded activity (for reports and Companion memory)</td><td>Encrypted store on your Mac</td><td>90 days</td><td>Removed automatically; private windows are never recorded</td></tr><tr><td>Previous app version (for rollback)</td><td>Your Mac, in Lima's update folder</td><td>Until the next update</td><td>Replaced at the next update</td></tr><tr><td>Logs (runtime.log, update.log)</td><td>~/Library/Logs/Lima</td><td>Until you delete them</td><td>Delete the files</td></tr><tr><td>Data held by your AI provider, search engine, Google or websites</td><td>Their systems</td><td>Under their own policies</td><td>Through each provider</td></tr></tbody></table></div>
+<h2 id="removing-everything">Removing everything</h2>
+<p>Delete Lima.app, ~/Library/Application Support/Lima, ~/Library/Application Support/Lima Browser and ~/Library/Logs/Lima, then remove Lima's item from your Keychain. Lima doesn't hold a copy anywhere else.</p>
+<h2 id="legal-holds">Legal holds</h2>
+<p>If the law requires us to keep any record longer, we keep only what's required, for as long as it's required.</p>
+      </article>
+    </div>
+  </main>
+  <footer class="legal-foot">
+    <p>Published by Liam Hosfeld · <a href="mailto:lima.issues@gmail.com">lima.issues@gmail.com</a> · Effective November 26, 2026</p>
+    <p><a href="/">Lima</a> · <a href="/legal">Legal</a> · <a href="https://github.com/hosfeldli/lima">Source on GitHub</a></p>
+  </footer>
+</body>
+</html>

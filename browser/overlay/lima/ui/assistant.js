@@ -56,7 +56,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
   const close = () => bridge.browser("closeAssistant", {});
   const head = home
     ? el("header", { class: "handoff-head" }, character, el("h1", { text: "What are we working on?" }))
-    : el("header", { class: "assistant-head" }, character, el("strong", { text: "Lima Companion" }), el("span", { class: "spacer" }),
+    : el("header", { class: "assistant-head" }, character, el("strong", { text: "Pip" }), el("span", { class: "assistant-role", text: "Lima Companion" }), el("span", { class: "spacer" }),
       el("button", { class: "ghost icon-only", title: "Close Companion", "aria-label": "Close Companion", onclick: close }, icon("close")));
   listView.append(
     el("div", { class: "handoff-composer composer-box" }, input,

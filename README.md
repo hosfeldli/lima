@@ -20,4 +20,4 @@ it isn't a source build. `docs/RELEASING.md` covers signing, the update feed, an
 releases: every new Zen release is verified, repacked and published without manual steps. The paused
 source build is described in `docs/architecture/source-migration.md`.
 
-Third-party: Zen Browser (MPL-2.0), Firefox (MPL-2.0); Orca (MIT) informs the agent-runtime design.
+Lima is open source under the Mozilla Public License 2.0 (see `LICENSE`). Third-party: Zen Browser (MPL-2.0), Firefox (MPL-2.0); Orca (MIT) informs the agent-runtime design.

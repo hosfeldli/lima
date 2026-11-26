@@ -53,7 +53,6 @@ public final class Runtime: @unchecked Sendable {
     public let capabilities: CapabilityRegistry
     public let orchestrator: Orchestrator
     public let schedules: ScheduleService
-    public let usage: UsageStats
     public let discovery = CLIDiscovery()
     public let focus = WorkspaceFocus()
     let browserCalls = BrowserCalls()
@@ -94,11 +93,11 @@ public final class Runtime: @unchecked Sendable {
             persist: { task in try await store.put(task, collection: Orchestrator.collection, id: task.id) },
             emit: { task in sink.task(task) })
         let schedules = try await ScheduleService(store: store) { task, id in sink.schedule(task, id: id) }
-        let usage = UsageStats(state: try? await store.get(UsageStats.State.self, collection: "settings", id: "usage"),
-                               endpoint: Runtime.usageEndpoint()) { state in try? await store.put(state, collection: "settings", id: "usage") }
+        // Lima no longer keeps usage statistics; earlier versions' counts go.
+        try? await store.delete(collection: "settings", id: "usage")
         let runtime = try await Runtime(paths: paths, store: store, notes: notes, conversations: conversations,
                                         terminals: terminals, search: search, context: context, workspaces: workspaces,
-                                        orchestrator: orchestrator, schedules: schedules, usage: usage, sink: sink)
+                                        orchestrator: orchestrator, schedules: schedules, sink: sink)
         executor.runtime = runtime
         // Report turns a restart interrupted, and pick up queued work.
         Task { await orchestrator.recover() }
@@ -108,7 +107,7 @@ public final class Runtime: @unchecked Sendable {
 
     private init(paths: RuntimePaths, store: EncryptedStore, notes: NotesService, conversations: ConversationService,
                  terminals: TerminalService, search: SearchService, context: ContextService, workspaces: WorkspaceService,
-                 orchestrator: Orchestrator, schedules: ScheduleService, usage: UsageStats, sink: EventSink) async throws {
+                 orchestrator: Orchestrator, schedules: ScheduleService, sink: EventSink) async throws {
         self.paths = paths
         self.store = store
         self.notes = notes
@@ -119,7 +118,6 @@ public final class Runtime: @unchecked Sendable {
         self.workspaces = workspaces
         self.orchestrator = orchestrator
         self.schedules = schedules
-        self.usage = usage
         self.capabilities = CapabilityRegistry()
         sink.runtime = self
 
@@ -132,6 +130,7 @@ public final class Runtime: @unchecked Sendable {
         registerNotes()
         registerNoteImages()
         registerWorkspaceChats()
+        registerFileSearch()
         registerSearch()
         registerContext()
         registerSystem()
@@ -149,7 +148,6 @@ public final class Runtime: @unchecked Sendable {
         registerAssistant()
         registerOrchestrator()
         registerSchedules()
-        registerUsage()
         registerWorkspaceActivity()
         registerDictation()
         registerSystemSettings()
@@ -174,14 +172,18 @@ public final class Runtime: @unchecked Sendable {
             In notes, value blocks make a small live flow: {{budget := 120}} shows "budget" as an adjustable number in a light grey block, and {{budget / 4}} shows a live result. Formulas can use these names and calculator input and row ids anywhere in the same note, so changing one value updates every block and calculator that depends on it. Use them for budgets, scaling, conversions and anything the reader may tweak; notes_update rewrites a note when you restructure it.
             To put an image in a note, call notes_add_image with an HTTPS image address or a file path; width resizes it (50% or 320), and you resize one already in a note by editing the |width in its ![alt|width](lima-attachment:…) Markdown. Organize notes: when you create a note or see related ones, file them into folders with notes_organize (for example Recipes or Work/Clients), and archive notes that are done with notes_archive instead of deleting them; notes_unarchive brings one back.
             """
+            // The Companion is Pip, Lima's mascot; it says so when it introduces itself.
+            let guidance = conversation.companion == true
+                ? "You are Pip, the companion inside Lima. If you introduce yourself, say you're Pip, Lima's companion; keep your replies warm and brief.\n" + richContent
+                : richContent
             if conversation.provider == .claude {
                 if let index = configuration.arguments.firstIndex(of: "--append-system-prompt") {
-                    configuration.arguments[index + 1] += "\n\n" + richContent
+                    configuration.arguments[index + 1] += "\n\n" + guidance
                 } else {
-                    configuration.arguments += ["--append-system-prompt", richContent]
+                    configuration.arguments += ["--append-system-prompt", guidance]
                 }
             } else {
-                configuration.preamble = [configuration.preamble, richContent].compactMap { $0 }.joined(separator: "\n\n")
+                configuration.preamble = [configuration.preamble, guidance].compactMap { $0 }.joined(separator: "\n\n")
             }
             return configuration
         }

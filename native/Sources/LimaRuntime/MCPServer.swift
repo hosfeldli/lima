@@ -56,7 +56,8 @@ public enum MCPServer {
             try client.call("notes.folders")
         },
         Tool(name: "notes_organize", description: """
-            Move a note into a folder by path, creating folders as needed (e.g. "Recipes" or "Work/Clients"). \
+            Move a note into a Notebook folder by path, creating folders as needed (e.g. "Recipes" or "Work/Clients"). If the note \
+            is also in your workspace, its tab moves into the workspace folder of the same name. \
             Group related notes whenever you can: file new notes you write, and suggest tidying loose ones. Requires notes:write.
             """,
              properties: ["id": ["type": "string"], "folder": ["type": "string"]], required: ["id", "folder"]) { args, client in
@@ -366,15 +367,16 @@ extension MCPServer {
              properties: ["name": ["type": "string"]], required: ["name"]) { args, client in
             try client.call("workspace.rename", params: .object(["name": args?["name"] ?? .null]))
         },
-        Tool(name: "workspace_open_tab", description: "Open a web page as a tab inside this workspace's folder in Lima (the user sees it appear). folder files it in a sub-folder of the workspace's Tabs folder, e.g. \"Docs\" or \"Research/API\".",
+        Tool(name: "workspace_open_tab", description: "Open a web page as a tab inside this workspace's folder in Lima (the user sees it appear). folder files it in a folder at the top of the workspace (created as needed), e.g. \"Docs\" or \"Research/API\".",
              properties: ["url": ["type": "string"], "title": ["type": "string"], "folder": ["type": "string"]], required: ["url"]) { args, client in
             var params: [String: JSONValue] = ["url": args?["url"] ?? .null, "title": args?["title"] ?? .null]
             if let folder = args?["folder"] { params["folder"] = folder }
             return try client.call("workspace.openTab", params: .object(params))
         },
         Tool(name: "workspace_organize_tabs", description: """
-            Group this workspace's tabs into folders in the sidebar (inside its Tabs folder), up to three levels deep. \
-            Pass each tab's url and a folder path such as "Docs" or "Research/API"; an empty folder moves it back to Tabs. \
+            Group this workspace's pages and notes into folders in the sidebar, up to three levels deep. Folders sit at the top \
+            of the workspace beside Tabs, so one folder can hold both. Pass each tab's url (a page, or about:lima?note=<id> for a \
+            note) and a folder path such as "Docs" or "Research/API"; an empty folder moves a page back to Tabs. \
             Include title for a tab the user opened that isn't in workspace_list_tabs yet. Keep related pages together whenever a workspace has more than a few tabs.
             """,
              properties: [:], required: ["tabs"],

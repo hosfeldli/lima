@@ -1310,9 +1310,6 @@ button.send-now { white-space: nowrap; }
 .privacy-facts { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .privacy-facts li { display: grid; grid-template-columns: 16px 1fr; gap: 8px; align-items: start; }
 .privacy-facts .icon { width: 14px; height: 14px; margin-top: 2px; color: var(--ink-2); }
-.usage-settings { display: grid; gap: 8px; }
-.usage-preview { max-height: 260px; overflow: auto; margin: 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px;
-  background: var(--panel); font: 11.5px/1.45 var(--mono, ui-monospace, monospace); white-space: pre-wrap; }
 
 /* Chat replies keep the agent's spacing: paragraphs apart, single line breaks kept. */
 .msg.assistant .md > p, .companion-msg.assistant .md > p { margin: 0 0 .7em; }
@@ -1500,3 +1497,7 @@ button.send-now { white-space: nowrap; }
 .companion-ears, .companion-extras, .companion-reaction { transform-box: fill-box; transform-origin: 50% 100%; }
 .companion-body { rotate: var(--mascot-tilt, 0deg); }
 .companion[data-mascot-theme="outline"] .companion-markings { display: none; }
+/* Each mascot carries both palettes; the page theme chooses. */
+.companion[data-look] { --mascot-fill: var(--mascot-fill-light); --mascot-tone: var(--mascot-tone-light); --mascot-accent: var(--mascot-accent-light); }
+:root[lima-theme="dark"] .companion[data-look] { --mascot-fill: var(--mascot-fill-dark); --mascot-tone: var(--mascot-tone-dark); --mascot-accent: var(--mascot-accent-dark); }
+.assistant-role { color: var(--ink-3); font-size: var(--t-xs); margin-inline-start: 6px; }

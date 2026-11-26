@@ -396,7 +396,6 @@ extension Runtime {
             while !Task.isCancelled {
                 guard let runtime = self else { return }
                 await runtime.runDueSchedules()
-                await runtime.usage.flush()
                 try? await Task.sleep(for: .seconds(20))
             }
         }
@@ -437,7 +436,6 @@ extension Runtime {
                                                    workspaceID: workspace.id, context: ["Scheduled · \(task.schedule.summary)"])
             }
             await schedules.finish(id, runAt: run.at, taskID: record.id, workspaceID: workspace.id, error: nil)
-            await usage.count("schedule.ran")
             var finished = run
             finished.taskID = record.id
             finished.workspaceID = workspace.id
@@ -499,7 +497,6 @@ extension Runtime {
                 let workspace = try await self.workspaces.get(workspaceID)
                 guard workspace.parentID == nil else { throw BridgeError(.badRequest, "Schedule work in a top-level workspace.") }
             }
-            Task { await self.usage.count("schedule.created") }
             let task = try await self.schedules.create(title: title, instruction: instruction, schedule: schedule, workspaceID: workspaceID,
                 workspaceName: params.optionalString("workspaceName"), provider: params.optionalString("provider"),
                 model: params.optionalString("model"), mascot: params.optionalString("mascot"), createdBy: createdBy)

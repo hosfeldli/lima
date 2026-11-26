@@ -18,7 +18,7 @@ export const LimaAssistant = {
     const icon = doc.createElementNS(HTML, "span");
     const button = doc.createElementNS(HTML, "button");
     button.id = "lima-assistant-toggle";
-    button.title = "Lima Companion";
+    button.title = "Pip, your Lima Companion";
     button.setAttribute("aria-label", "Lima Companion");
     button.setAttribute("aria-expanded", "false");
     button.setAttribute("aria-controls", "lima-assistant-panel");
@@ -123,7 +123,7 @@ export const LimaAssistant = {
       else delete button.dataset.activity;
       const attention = needsHandoff || active?.state === "blocked" || active?.state === "failed";
       button.toggleAttribute("lima-attention", attention);
-      button.title = needsHandoff ? "Lima Companion · Review workspace access" : active ? `Lima Companion · ${active.label}` : "Lima Companion";
+      button.title = needsHandoff ? "Pip · Review workspace access" : active ? `Pip · ${active.label}` : "Pip, your Lima Companion";
       button.setAttribute("aria-label", button.title);
     }
 

@@ -156,7 +156,7 @@ zen-folder[lima-workspace][lima-ai="thinking"] > .tab-group-label-container > .t
 zen-folder[lima-workspace][lima-ai="working"] > .tab-group-label-container > .tab-group-folder-icon::after {
   animation: lima-assistant-glance 2.4s ease-in-out infinite;
 }
-zen-folder[lima-agent] > .tab-group-label-container > .tab-group-folder-icon::after { width: 12px; height: 12px; }
+zen-folder[lima-agent] > .tab-group-label-container > .tab-group-folder-icon::after { width: 16px; height: 16px; }
 zen-folder[lima-workspace][lima-archiving] > .tab-group-label-container > .tab-group-folder-icon::after {
   mask-image: url("resource://lima-ui/icons/folder.svg");
   animation: lima-assistant-tap 1.5s ease-in-out infinite;
@@ -767,7 +767,6 @@ zen-folder[lima-workspace]:is([lima-attention], [lima-task="blocked"]) > .tab-gr
   box-shadow: 0 0 0 1.5px var(--lima-bg);
   pointer-events: none;
 }
-zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon { position: relative; }
 zen-folder[lima-workspace]:is([lima-attention], [lima-task="blocked"]) > .tab-group-label-container > .tab-group-folder-icon::before {
   inset-block-start: -1px;
   inset-inline-end: -2px;
@@ -1215,3 +1214,60 @@ zen-folder:is([lima-agents], [lima-tabs], [lima-images])[collapsed] > .tab-group
 .lima-archive-location { padding: 6px 8px; }
 .lima-archive-actions { margin-block-start: 10px; gap: 6px; }
 .lima-archive-actions button { padding-block: 3px; font-size: 12px; }
+
+/* A collapsed workspace whose (hidden) chat is the selected tab shows
+   nothing inside it. Zen keeps a collapsed folder's selected tab in view and
+   left the next row (the Tabs folder) taking up its space, a blank gap. */
+zen-folder[lima-workspace][lima-chat-selected][collapsed] > .tab-group-container { display: none !important; }
+
+/* Spotify's logo (in its green) marks a Spotify source in the music bar. */
+#lima-dock .lima-music-source .lima-spotify-mark, #lima-dock .lima-music-alt-icon .lima-spotify-mark {
+  inline-size: 17px; block-size: 17px; background: #1ed760; mask-image: url("resource://lima-ui/marks/spotify.svg");
+}
+/* While audio plays, the Music shortcut lets out notes that drift up and fade. */
+#lima-spotify { position: relative; overflow: visible; }
+#lima-spotify[data-playing]::before, #lima-spotify[data-playing]::after {
+  position: absolute; left: 50%; top: 2px; font: 600 9px/1 system-ui; color: currentColor; pointer-events: none; opacity: 0;
+  animation: lima-note-drift 2.4s ease-out infinite;
+}
+#lima-spotify[data-playing]::before { content: "♪"; }
+#lima-spotify[data-playing]::after { content: "♫"; animation-delay: 1.2s; }
+@keyframes lima-note-drift {
+  0% { opacity: 0; transform: translate(-2px, 6px) scale(.7); }
+  20% { opacity: .9; }
+  100% { opacity: 0; transform: translate(9px, -14px) rotate(14deg) scale(1); }
+}
+#lima-spotify[data-playing]::after { animation-name: lima-note-drift-left; }
+@keyframes lima-note-drift-left {
+  0% { opacity: 0; transform: translate(-6px, 6px) scale(.7); }
+  20% { opacity: .9; }
+  100% { opacity: 0; transform: translate(-16px, -13px) rotate(-12deg) scale(1); }
+}
+:root[data-lima-personality]:not([data-lima-personality="full"]) #lima-spotify::before,
+:root[data-lima-personality]:not([data-lima-personality="full"]) #lima-spotify::after { display: none; }
+@media (prefers-reduced-motion: reduce) { #lima-spotify::before, #lima-spotify::after { display: none; } }
+
+/* Copy link stays visible in the address bar, not only on hover. */
+:root[lima-window] #urlbar #zen-copy-url-button:not([disabled]) {
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
+/* Apps and files in search show their own macOS icon, full size, without a tile. */
+.lima-s-icon:is([data-kind="app"], [data-kind="file"]):has(.lima-s-favicon) { background: none; box-shadow: none; }
+.lima-s-icon:is([data-kind="app"], [data-kind="file"]) .lima-s-favicon { width: 24px; height: 24px; border-radius: 0; }
+
+/* One folder icon everywhere (workspaces keep their Pip): Lima's outline
+   folder, open while expanded, drawn in the sidebar's text colour at the
+   size of a tab's icon. Replaces Zen's filled folder and Lima's older glyphs. */
+#navigator-toolbox zen-folder:not([lima-workspace]) > .tab-group-label-container > .tab-group-folder-icon > :is(svg, image, .icon, .dots) { display: none !important; }
+#navigator-toolbox zen-folder:not([lima-workspace]) > .tab-group-label-container > .tab-group-folder-icon {
+  display: grid !important; place-items: center; filter: none !important;
+}
+#navigator-toolbox zen-folder:not([lima-workspace]) > .tab-group-label-container > .tab-group-folder-icon::after {
+  content: ""; display: block; width: 16px; height: 16px; background: currentColor; opacity: .82;
+  mask: url("resource://lima-ui/marks/folder.svg") center / contain no-repeat;
+}
+#navigator-toolbox zen-folder:not([lima-workspace]):not([collapsed]) > .tab-group-label-container > .tab-group-folder-icon::after {
+  mask-image: url("resource://lima-ui/marks/folder-open.svg");
+}

@@ -25,7 +25,6 @@ ChromeUtils.defineESModuleGetters(lazy, {
   LimaAppearance: "resource://lima/LimaAppearance.sys.mjs",
   LimaTabs: "resource://lima/LimaTabs.sys.mjs",
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
-  LimaUsage: "resource://lima/LimaUsage.sys.mjs",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
   SearchService: "moz-src:///toolkit/components/search/SearchService.sys.mjs",
   SearchSuggestionController: "moz-src:///toolkit/components/search/SearchSuggestionController.sys.mjs",
@@ -91,6 +90,15 @@ function friendlyError(error) {
   if (!raw || /^[[{]/.test(raw)) return "Lima couldn't complete this action.";
   const line = raw.split("\n").find(part => part.trim() && !/^\s*at\s|@\S+:\d+/.test(part)) ?? raw;
   return line.length > 160 ? `${line.slice(0, 157)}…` : line;
+}
+
+/** The macOS icon for a file or app, as Finder shows it. */
+function macIcon(path) {
+  try {
+    const file = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
+    file.initWithPath(path);
+    return `moz-icon://${Services.io.newFileURI(file).spec}?size=32`;
+  } catch { return undefined; }
 }
 
 class Panel {
@@ -176,7 +184,6 @@ class Panel {
       return;
     }
     this.setMode(mode);
-    lazy.LimaUsage.count(mode === "here" ? "search.addressBar" : "search.opened", this.win);
     const started = this.win.performance.now();
     this.selectedEngine().then(async engine => {
       this.engineName = engine?.name;
@@ -316,7 +323,8 @@ class Panel {
     }
     this.set.setBest(this.bestRows(text, target));
     if (!target || target === "tabs") local(this.tabRows());
-    if (!target || target === "notes" || target === "files") run(() => this.limaRows(text, target).then(local));
+    if (!target || target === "notes") run(() => this.limaRows(text, target).then(local));
+    if (target === "files") run(() => this.fileRows(text).then(local), 2500);
     if (!target || target === "workspace") run(() => this.workspaceRows().then(local));
     if (!target) run(() => this.historyRows(text).then(local));
     if (suggest) run(() => this.webRows(text).then(rows => {
@@ -344,6 +352,13 @@ class Panel {
 
   /** Synchronous, so row one never changes while sources load. */
   bestRows(text, target) {
+    // A scope (Notes, Files, Tabs, Workspaces) shows only its own results.
+    if (target && target !== "page") return [];
+    if (target === "page") {
+      const rows = [{ key: "find", icon: "search", title: text, subtitle: "Find on this page", action: "Find", run: () => this.findInPage(text) }];
+      if (this.context && !this.private) rows.push({ key: "ask", icon: "spark", title: text, subtitle: "Ask Lima about this page", action: "Ask Lima", inline: true, run: () => this.quickAsk(text) });
+      return rows;
+    }
     const rows = [];
     const url = navigationURL(text);
     if (url) {
@@ -400,10 +415,37 @@ class Panel {
         const command = r.action.type === "runCapability";
         const source = SOURCE[r.source] ?? { kind: "other", icon: "search" };
         return { key: `lima:${r.key}`, kind: command ? "command" : source.kind, icon: command ? "bolt" : source.icon, title: r.title,
+          // Apps show their own icon, as in the Dock.
+          image: r.action.type === "openApp" && r.action.payload?.path ? macIcon(r.action.payload.path) : undefined,
           subtitle: r.subtitle, score: r.score, command,
           action: r.action.type === "openApp" ? "Launch" : command ? "Run" : r.action.type === "copyText" ? "Copy" : "Open",
           run: () => this.runLima(r) };
       });
+  }
+
+  /** Firefox's find bar on the current page, already searching for `text`. */
+  async findInPage(text) {
+    this.close();
+    const findbar = await this.win.gBrowser.getFindBar();
+    findbar.open();
+    findbar._findField.value = text;
+    findbar._find?.(text);
+    findbar._findField.focus();
+  }
+
+  /** Files by name, from Spotlight on this Mac (Files scope). */
+  async fileRows(text) {
+    if (this.private || text.length < 2) return [];
+    const files = await lazy.LimaBridge.request("files.search", { query: text, limit: 20 }).catch(() => []);
+    return files.map(file => ({
+      key: `file:${file.path}`, kind: "file", icon: file.directory ? "folder" : "file", title: file.name, image: macIcon(file.path),
+      subtitle: file.path.replace(Services.dirsvc.get("Home", Ci.nsIFile).path, "~"), action: file.directory ? "Show" : "Open",
+      run: () => {
+        const local = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
+        local.initWithPath(file.path);
+        if (file.directory) local.reveal(); else local.launch();
+      },
+    }));
   }
 
   async workspaceRows() {

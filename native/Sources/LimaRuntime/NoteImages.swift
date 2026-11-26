@@ -85,6 +85,14 @@ extension Runtime {
             let folder = try params.string("folder").trimmingCharacters(in: .whitespacesAndNewlines)
             guard (1...240).contains(folder.count) else { throw BridgeError(.badRequest, "Name a folder path such as Recipes or Work/Clients.") }
             let result = try await organize(self, "notesOrganize", ["noteId": .string(id), "folder": .string(folder)], context)
+            // A note that's also a tab in a workspace moves into that workspace's
+            // folder of the same name too, so the sidebar shows where it went.
+            let url = "about:lima?note=\(id)"
+            for workspace in await self.workspaces.list() where workspace.tabs.contains(where: { $0.url == url }) {
+                if let updated = try? await self.workspaces.update(workspace.id, { workspace in
+                    if let index = workspace.tabs.firstIndex(where: { $0.url == url }) { workspace.tabs[index].folder = Workspace.tabFolder(folder) }
+                }) { self.broadcast("workspace.updated", updated.publicView) }
+            }
             self.recordActivity(ActivityEvent(kind: .note, title: note.title, detail: "moved to \(result["folder"]?.stringValue ?? folder)"))
             return result
         }
@@ -118,6 +126,53 @@ extension Runtime {
             let width = params.optionalString("width").flatMap { $0.range(of: #"^(?:\d{1,4}|\d{1,3}%)$"#, options: .regularExpression) != nil ? $0 : nil }
             let markdown = "![\(alt)\(width.map { "|\($0)" } ?? "")](lima-attachment:\(id))"
             return .object(["id": .string(id), "markdown": .string(markdown), "bytes": .number(Double(png.count))])
+        }
+    }
+}
+
+/// Files by name for Lima Search's Files scope: Spotlight's index of the
+/// user's home folder (`mdfind -name`), never Library or hidden folders.
+/// Local only; the browser asks, and only the user's own UI may.
+enum FileSearch {
+    static func search(_ query: String, limit: Int) async -> [JSONValue] {
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (2...120).contains(text.count) else { return [] }
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
+        process.arguments = ["-onlyin", home, "-name", text]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return [] }
+        // Spotlight is fast; don't let a slow index hold up search.
+        let deadline = Task { try? await Task.sleep(for: .seconds(2)); if process.isRunning { process.terminate() } }
+        let data = await Task.detached { pipe.fileHandleForReading.readDataToEndOfFile() }.value
+        deadline.cancel()
+        let skipped = ["/Library/", "/.Trash/", "/node_modules/", "/.git/"]
+        let paths = String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init).filter { path in
+            !skipped.contains { path.contains($0) } && !path.dropFirst(home.count).split(separator: "/").contains { $0.hasPrefix(".") }
+        }
+        // Names that start with the query first, then shorter paths.
+        let lower = text.lowercased()
+        let ranked = paths.sorted { a, b in
+            let (na, nb) = ((a as NSString).lastPathComponent.lowercased(), (b as NSString).lastPathComponent.lowercased())
+            let (sa, sb) = (na.hasPrefix(lower), nb.hasPrefix(lower))
+            return sa != sb ? sa : a.count < b.count
+        }
+        return ranked.prefix(limit).map { path in
+            var directory: ObjCBool = false
+            FileManager.default.fileExists(atPath: path, isDirectory: &directory)
+            return .object(["path": .string(path), "name": .string((path as NSString).lastPathComponent), "directory": .bool(directory.boolValue)])
+        }
+    }
+}
+
+extension Runtime {
+    func registerFileSearch() {
+        register("files.search") { params, context in
+            guard context.origin == .browser else { throw BridgeError(.notAuthorized, "File search is for Lima Search.") }
+            return .array(await FileSearch.search(try params.string("query"), limit: params.limit("limit", default: 20, maximum: 50)))
         }
     }
 }

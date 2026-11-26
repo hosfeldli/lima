@@ -52,8 +52,6 @@ if [[ "$RELEASE" == 1 ]]; then
   [[ "$SIGN_MODE" != developer-id || -n "$TEAM" ]] || fail "developer-id signing needs signing.developerTeam"
   FEED_URL="$(json "$POLICY" "['updates']['feedURL']")"
   UPDATE_KEY="$(json "$POLICY" "['updates']['publicKey']")"
-  USAGE_ENDPOINT="$(json "$POLICY" "['usage']['endpoint'] if 'usage' in d else ''" 2>/dev/null || true)"
-  [[ -z "$USAGE_ENDPOINT" || "$USAGE_ENDPOINT" == https://* ]] || fail "browser/release.json usage.endpoint must be an https URL"
   [[ "$FEED_URL" == https://* ]] || fail "browser/release.json updates.feedURL must be an https URL"
   [[ -n "$UPDATE_KEY" ]] || fail "browser/release.json updates.publicKey is empty (run browser/scripts/release/setup_update_key.sh)"
   APP_VERSION="$VERSION"
@@ -250,13 +248,10 @@ plutil -remove LSFileQuarantineEnabled "$PLIST" 2>/dev/null || true
 if [[ "$RELEASE" == 1 ]]; then
   plutil -replace LimaUpdateFeedURL -string "$FEED_URL" "$PLIST"
   plutil -replace LimaUpdatePublicKey -string "$UPDATE_KEY" "$PLIST"
-  # Where opted-in anonymous usage reports go (nothing is sent unless the user turns it on).
-  if [[ -n "${USAGE_ENDPOINT:-}" ]]; then plutil -replace LimaUsageEndpoint -string "$USAGE_ENDPOINT" "$PLIST"; else plutil -remove LimaUsageEndpoint "$PLIST" 2>/dev/null || true; fi
   # Updates and the runtime also trust this team's Developer ID signature.
   if [[ -n "$TEAM" ]]; then plutil -replace LimaTrustedTeam -string "$TEAM" "$PLIST"; else plutil -remove LimaTrustedTeam "$PLIST" 2>/dev/null || true; fi
 else
   plutil -remove LimaTrustedTeam "$PLIST" 2>/dev/null || true
-  plutil -remove LimaUsageEndpoint "$PLIST" 2>/dev/null || true
   plutil -remove LimaUpdateFeedURL "$PLIST" 2>/dev/null || true
   plutil -remove LimaUpdatePublicKey "$PLIST" 2>/dev/null || true
 fi

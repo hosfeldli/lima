@@ -9,7 +9,6 @@ const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   Downloads: "resource://gre/modules/Downloads.sys.mjs",
   FileUtils: "resource://gre/modules/FileUtils.sys.mjs",
-  LimaUsage: "resource://lima/LimaUsage.sys.mjs",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
 });
 
@@ -214,7 +213,6 @@ export const LimaDownloads = {
         if (download.stopped && !finished.has(download)) {
           finished.add(download);
           announce(download);
-          if (download.succeeded) lazy.LimaUsage.count("download.finished", win);
         }
         paintButton();
         if (!panel.hidden && rows.has(download)) paintRow(download);

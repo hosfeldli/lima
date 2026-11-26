@@ -101,17 +101,6 @@ Lima never opens Zen's own site. Page and frame loads to `zen-browser.app` and i
 
 `agents.failover` returns whether provider failover is on (default `true`); `{ "enabled": bool }` changes it from Settings. With failover on, a chat turn or Quick Ask that fails with `rate_limited` before any text arrived continues with another signed-in provider: the user's default first, then Claude Code, Codex, OpenCode. The failed reply is replaced. The new assistant message carries `notice` ("Claude Code reached its usage limit, so Lima switched to Codex.") and the conversation's `provider` changes; a workspace's provider follows its agent conversation. Without another ready provider, the failure stays on the message as before, and the Orchestrator's usage-limit wait applies.
 
-## Usage statistics
-
-On unless the user turns it off (see `docs/PRIVACY.md`); `asked` records an explicit choice, and a stored `asked: false` reads as on. `usage.get` returns `{ enabled, asked, endpoint, lastSent }`. The browser-only methods are:
-- `usage.set { enabled }`, from the one-time sidebar notice (OK / Turn Off) or Settings → Privacy;
-- `usage.count { event }`, for names from a fixed list only, ignored while off;
-- `usage.settings { theme, provider, tabSize, hideAI, hideAds, hideShorts, addressBar }`, where unknown keys and values are dropped, and `provider` goes into reports only after an explicit yes (`asked` and on);
-- `usage.preview`, which returns the exact report;
-- `usage.delete`, which deletes what was sent under the current ID and starts a new one.
-
-The runtime sends finished days at most hourly to `LimaUsageEndpoint` (stamped from `release.json` → `usage.endpoint`), keeps at most a week unsent, and changes the random ID every month. Turning sharing off discards what wasn't sent.
-
 ## Origins and trust
 
 Every caller that isn't Lima's own interface passes `SecurityPolicy` before a method runs:
@@ -163,7 +152,7 @@ A workspace's main chat is `conversationID`. `workspace.chats { id }` lists its 
 
 `chat.configure` and `chat.create` accept `effort`: `low`, `medium` or `high` (or `default` for the CLI's own). The conversation keeps it and every turn passes it on: Claude Code as `--effort`, Codex as `model_reasoning_effort`. OpenCode has no such setting and ignores it. Quick Ask always runs at low effort.
 
-`workspace.openTab` accepts `folder`, a path inside the workspace's Tabs folder (up to three levels, such as `Docs` or `Research/API`), and `workspace.organizeTabs { tabs: [{ url, folder, title? }] }` (1–60) files tabs into those folders; an empty folder moves a tab back to Tabs, and `title` adds a tab the user opened that the workspace doesn't track yet. It returns `{ folders, notFound }`. The browser builds the folders inside the Tabs folder and moves a tab only when its folder changes, so a tab the user dragged elsewhere stays there. `workspace.listTabs` reports each tab's `folder`.
+`workspace.openTab` accepts `folder`, a folder path at the top of the workspace beside Tabs (up to three levels, such as `Docs` or `Research/API`), and `workspace.organizeTabs { tabs: [{ url, folder, title? }] }` (1–60) files pages and notes (`about:lima?note=<id>`) into those folders; an empty folder moves a page back to Tabs and a note to the workspace's top level, and `notes.organize` also files a workspace's tab for that note into the folder of the same name, and `title` adds a tab the user opened that the workspace doesn't track yet. It returns `{ folders, notFound }`. The browser builds the folders inside the Tabs folder and moves a tab only when its folder changes, so a tab the user dragged elsewhere stays there. `workspace.listTabs` reports each tab's `folder`.
 
 Notes support value blocks: `{{name := 120}}` defines an adjustable number, shown as a light grey block, and `{{expression}}` shows a live result computed with the calculator formula rules from defined names and the input and row ids of calculators in the same note. Calculators can read defined names too. Typing @ in a note opens a picker of these values. MCP `notes_update` replaces a note's Markdown as one undoable agent edit.
 

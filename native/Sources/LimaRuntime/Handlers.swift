@@ -212,8 +212,6 @@ extension Runtime {
         register("chat.send") { [unowned self] params, context in
             let id = try params.string("id")
             let text = try params.string("text")
-            Task { await self.usage.count("chat.sent") }
-            if !(params?["attachments"]?.arrayValue ?? []).isEmpty { Task { await self.usage.count("chat.attachment") } }
             let conversation = try await self.conversations.send(id, text: text, mode: Self.sendMode(params),
                                                                  attachments: try await self.attachments(params, conversationID: id))
             // A reply to an agent that was waiting on the user continues its task.
@@ -256,7 +254,6 @@ extension Runtime {
             return .null
         }
         register("quickAsk") { [unowned self] params, _ in
-            Task { await self.usage.count("search.quickAsk") }
             let requestID = try params.string("requestId")
             let provider = CLIProvider(rawValue: params.optionalString("provider") ?? "claude") ?? .claude
             let started = Date()
@@ -399,7 +396,6 @@ extension Runtime {
             return try JSONValue.from(context.origin == .mcp ? all.filter { $0.mcpScope != nil } : all)
         }
         register("capabilities.run") { [unowned self] params, context in
-            Task { await self.usage.count("capability.ran") }
             return try await self.capabilities.run(try params.string("id"), input: params.optionalString("input") ?? "", runtime: self,
                                             context: context, approvalDigest: params.optionalString("approvalDigest"),
                                             executionID: params.optionalString("executionId"))

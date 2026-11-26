@@ -18,8 +18,5 @@
   },
   "github": {
     "repository": "hosfeldli/lima"
-  },
-  "usage": {
-    "endpoint": "https://lima-usage-940267100054.us-central1.run.app"
   }
 }

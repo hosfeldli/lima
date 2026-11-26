@@ -2,4 +2,16 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url><loc>https://lima.liamhosfeld.com/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>
   <url><loc>https://lima.liamhosfeld.com/llms.txt</loc><changefreq>weekly</changefreq><priority>0.5</priority></url>
+  <url><loc>https://lima.liamhosfeld.com/legal</loc></url>
+  <url><loc>https://lima.liamhosfeld.com/legal/terms</loc></url>
+  <url><loc>https://lima.liamhosfeld.com/legal/privacy</loc></url>
+  <url><loc>https://lima.liamhosfeld.com/legal/eula</loc></url>
+  <url><loc>https://lima.liamhosfeld.com/legal/ai-usage</loc></url>
+  <url><loc>https://lima.liamhosfeld.com/legal/acceptable-use</loc></url>
+  <url><loc>https://lima.liamhosfeld.com/legal/commercial-data</loc></url>
+  <url><loc>https://lima.liamhosfeld.com/legal/retention</loc></url>
+  <url><loc>https://lima.liamhosfeld.com/legal/licenses</loc></url>
+  <url><loc>https://lima.liamhosfeld.com/legal/security</loc></url>
+  <url><loc>https://lima.liamhosfeld.com/legal/incident-response</loc></url>
+  <url><loc>https://lima.liamhosfeld.com/legal/partner</loc></url>
 </urlset>

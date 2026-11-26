@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vulnerability Disclosure Policy · Lima</title>
+  <meta name="description" content="How to report a security issue, what&#x27;s in scope, and how reports are handled.">
+  <link rel="canonical" href="https://lima.liamhosfeld.com/legal/security">
+  <link rel="icon" href="/lima.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/legal.css">
+</head>
+<body class="legal">
+  <header class="legal-head">
+    <a class="brand" href="/" aria-label="Lima home"><img src="/lima.svg" alt="" width="26" height="26"><span>Lima</span></a>
+    <nav class="legal-crumbs" aria-label="Breadcrumb"><a href="/legal">Legal</a><span aria-hidden="true">/</span><span>Vulnerability Disclosure Policy</span></nav>
+    <a class="button primary legal-download" href="/download">Download for macOS</a>
+  </header>
+  <main class="legal-doc">
+    <div class="legal-doc-head">
+      <h1>Vulnerability Disclosure Policy</h1>
+      <p class="legal-meta">Effective November 26, 2026 · Liam Hosfeld</p>
+      <p class="legal-summary">How to report a security issue, what&#x27;s in scope, and how reports are handled.</p>
+      <a class="button ghost legal-pdf" href="/legal/security.pdf" download>Download PDF</a>
+    </div>
+    <div class="legal-layout">
+      <nav class="legal-toc" aria-label="On this page"><p>On this page</p><ol><li><a href="#in-scope">In scope</a></li><li><a href="#out-of-scope">Out of scope</a></li><li><a href="#rules-for-research">Rules for research</a></li><li><a href="#what-to-send">What to send</a></li><li><a href="#what-we-do">What we do</a></li></ol></nav>
+      <article class="legal-body">
+<p>Report security issues in Lima to <a href="mailto:lima.issues@gmail.com">lima.issues@gmail.com</a>, or privately through GitHub's security advisories for <a href="https://github.com/hosfeldli/lima">github.com/hosfeldli/lima</a>. We acknowledge reports within 3 business days and won't pursue legal action against good-faith research that follows this policy.</p>
+<h2 id="in-scope">In scope</h2>
+<ul><li>The Lima app and its runtime (lima-host), including the browser-to-runtime bridge, the MCP tools, approval cards and workspace isolation.</li><li>The updater: feed signatures, code-signature checks and the install process.</li><li>lima.liamhosfeld.com, including shared note links.</li><li>Any way an agent or a web page could act without the approval Lima's policy requires.</li></ul>
+<h2 id="out-of-scope">Out of scope</h2>
+<p>Bugs in Firefox or Zen that Lima doesn't change (report them to Mozilla or Zen), your AI provider's services, social engineering, physical attacks, denial of service, and findings that need an already compromised Mac or root access.</p>
+<h2 id="rules-for-research">Rules for research</h2>
+<ol><li>Test only on your own Mac and installations, with your own accounts and data.</li><li>Don't access, change or delete other people's data.</li><li>Don't degrade our services, and stop at the minimum needed to show the issue.</li><li>Keep details private until a fix is released or 90 days after your report, whichever comes first. We can agree on a different date together.</li></ol>
+<h2 id="what-to-send">What to send</h2>
+<p>The Lima version (Settings → Updates), steps to reproduce, the impact, and any proof of concept.</p>
+<h2 id="what-we-do">What we do</h2>
+<p>Confirm the issue, keep you updated at least every 14 days, ship a fix (critical fixes go out as critical updates within days), and credit you in the release notes if you want. We don't currently offer bounties.</p>
+      </article>
+    </div>
+  </main>
+  <footer class="legal-foot">
+    <p>Published by Liam Hosfeld · <a href="mailto:lima.issues@gmail.com">lima.issues@gmail.com</a> · Effective November 26, 2026</p>
+    <p><a href="/">Lima</a> · <a href="/legal">Legal</a> · <a href="https://github.com/hosfeldli/lima">Source on GitHub</a></p>
+  </footer>
+</body>
+</html>

@@ -217,10 +217,9 @@ const compiled = COMPILED;
       return (engineFor("https://www.youtube.com/") === "youtube" && shortsWatchURL("https://www.youtube.com/shorts/abcDEF12345") === "https://www.youtube.com/watch?v=abcDEF12345"
         && stylesheet("youtube", { shorts: true }).includes("ytd-reel-shelf-renderer") && stylesheet("youtube", { shorts: false }) === "") || "shorts rules";
     })(),
-    usageOffByDefault: await (async () => {
-      const state = await LimaBridge.request("usage.get");
-      return (state.enabled === false) || state;
-    })(),
+    // Lima keeps no usage statistics: nothing to count, nothing to send.
+    usageGone: !(await LimaBridge.request("host.hello")).methods.some(method => method.startsWith("usage."))
+      || "usage methods still registered",
     terminalGone: !(await LimaBridge.request("host.hello")).methods.some(method => method.startsWith("terminal.") || method === "workspace.run")
       || "terminal methods still registered",
     // Zen's own site never opens in Lima.
