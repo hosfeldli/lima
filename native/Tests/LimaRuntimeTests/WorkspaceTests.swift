@@ -293,3 +293,53 @@ private func archivedText(_ archive: URL, _ entry: String) throws -> String {
     #expect(NoteImages.fileURL("relative.png", base: nil) == nil)
     #expect(NoteImages.fileURL("~/x.png", base: nil)?.path == NSHomeDirectory() + "/x.png")
 }
+
+@Test(.timeLimit(.minutes(1))) func agentsCreateFoldersOnlyInsideTheirWorkspace() async throws {
+    let (runtime, dir) = try await workspaceRuntime()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let created = await call(runtime, "workspace.create", ["name": .string("Folders")])
+    let id = try #require(created.result?["id"]?.stringValue)
+    let root = URL(fileURLWithPath: try #require(created.result?["directory"]?.stringValue))
+    let made = await call(runtime, "workspace.makeFolder", ["path": .string("src/components")], origin: .mcp, workspace: id)
+    #expect(made.result?["path"]?.stringValue == "src/components" && made.result?["created"]?.boolValue == true)
+    var isDirectory: ObjCBool = false
+    #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("src/components").path, isDirectory: &isDirectory) && isDirectory.boolValue)
+    #expect(await call(runtime, "workspace.makeFolder", ["path": .string("src/components")], origin: .mcp, workspace: id).result?["created"]?.boolValue == false)
+
+    for escape in ["../outside", "/tmp/elsewhere", "~/x", "a/../../b", ""] {
+        #expect(await call(runtime, "workspace.makeFolder", ["path": .string(escape)], origin: .mcp, workspace: id).error != nil, "\(escape) must be refused")
+    }
+    // A link inside the workspace that points out of it doesn't let a folder escape.
+    let outside = dir.appendingPathComponent("outside-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+    try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("link"), withDestinationURL: outside)
+    #expect(await call(runtime, "workspace.makeFolder", ["path": .string("link/inner")], origin: .mcp, workspace: id).error != nil)
+    #expect(!FileManager.default.fileExists(atPath: outside.appendingPathComponent("inner").path))
+    // A file in the way is reported, not replaced.
+    try Data().write(to: root.appendingPathComponent("notes.txt"))
+    #expect(await call(runtime, "workspace.makeFolder", ["path": .string("notes.txt/sub")], origin: .mcp, workspace: id).error != nil)
+}
+
+@Test(.timeLimit(.minutes(1))) func agentsFileWorkspaceTabsIntoFolders() async throws {
+    let (runtime, dir) = try await workspaceRuntime()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let id = try #require(await call(runtime, "workspace.create", ["name": .string("Research")]).result?["id"]?.stringValue)
+    _ = await call(runtime, "workspace.openTab", ["url": .string("https://docs.example/a"), "folder": .string(" Docs / API ")], origin: .mcp, workspace: id)
+    _ = await call(runtime, "workspace.openTab", ["url": .string("https://news.example/b")], origin: .mcp, workspace: id)
+    var tabs = try await runtime.workspaces.get(id).tabs
+    #expect(tabs.first { $0.url == "https://docs.example/a" }?.folder == "Docs/API")
+    #expect(tabs.first { $0.url == "https://news.example/b" }?.folder == nil)
+
+    let organized = await call(runtime, "workspace.organizeTabs", ["tabs": .array([
+        .object(["url": .string("https://news.example/b"), "folder": .string("Reading")]),
+        .object(["url": .string("https://docs.example/a"), "folder": .string("")]),
+        .object(["url": .string("https://user.example/c"), "folder": .string("Reading"), "title": .string("Theirs")]),
+        .object(["url": .string("https://missing.example/d"), "folder": .string("Reading")]),
+    ])], origin: .mcp, workspace: id)
+    #expect(organized.result?["folders"]?.arrayValue == [.string("Reading")])
+    #expect(organized.result?["notFound"]?.arrayValue == [.string("https://missing.example/d")])
+    tabs = try await runtime.workspaces.get(id).tabs
+    #expect(tabs.first { $0.url == "https://docs.example/a" }?.folder == nil, "an empty folder moves it back to Tabs")
+    #expect(tabs.first { $0.url == "https://user.example/c" }?.folder == "Reading")
+    #expect(Workspace.tabFolder("a/b/c/d") == "a/b/c" && Workspace.tabFolder(" / ../ ") == nil)
+}

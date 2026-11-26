@@ -225,3 +225,16 @@ func developerIDAppMatchesOnlyItsOwnTeam() throws {
         #expect(getxattr(path, "com.apple.quarantine", nil, 0, 0, 0) == -1)
     }
 }
+
+@Test func translocatedAppResolvesToTheInstalledOne() {
+    let installed = URL(fileURLWithPath: "/Applications/Lima.app")
+    #expect(UpdateConfiguration.originalApp(installed) == installed, "a normal install stays where it is")
+    let lost = URL(fileURLWithPath: "/private/var/folders/xx/T/AppTranslocation/NOT-MOUNTED/d/Lima.app")
+    #expect(UpdateConfiguration.originalApp(lost) == lost, "without a translocation mount there's nothing to map")
+}
+
+@MainActor @Test func grammarFixesPlainTyposOnThisMacAndLeavesTheRestToTheAI() {
+    #expect(GrammarShortcut.localCorrection("I recieve the package tomorow.") == "I receive the package tomorrow.")
+    #expect(GrammarShortcut.localCorrection("This sentence is fine.") == nil, "nothing to fix locally: the AI still checks grammar")
+    #expect(GrammarShortcut.localCorrection(String(repeating: "Recieve it. ", count: 40)) == nil, "long text goes to the AI")
+}

@@ -17,7 +17,20 @@ import LimaTerminal
 /// Agents authenticate with a per-workspace token and can act only on their
 /// own workspace (plus create new workspaces on request).
 public struct Workspace: Codable, Sendable, Equatable {
-    public struct Tab: Codable, Sendable, Equatable { public var url: String; public var title: String }
+    public struct Tab: Codable, Sendable, Equatable {
+        public var url: String
+        public var title: String
+        /// A folder path inside the workspace's Tabs folder ("Docs", "Research/API"); nil = Tabs itself.
+        public var folder: String? = nil
+        public init(url: String, title: String, folder: String? = nil) { self.url = url; self.title = title; self.folder = folder }
+    }
+
+    /// A tab folder path, tidied: up to three levels of short names, or nil.
+    public static func tabFolder(_ raw: String?) -> String? {
+        let parts = (raw ?? "").split(separator: "/").map { String($0.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(40)) }
+            .filter { !$0.isEmpty && $0 != "." && $0 != ".." }
+        return parts.isEmpty ? nil : parts.prefix(3).joined(separator: "/")
+    }
     public struct Bookmark: Codable, Sendable, Equatable { public var url: String; public var title: String; public var folder: String }
 
     public var id: String
@@ -261,7 +274,7 @@ extension Runtime {
         let tools = """
         Work visibly through the `lima` MCP tools, which the user watches in Lima's sidebar: open web pages as tabs \
         (workspace_open_tab), see and read the pages in your Tabs folder (workspace_list_tabs, workspace_read_tab), run shell \
-        commands with your own built-in shell tool in your working directory (start long-running servers in the background and check their logs). Use Lima for file links (workspace_bookmark, folder paths like "Research/Docs") and \
+        commands with your own built-in shell tool in your working directory, organize files into folders (workspace_make_folder, or mkdir in your shell), keep the workspace tidy by grouping its tabs into sidebar folders (workspace_organize_tabs, or folder on workspace_open_tab) and filing notes into Notebook folders (notes_organize) (start long-running servers in the background and check their logs). Use Lima for file links (workspace_bookmark, folder paths like "Research/Docs") and \
         write summaries or findings as notes (workspace_note). Use workspace_ask_user for missing decisions. Prefer labeled fields of the appropriate types for dates, times, numbers or choices. Use workspace_location to request approximate location when needed and workspace_browser_plan before browser interactions. Include the exact same-site paths you will visit and re-inspect live controls when a target moves.
         Use Lima's Studio tools for visual work. image_generate queues local text-to-image generation when configured and allowed. Check the operation ID through image_generation_status before reporting or retrying; reuse the same idempotency key across retries. Open supported files with image_open, inspect the exact revision, and use image_select_subject and image_remove_background for local foreground masks. vector_trace makes editable paths; get exact IDs with vector_inspect before editing. Build and verify animation exports with animation_create, animation_add_frame or animation_tween, then animation_export or animation_export_spritesheet. Give users the returned studio_url and verified workspace paths. Preserve originals and never claim an unsupported result.
         Before you start the work, think through what it will need from the user. If you can foresee approvals (a destructive \
@@ -679,14 +692,39 @@ extension Runtime {
                 throw BridgeError(.badRequest, "Workspace agents open web pages. Use workspace_note to create a Lima note.")
             }
             let title = params.optionalString("title") ?? url
+            let folder = Workspace.tabFolder(params.optionalString("folder"))
             let workspace = try await self.workspaces.update(id) { workspace in
-                if !workspace.tabs.contains(where: { $0.url == url }) {
-                    workspace.tabs.append(.init(url: url, title: title))
+                if let index = workspace.tabs.firstIndex(where: { $0.url == url }) {
+                    if params?["folder"] != nil { workspace.tabs[index].folder = folder }
+                } else {
+                    workspace.tabs.append(.init(url: url, title: title, folder: folder))
                 }
             }
             if !url.hasPrefix("about:lima?view=image") { self.setFocus(workspace.id, .tab, url: url) }
             changed(workspace)
             return .object(["opened": .string(url), "tabs": .number(Double(workspace.tabs.count))])
+        }
+        // Files tabs into folders inside the workspace's Tabs folder:
+        // `tabs: [{ url, folder }]` (folder "" or null = back to Tabs). A tab
+        // the user added that Lima doesn't track yet joins the workspace.
+        register("workspace.organizeTabs") { [unowned self] params, context in
+            let id = try target(params, context)
+            guard let moves = params?["tabs"]?.arrayValue, (1...60).contains(moves.count) else {
+                throw BridgeError(.badRequest, "List one to sixty tabs, each with its url and folder.")
+            }
+            let workspace = try await self.workspaces.update(id) { workspace in
+                for move in moves {
+                    guard let url = move["url"]?.stringValue, let scheme = URL(string: url)?.scheme, ["http", "https"].contains(scheme) else { continue }
+                    let folder = Workspace.tabFolder(move["folder"]?.stringValue)
+                    if let index = workspace.tabs.firstIndex(where: { $0.url == url }) { workspace.tabs[index].folder = folder }
+                    else if let title = move["title"]?.stringValue { workspace.tabs.append(.init(url: url, title: title, folder: folder)) }
+                }
+            }
+            changed(workspace)
+            let unknown = moves.compactMap { $0["url"]?.stringValue }.filter { url in !workspace.tabs.contains { $0.url == url } }
+            let folders = Set(workspace.tabs.compactMap(\.folder)).sorted()
+            return .object(["folders": .array(folders.map(JSONValue.string)),
+                            "notFound": .array(unknown.map(JSONValue.string))])
         }
         register("workspace.closeTab") { [unowned self] params, context in
             let id = try target(params, context)
@@ -728,6 +766,23 @@ extension Runtime {
                                 "size": .number(Double(values?.fileSize ?? 0)),
                                 "modified": .number((values?.contentModificationDate?.timeIntervalSince1970 ?? 0) * 1000)])
             }.sorted { ($0["directory"]?.boolValue == true ? 0 : 1, $0["name"]?.stringValue ?? "") < ($1["directory"]?.boolValue == true ? 0 : 1, $1["name"]?.stringValue ?? "") })
+        }
+        // A folder (and any missing parents) inside the workspace directory.
+        // Paths are relative to it; nothing outside it can be created, even
+        // through a symbolic link.
+        register("workspace.makeFolder") { [unowned self] params, context in
+            let workspace = try await self.workspaces.get(try target(params, context))
+            let root = URL(fileURLWithPath: workspace.directory).resolvingSymlinksInPath().standardizedFileURL
+            let folder = try Self.folderInside(root, path: try params.string("path"))
+            let existed = FileManager.default.fileExists(atPath: folder.path)
+            do { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+            catch { throw BridgeError(.badRequest, "Lima couldn't create that folder: \(error.localizedDescription)") }
+            let relative = String(folder.path.dropFirst(root.path.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            if !existed {
+                self.recordActivity(.init(kind: .agent, title: "Created folder \(relative)", detail: workspace.name, project: workspace.directory,
+                                                  metadata: ["workspace": workspace.id]))
+            }
+            return .object(["path": .string(relative), "absolutePath": .string(folder.path), "created": .bool(!existed)])
         }
         register("workspace.instruct") { [unowned self] params, context in
             guard context.origin == .browser else { throw BridgeError(.notAuthorized, "instructions come from the user") }
@@ -793,6 +848,35 @@ extension Runtime {
             if !current.tabs.contains(where: { $0.url == url }) { current.tabs.append(.init(url: url, title: url)) }
         }
         changed(updated)
+    }
+
+    /// `path` (relative, like "src/components") resolved inside `root`, or an
+    /// error if it would land outside it: absolute paths, `..`, or a symbolic
+    /// link along the way that points elsewhere.
+    static func folderInside(_ root: URL, path raw: String) throws -> URL {
+        let path = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard !path.hasPrefix("/"), !path.hasPrefix("~"), !parts.isEmpty, parts.count <= 12,
+              parts.allSatisfy({ !["", ".", ".."].contains($0) && $0.count <= 255 && !$0.contains("\0") }) else {
+            throw BridgeError(.badRequest, "Give a folder path inside the workspace, such as docs or src/components.")
+        }
+        var url = root
+        for part in parts {
+            url.appendPathComponent(part, isDirectory: true)
+            // Each level that already exists must still be inside the workspace once links are followed.
+            if FileManager.default.fileExists(atPath: url.path) {
+                let real = url.resolvingSymlinksInPath().standardizedFileURL
+                guard real.path == root.path || real.path.hasPrefix(root.path + "/") else {
+                    throw BridgeError(.notAuthorized, "That path leads outside the workspace.")
+                }
+                var directory: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: real.path, isDirectory: &directory), directory.boolValue else {
+                    throw BridgeError(.badRequest, "\(parts.prefix { $0 != part }.joined(separator: "/"))\(part) is a file, not a folder.")
+                }
+                url = real
+            }
+        }
+        return url
     }
 
     static func planFacts(url: String, paths: Set<String>, actions: Set<String>) -> [WorkspacePrompts.Fact] {

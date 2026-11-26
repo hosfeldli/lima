@@ -11,3 +11,4 @@ browser/overlay/lima/ui/icons.js
 /dist/
 __pycache__/
 gha-creds-*.json
+site/public/rich-content.js

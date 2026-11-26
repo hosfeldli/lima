@@ -384,3 +384,17 @@ func waitIdle(_ service: ConversationService, _ id: String) async throws -> Conv
     #expect(streamed == "Let me check.\n\nAll done.")
     #expect(events.last == .completed(text: "Let me check.\n\nAll done."), "the whole reply stays, not just its last block")
 }
+
+@Test func chosenEffortReachesClaudeAndCodexButNotOpenCode() {
+    var request = AgentRunRequest(provider: .claude, prompt: "hi", workingDirectory: URL(fileURLWithPath: "/tmp"), mode: .chat)
+    request.effort = "high"
+    let claude = AgentCommandLine.arguments(for: request)
+    #expect(claude.contains("--effort") && claude[claude.firstIndex(of: "--effort")! + 1] == "high")
+    request.provider = .codex
+    #expect(AgentCommandLine.arguments(for: request).contains("model_reasoning_effort=\"high\""))
+    request.provider = .opencode
+    #expect(!AgentCommandLine.arguments(for: request).joined().contains("high"))
+    request.provider = .claude
+    request.effort = "ludicrous"
+    #expect(!AgentCommandLine.arguments(for: request).contains("--effort"), "unknown levels are dropped")
+}

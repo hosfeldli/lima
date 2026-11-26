@@ -3,6 +3,7 @@ import { bar, bridge, call, el, errorText, icon, markdown, onEvent, prefs, relat
 import { resultView } from "./components.js";
 import { agentControls, PROVIDERS } from "./composer.js";
 import { companion, setCompanionState } from "./companion.js";
+import { mascotTheme, setMascotTheme, THEMES } from "./mascot.js";
 import { generationSettings } from "./studio-production.js";
 import { companionMemorySettings, locationSettings, personalMemoryForm } from "./personal-memory.js";
 
@@ -181,6 +182,11 @@ export async function renderIntegrations(app, section) {
   } }, ["Full", "Subtle", "Off"].map(label => el("option", { value: label.toLowerCase(), text: label })));
   personality.value = prefs.get("personality", "full");
   bridge.browser("agentPreferences", {}).then(data => { if (data?.personality) personality.value = data.personality; }).catch(() => {});
+  const mascotStyle = el("select", { "aria-label": "Mascot style", onchange: event => {
+    setMascotTheme(event.target.value);
+    bridge.browser("mascotThemeChanged", { value: event.target.value }).catch(() => {});
+  } }, Object.entries(THEMES).map(([value, text]) => el("option", { value, text })));
+  mascotStyle.value = mascotTheme();
   const theme = el("select", { "aria-label": "Theme", onchange: event =>
     bridge.browser("themeChanged", { value: event.target.value }).catch(() => {}) },
     [["system", "Match macOS"], ["light", "Light"], ["dark", "Dark"]].map(([value, text]) => el("option", { value, text })));
@@ -192,7 +198,8 @@ export async function renderIntegrations(app, section) {
     ["general", "General", "appearance theme dark light mode animation preferences tabs size height compact large", [
       card("Appearance", el("label", { class: "row" }, "Theme", theme),
         el("label", { class: "row" }, "Companion Animations", personality),
-        el("p", { class: "muted", text: "Off keeps the mascot still. Lima also respects macOS Reduce Motion." }),
+        el("label", { class: "row" }, "Mascot style", mascotStyle),
+        el("p", { class: "muted", text: "Each workspace gets its own mascot. Graphite keeps them in Lima's greys; Pastel gives each its own soft colour. Off keeps them still, and Lima respects macOS Reduce Motion." }),
         el("label", { class: "row appearance-checkbox" }, overlay, "Show agent click and typing markers on webpages")),
       card("Tabs", tabSizeSettings()),
     ]],

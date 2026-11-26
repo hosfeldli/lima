@@ -127,6 +127,8 @@ public struct AgentRunRequest: Sendable {
     public var provider: CLIProvider
     public var prompt: String
     public var model: String?
+    /// How hard the model thinks: low, medium or high (nil = the CLI's default).
+    public var effort: String?
     public var cliSessionID: String?
     public var workingDirectory: URL
     public var mode: AgentMode
@@ -166,6 +168,11 @@ public enum AgentProgress: String, Codable, Sendable {
 
 /// Builds argv for each CLI. Kept pure so it is unit-testable.
 public enum AgentCommandLine {
+    /// The effort levels Claude Code and Codex both accept. OpenCode has no
+    /// such setting, so it ignores the choice.
+    public static let efforts = ["low", "medium", "high"]
+    static func effort(_ value: String?) -> String? { value.flatMap { efforts.contains($0) ? $0 : nil } }
+
     public static func arguments(for request: AgentRunRequest) -> [String] {
         let model = request.model.flatMap { $0.isEmpty || $0 == "default" ? nil : $0 }
         switch request.provider {
@@ -176,6 +183,7 @@ public enum AgentCommandLine {
             case .quickAsk:
                 args += ["--tools", "", "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}", "--no-session-persistence", "--effort", "low"]
             case .chat:
+                if let effort = AgentCommandLine.effort(request.effort) { args += ["--effort", effort] }
                 if let session = request.cliSessionID { args += ["--resume", session] }
             }
             return args + request.extraArguments
@@ -185,6 +193,9 @@ public enum AgentCommandLine {
                 args += ["-c", "sandbox_mode=\"read-only\""]
             }
             if let model { args += ["-m", model] }
+            if request.mode == .chat, let effort = AgentCommandLine.effort(request.effort) {
+                args += ["-c", "model_reasoning_effort=\"\(effort)\""]
+            }
             if request.mode == .quickAsk {
                 args += ["-c", "model_reasoning_effort=\"low\"", "-c", "mcp_servers={}", "--disable", "shell_tool", "--ephemeral"]
             }

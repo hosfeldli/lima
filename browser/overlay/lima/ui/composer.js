@@ -37,14 +37,18 @@ export async function preferredAgent() {
   const [stored, connected] = await Promise.all([storedPreferences(), call("agents.configured").catch(() => [])]);
   const provider = connected.includes(stored.provider) ? stored.provider : connected[0];
   if (!provider) throw new Error("Connect an AI provider in Lima Settings.");
-  return { provider, model: stored.models[provider] ?? "default" };
+  return { provider, model: stored.models[provider] ?? "default", effort: prefs.get("effort", "default") };
 }
 
 export function agentControls({ onChange, onError } = {}) {
   const provider = el("select", { "aria-label": "Provider" }, el("option", { text: "Checking providers…" }));
   const model = el("select", { "aria-label": "Model" });
+  // How hard the model thinks on each turn. OpenCode has no such setting.
+  const EFFORTS = [["default", "Effort: default"], ["low", "Effort: low"], ["medium", "Effort: medium"], ["high", "Effort: high"]];
+  const effort = el("select", { "aria-label": "Effort", title: "How hard the model thinks: higher is slower and more thorough" },
+    EFFORTS.map(([value, text]) => el("option", { value, text })));
   let generation = 0;
-  let selected = { provider: "", model: "default" };
+  let selected = { provider: "", model: "default", effort: prefs.get("effort", "default") };
   let memory = {};
   let connected = [];
   const hydrate = () => Promise.all([storedPreferences(), call("agents.configured").catch(() => [])]).then(([store, available]) => {
@@ -60,7 +64,10 @@ export function agentControls({ onChange, onError } = {}) {
     await hydration;
     if (turn !== generation) return false;
     const choice = connected.includes(next.provider) ? next.provider : fallback ? connected[0] : "";
-    selected = { provider: choice ?? "", model: choice === next.provider ? next.model ?? "default" : memory[choice] ?? "default" };
+    selected = { provider: choice ?? "", model: choice === next.provider ? next.model ?? "default" : memory[choice] ?? "default",
+      effort: next.effort ?? (Object.hasOwn(next, "messages") ? "default" : selected.effort ?? "default") };
+    effort.value = selected.effort;
+    effort.hidden = selected.provider === "opencode";
     provider.replaceChildren(
       ...(!choice ? [el("option", { value: "", disabled: true, text: connected.length ? "Choose a provider" : "No connected providers" })] : []),
       ...connected.map(value => el("option", { value, text: PROVIDERS[value] })));
@@ -101,6 +108,11 @@ export function agentControls({ onChange, onError } = {}) {
     selected.model = model.value;
     commit();
   });
+  effort.addEventListener("change", () => {
+    selected.effort = effort.value;
+    prefs.set("effort", effort.value);
+    commit();
+  });
   const ready = hydration.then(store => {
     if (generation) return;
     return show({ provider: store.provider, model: memory[store.provider] ?? "default" });
@@ -110,7 +122,7 @@ export function agentControls({ onChange, onError } = {}) {
     const store = await hydration;
     return show(next ?? { provider: selected.provider || store.provider, model: memory[selected.provider || store.provider] }, fallback);
   }
-  return { provider, model, show, settings, ready, refresh, settled: () => changes };
+  return { provider, model, effort, show, settings, ready, refresh, settled: () => changes };
 }
 
 const COMMANDS = [

@@ -363,7 +363,9 @@ function calculator(spec, el) {
     ...(input.min !== undefined ? { min: String(input.min) } : {}), ...(input.max !== undefined ? { max: String(input.max) } : {}),
     "aria-label": input.label, oninput: () => compute() }));
   function compute() {
-    const scope = {};
+    // Values defined elsewhere in the note are usable here too.
+    const host = node.closest(".md, .page-body");
+    const scope = host ? Object.fromEntries(Object.entries(noteScope(host)).filter(([key]) => !calc.inputs.some(input => input.id === key))) : {};
     calc.inputs.forEach((input, index) => {
       const value = Number(boxes[index].value);
       scope[input.id] = Number.isFinite(value) && boxes[index].value !== "" ? value : input.value;
@@ -380,6 +382,12 @@ function calculator(spec, el) {
         outputs[index].title = `Can't read the formula “${row.formula}”`;
       }
     });
+    const figure = node.closest("figure[data-artifact]");
+    if (figure) {
+      figure.limaValues = Object.fromEntries([...calc.inputs.map(input => input.id), ...calc.rows.map(row => row.id).filter(Boolean)]
+        .filter(key => Object.hasOwn(scope, key)).map(key => [key, scope[key]]));
+    }
+    node.dispatchEvent(new CustomEvent("lima-recalc", { bubbles: true }));
   }
   const node = el("div", { class: "calculator" },
     el("div", { class: "calc-inputs" }, calc.inputs.map((input, index) =>
@@ -387,7 +395,9 @@ function calculator(spec, el) {
     el("table", { class: "calc-rows" }, el("tbody", {}, calc.rows.map((row, index) =>
       el("tr", {}, el("th", { scope: "row", text: row.label }), el("td", {}, outputs[index], row.unit ? el("span", { class: "calc-unit", text: ` ${row.unit}` }) : null))))),
     calc.note ? el("p", { class: "calc-note", text: calc.note }) : null);
-  compute();
+  node.limaCompute = compute;
+  // Once in a note, read its values (they may be defined below this block).
+  queueMicrotask(compute);
   return node;
 }
 
@@ -402,3 +412,85 @@ export const CALCULATOR_TEMPLATE = JSON.stringify({
   ],
   note: "Written for 4 servings.",
 }, null, 2);
+
+/* Note values: light grey blocks that name a number or compute one, so a
+ * note works like a small low-code flow. In Markdown:
+ *   {{budget := 120}}   defines "budget" (an adjustable number)
+ *   {{budget / 4}}      shows a live result
+ * Formulas can use defined values and the input and row ids of calculators
+ * in the same note; everything recomputes when any of them changes. */
+const DEFINE = /^\s*([A-Za-z_][A-Za-z0-9_]{0,39})\s*:=\s*(-?\d+(?:\.\d+)?)\s*$/;
+
+/** The grey block for one {{…}} source. */
+export function valueChip(source, el) {
+  const text = String(source).slice(0, 200);
+  const define = DEFINE.exec(text);
+  if (define) {
+    const box = el("input", { type: "number", value: define[2], step: "any", "aria-label": define[1], class: "note-value-input" });
+    const chip = el("span", { class: "note-value", contenteditable: "false", "data-value-source": text, "data-define": define[1] },
+      el("span", { class: "note-value-name", text: define[1] }), box);
+    chip.limaLive = true;
+    box.addEventListener("input", () => {
+      if (box.value === "" || !Number.isFinite(Number(box.value))) return;
+      chip.dataset.valueSource = `${define[1]} := ${Number(box.value)}`;
+      chip.dispatchEvent(new Event("input", { bubbles: true }));
+      chip.dispatchEvent(new CustomEvent("lima-recalc", { bubbles: true }));
+    });
+    // Typing in the box mustn't move the note's caret or start a new line.
+    box.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); box.blur(); } event.stopPropagation(); });
+    return chip;
+  }
+  const chip = el("span", { class: "note-value result", contenteditable: "false", "data-value-source": text, title: text.trim() },
+    el("span", { class: "note-value-out", text: "…" }));
+  chip.limaLive = true;
+  return chip;
+}
+
+/** Every named number in `root`: calculator boxes and rows, and defined values. */
+export function noteScope(root) {
+  const scope = {};
+  for (const chip of root.querySelectorAll(".note-value[data-define]")) {
+    const value = Number(chip.querySelector("input")?.value);
+    if (Number.isFinite(value)) scope[chip.dataset.define] = value;
+  }
+  for (const figure of root.querySelectorAll("figure[data-artifact='calculator']")) Object.assign(scope, figure.limaValues ?? {});
+  return scope;
+}
+
+/** Recomputes every result block in `root`; a block naming another's result works too. */
+export function evaluateValues(root) {
+  const scope = noteScope(root);
+  const results = [...root.querySelectorAll(".note-value.result")];
+  for (const chip of results) {
+    const out = chip.querySelector(".note-value-out");
+    const expression = chip.dataset.valueSource;
+    try {
+      const value = evaluateFormula(expression, scope);
+      out.textContent = formatNumber(value, 2);
+      chip.removeAttribute("data-error");
+    } catch {
+      out.textContent = "?";
+      chip.dataset.error = "true";
+    }
+  }
+}
+
+/** Keeps `root`'s results live as values, calculators and blocks change. */
+export function wireValues(root) {
+  if (root.limaValuesWired) { root.limaRecalc?.(); return; }
+  root.limaValuesWired = true;
+  // One pass: calculators first (they may read defined values), then results.
+  // Calculators announce their own changes; a pass already running ignores them.
+  const run = () => {
+    if (root.limaRecalculating) return;
+    root.limaRecalculating = true;
+    try {
+      for (const calculator of root.querySelectorAll(".calculator")) calculator.limaCompute?.();
+      evaluateValues(root);
+    } finally { root.limaRecalculating = false; }
+  };
+  root.limaRecalc = run;
+  root.addEventListener("lima-recalc", run);
+  root.addEventListener("input", event => { if (event.target.closest?.(".calculator, .note-value")) queueMicrotask(run); });
+  run();
+}

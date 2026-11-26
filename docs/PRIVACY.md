@@ -14,6 +14,7 @@ Lima is built so your browsing, notes and AI work stay on your Mac.
 - **Your search engine** receives what you type into Lima Search, for suggestions, outside private windows (Settings turns suggestions off).
 - **Google**, only if you connect Gmail and Calendar: read-only access you grant. Counts, upcoming meetings and mail previews stay on your Mac.
 - **Apple**, only if you use them: audio for Apple Speech dictation (the default dictation runs on your Mac), and Location Services when an agent's location request is approved (it gets an estimate rounded to about 1.5 km).
+- **Shared note links** carry the note itself after the `#` of a lima.liamhosfeld.com/n link. Browsers don't send that part to the server, so nothing is uploaded; anyone with the link can read the note (images are left out).
 - **Update checks** fetch a signed feed and the update from Lima's update storage. They send no identifiers.
 - **Firefox's safety services** (such as Safe Browsing) work as in Firefox. Firefox telemetry is turned off.
 

@@ -1,4 +1,5 @@
 import { bridge, el, icon, onEvent, prefs } from "./lib.js";
+import { bringToLife, react, setMascotTheme } from "./mascot.js";
 
 const pauseCompanions = () => document.documentElement.toggleAttribute("lima-hidden", document.hidden);
 document.addEventListener("visibilitychange", pauseCompanions);
@@ -51,6 +52,7 @@ function applyPersonality(value) {
 }
 bridge?.browser("agentPreferences", {}).then(data => {
   if (data?.personality) applyPersonality(data.personality);
+  if (data?.mascotTheme) setMascotTheme(data.mascotTheme);
   applyTheme(data?.theme);
 }).catch(() => {});
 onEvent(({ event, data }) => {
@@ -58,6 +60,7 @@ onEvent(({ event, data }) => {
   if (event === "ui.theme") applyTheme(data);
   if (event === "ui.visualActivity") { visualGeneration++; receiveVisualState(data); }
   if (event === "ui.companionVisible") document.documentElement.toggleAttribute("lima-panel-hidden", !data);
+  if (event === "ui.mascotTheme") setMascotTheme(data);
 });
 
 const visibleCompanions = new IntersectionObserver(entries => {
@@ -70,6 +73,7 @@ window.addEventListener("pagehide", () => visibleCompanions.disconnect(), { once
 const cues = new WeakMap();
 
 export function cueCompanion(element, gesture) {
+  if (["listen", "receive"].includes(gesture)) react(element, gesture);
   if (element.hasAttribute("data-gesture")) return;
   element.dataset.gesture = gesture;
   clearTimeout(cues.get(element));
@@ -95,24 +99,63 @@ function svgElement(name, attributes, ...children) {
 
 function characterArt(size) {
   const path = (d, attributes = {}) => svgElement("path", { d, ...attributes });
-  const eyes = svgElement("g", { class: "companion-eyes", fill: "var(--ink)" },
-    svgElement("ellipse", { cx: 41, cy: 53, rx: 2.3, ry: 3.3 }),
-    svgElement("ellipse", { cx: 60, cy: 53, rx: 2.3, ry: 3.3 }));
   const outline = {
     fill: "none", stroke: "var(--ink)", "stroke-width": 2.7, "stroke-linecap": "round", "stroke-linejoin": "round",
   };
+  const FILL = "var(--mascot-fill, var(--paper))";
+  const TONE = "var(--mascot-tone, var(--panel-2))";
+  const ACCENT = "var(--mascot-accent, var(--ink-2))";
+  // Eyes: dots, happy arcs, sleepy lines or sparkly; the look picks one (CSS).
+  const eyes = svgElement("g", { class: "companion-eyes", fill: "var(--ink)" },
+    svgElement("g", { class: "eyes-dots" },
+      svgElement("ellipse", { cx: 41, cy: 53, rx: 2.3, ry: 3.3 }), svgElement("ellipse", { cx: 60, cy: 53, rx: 2.3, ry: 3.3 })),
+    svgElement("g", { class: "eyes-happy", ...outline, "stroke-width": 2.2 }, path("M38 54c1-3 5-3 6 0M57 54c1-3 5-3 6 0")),
+    svgElement("g", { class: "eyes-sleepy", ...outline, "stroke-width": 2.2 }, path("M38 53c1 2 5 2 6 0M57 53c1 2 5 2 6 0")),
+    svgElement("g", { class: "eyes-sparkle" },
+      svgElement("ellipse", { cx: 41, cy: 53, rx: 2.8, ry: 3.6 }), svgElement("ellipse", { cx: 60, cy: 53, rx: 2.8, ry: 3.6 }),
+      svgElement("circle", { cx: 42, cy: 51.6, r: .9, fill: "var(--paper)" }), svgElement("circle", { cx: 61, cy: 51.6, r: .9, fill: "var(--paper)" })));
+  // Ears sit behind the head, so each shape shows only above it.
+  const ears = svgElement("g", { class: "companion-ears" },
+    svgElement("g", { class: "ears-pointy" },
+      path("M35 37C35 28 41 21 48 19L58 32Z", { ...outline, fill: FILL }), path("M39 33c1-5 4-9 8-11l6 9Z", { fill: TONE }),
+      path("M64 34L74 28C73 33 73 37 76 41Z", { ...outline, fill: FILL })),
+    svgElement("g", { class: "ears-round" },
+      svgElement("circle", { cx: 43, cy: 28, r: 8.5, ...outline, fill: FILL }), svgElement("circle", { cx: 43, cy: 28, r: 4.2, fill: TONE }),
+      svgElement("circle", { cx: 69, cy: 30, r: 6.5, ...outline, fill: FILL })),
+    svgElement("g", { class: "ears-floppy" },
+      path("M34 38c-9 1-14 10-11 18 4-2 9-7 12-11Z", { ...outline, fill: TONE }),
+      path("M73 36c9 0 14 8 12 16-4-2-9-6-11-9Z", { ...outline, fill: TONE })));
+  // Markings in the tone colour; one (or none) shows.
+  const markings = svgElement("g", { class: "companion-markings", fill: TONE },
+    svgElement("g", { class: "marking-spots" }, svgElement("circle", { cx: 30, cy: 64, r: 3 }), svgElement("circle", { cx: 70, cy: 60, r: 2.4 }),
+      svgElement("circle", { cx: 63, cy: 71, r: 2 })),
+    svgElement("g", { class: "marking-patch" }, svgElement("ellipse", { cx: 61, cy: 52, rx: 6.5, ry: 5.5 })),
+    svgElement("g", { class: "marking-stripes", ...outline, stroke: TONE, "stroke-width": 2.4 }, path("M48 31c1 3 1 5 0 7M55 30c1 3 1 5 0 7M62 32c1 3 1 4 0 6")));
+  // A personal accessory, on top of any task costume.
+  const extras = svgElement("g", { class: "companion-extras" },
+    svgElement("g", { class: "extra-scarf" }, path("M26 67c9 6 40 7 50 0l1 6c-11 7-42 7-52 0Z", { ...outline, "stroke-width": 2, fill: ACCENT }),
+      path("M66 72l4 10 6-3-3-9", { ...outline, "stroke-width": 2, fill: ACCENT })),
+    svgElement("g", { class: "extra-bow" }, path("M71 36l-7-5v10Zm0 0 7-5v10Z", { ...outline, "stroke-width": 1.8, fill: ACCENT })),
+    svgElement("g", { class: "extra-glasses", ...outline, "stroke-width": 1.8 },
+      svgElement("circle", { cx: 41, cy: 53, r: 5.5 }), svgElement("circle", { cx: 60, cy: 53, r: 5.5 }), path("M46.5 53h8")),
+    svgElement("g", { class: "extra-headphones", ...outline, "stroke-width": 2.2 },
+      path("M26 52c0-24 50-24 50 0"), path("M22 49h7v11h-7Zm51 0h7v11h-7Z", { fill: ACCENT })),
+    svgElement("g", { class: "extra-flower" },
+      ...[[0, -3.5], [3.3, -1.1], [2, 2.9], [-2, 2.9], [-3.3, -1.1]].map(([x, y]) => svgElement("circle", { cx: 33 + x, cy: 33 + y, r: 2.4, fill: ACCENT })),
+      svgElement("circle", { cx: 33, cy: 33, r: 1.6, fill: "var(--paper)", stroke: "var(--ink)", "stroke-width": 1 })));
   const isWorkspace = size === "workspace-avatar";
   const isChat = size === "chat-avatar";
   const body = svgElement("g", { class: "companion-body" },
-    path("M24 57c0-8 4-16 11-21 0-8 6-15 13-17l9 12c3 0 6 1 9 2l8-5c-1 5-1 9 1 12 7 7 10 17 8 26-3 10-13 14-32 14S18 75 18 65c0-3 2-6 6-8Z", { ...outline, fill: "var(--paper)" }),
-    path("M37 35c1-7 5-12 10-15l10 13c-8 2-14 3-20 2Z", { fill: "var(--panel-2)" }),
-    path("M37 36c6 2 12 1 20-3", { ...outline, "stroke-width": 1.7 }),
-    path("M21 65c3 8 15 12 29 12 15 0 26-4 30-11-1 9-15 12-29 12S23 75 21 65Z", { fill: "var(--panel-2)" }),
+    ears,
+    path("M24 57c0-8 4-16 11-21C40 30 48 28 55 28S70 32 76 41c6 7 9 16 7 25-3 10-13 14-32 14S18 75 18 65c0-3 2-6 6-8Z", { ...outline, fill: FILL }),
+    path("M21 65c3 8 15 12 29 12 15 0 26-4 30-11-1 9-15 12-29 12S23 75 21 65Z", { fill: TONE }),
+    markings,
     path("M45 61c3 4 7 4 10 0", { class: "companion-smile", ...outline, "stroke-width": 2.1 }),
     path("M48 61c0-3 4-3 4 0 0 2-4 2-4 0Z", { class: "companion-speaking", ...outline, "stroke-width": 1.6 }),
     path("M30 56l-2 3m45-3-2 3", { ...outline, opacity: .33, "stroke-width": 1.4 }),
     eyes,
     path("M24 59c-4-1-8 1-10 4m64-4c4 0 7 1 10 4", { class: "companion-hands", ...outline }),
+    extras,
     path("M31 40c1-14 9-21 21-21 13 0 22 9 23 21M27 41h52M49 22v10", { class: "mascot-accent builder", ...outline }),
     path("M62 49a9 9 0 1 0 18 0 9 9 0 1 0-18 0Zm15 7 10 11", { class: "mascot-accent explorer", ...outline }),
     path("M32 27c4-10 20-17 32-11 7 4 10 10 7 15-5 5-16 2-23 1-9-2-17 1-16-5Zm21-13 5-5", { class: "mascot-accent artist", ...outline, fill: "var(--panel-2)" }),
@@ -137,15 +180,29 @@ function characterArt(size) {
       path("M16 37l-3-4m5-2v-4"), path("M83 27l4-4m-1 8 6-1"), path("M86 69l5 2")));
 }
 
-export function companion(size = "status") {
+/** A companion. `seed` (a workspace or chat id) gives it its own generated
+ * look; without one it's Lima's classic companion. */
+export function companion(size = "status", seed = null) {
   const character = el("span", { class: "companion " + size, "aria-hidden": "true", "data-personality": personality },
     characterArt(size), el("span", { class: "companion-prop" }));
   visibleCompanions.observe(character);
+  bringToLife(character, seed);
   return character;
 }
 
+/** Gives an existing companion the look for `seed` (once its id is known). */
+export function setCompanionSeed(element, seed) {
+  if (!element || element.limaSeed === (seed ?? "")) return;
+  bringToLife(element, seed);
+}
+
+// State changes that get a reaction, drawn from a varied pool (mascot.js).
+const REACTS_TO = { complete: "complete", failed: "failed", blocked: "blocked", delegate: "delegate", waiting: "blocked" };
+
 export function setCompanionState(element, state) {
   if (element.dataset.state === state) return;
+  const previous = element.dataset.state;
   element.dataset.state = state;
   element.lastChild.replaceChildren(...(ACCESSORIES[state] ? [icon(ACCESSORIES[state])] : []));
+  if (previous !== undefined && REACTS_TO[state]) react(element, REACTS_TO[state]);
 }

@@ -5,7 +5,7 @@ import { activityStatus, bridge, call, el, errorText, filesPrivacyButton, icon, 
 import { failureActivity, isFolderPermissionError, stepParts, toolActivity } from "./tool-activity.sys.mjs";
 
 import { agentControls, attachmentTray, composerMenu, preferredAgent, QUEUE_HINT, queuedActions, restoreDraft, sentAttachments, sendMode } from "./composer.js";
-import { companion, MASCOTS, setCompanionState, watchVisualActivity } from "./companion.js";
+import { companion, MASCOTS, setCompanionState, watchVisualActivity, setCompanionSeed } from "./companion.js";
 import { workspacePrompts } from "./workspace-prompts.js";
 const MASCOT = "resource://lima-ui/marks/companion.svg";
 
@@ -285,7 +285,7 @@ async function initializeChat(app, chatId, compact, signal) {
       messages, progress, agents, steps, files,
       el("div", { class: "composer" }, prompts.node, activity.node, recovery,
         el("div", { class: "composer-box" }, tray.node, input, completionMenu.node,
-          el("div", { class: "composer-row" }, controls.provider, controls.model, el("span", { class: "spacer" }), stopButton, nowButton, sendButton)), queueHint,
+          el("div", { class: "composer-row" }, controls.provider, controls.model, controls.effort, el("span", { class: "spacer" }), stopButton, nowButton, sendButton)), queueHint,
         el("p", { class: "ai-disclaimer", text: "AI can make mistakes. Check important details." }))));
   app.replaceChildren(el("div", { class: compact ? "chat-page assistant-chat" : "chat-page" },
     el("header", { class: "chat-head" }, character, title, subtitle, el("span", { class: "spacer" }), mascot),
@@ -568,7 +568,7 @@ async function initializeChat(app, chatId, compact, signal) {
     agentsTab.replaceChildren(...counted("Agents", helpers.length));
     agents.replaceChildren(...helpers.map(h => {
       const summary = summaries.get(h.conversationID);
-      const avatar = companion("agent-avatar");
+      const avatar = companion("agent-avatar", h.id);
       avatar.dataset.variant = summary?.mascot ?? "classic";
       return el("li", { class: "clickable", "data-agent-chat": h.conversationID,
         onclick: () => bridge.openTab(`about:lima?chat=${encodeURIComponent(h.conversationID)}`) },
@@ -713,6 +713,8 @@ async function initializeChat(app, chatId, compact, signal) {
         conversation ??= opened;
       }
       if (conversation.workspaceID) workspace = await call("workspace.get", { id: conversation.workspaceID });
+      // The workspace's own mascot (or this chat's, outside a workspace).
+      setCompanionSeed(character, conversation.workspaceID ?? conversation.id);
     } catch (error) {
       reportError(error);
       return;

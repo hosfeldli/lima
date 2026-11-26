@@ -41,8 +41,29 @@ struct UpdateConfiguration: Sendable {
               let identifier = plist["CFBundleIdentifier"] as? String,
               let build = (plist["CFBundleVersion"] as? String).flatMap(Int.init)
         else { return nil }
-        return UpdateConfiguration(feedURL: feed, publicKey: key, app: contents.deletingLastPathComponent(),
+        return UpdateConfiguration(feedURL: feed, publicKey: key, app: originalApp(contents.deletingLastPathComponent()),
                                    bundleIdentifier: identifier, build: build)
+    }
+
+    /// The real app behind a translocated copy. macOS runs a quarantined app
+    /// from a read-only mount under AppTranslocation (even in /Applications,
+    /// when Finder didn't move it); that mount's source is the installed app,
+    /// which is where an update belongs. Anything else is returned as is.
+    static func originalApp(_ app: URL) -> URL {
+        guard app.path.contains("/AppTranslocation/") else { return app }
+        var info = statfs()
+        guard statfs(app.path, &info) == 0 else { return app }
+        let source = withUnsafeBytes(of: &info.f_mntfromname) { raw in
+            String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+        }
+        guard source.hasPrefix("/") else { return app }
+        let mounted = URL(fileURLWithPath: source)
+        for candidate in [mounted, mounted.appendingPathComponent(app.lastPathComponent)]
+            where candidate.pathExtension == "app" && !candidate.path.contains("/AppTranslocation/")
+                && FileManager.default.fileExists(atPath: candidate.appendingPathComponent("Contents/Info.plist").path) {
+            return candidate
+        }
+        return app
     }
 }
 
@@ -333,6 +354,7 @@ final class UpdateService: @unchecked Sendable {
 
     private func launchApplier(source: URL, configuration: UpdateConfiguration, browserPID: pid_t, profile: URL, keepBackup: Bool, relaunch: Bool = true) throws {
         let parent = configuration.app.deletingLastPathComponent()
+        // Still translocated only if the installed app couldn't be found behind the copy.
         if configuration.app.path.contains("/AppTranslocation/") ||
             (try? parent.resourceValues(forKeys: [.volumeIsReadOnlyKey]).volumeIsReadOnly) == true {
             throw BridgeError(.badRequest, "Move Lima.app to Applications in Finder and reopen it there before installing updates.")

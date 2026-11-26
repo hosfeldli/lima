@@ -208,6 +208,13 @@ export class LimaParent extends JSWindowActorParent {
         }
         return null;
       }
+      case "mascotThemeChanged": {
+        if (["graphite", "pastel", "outline"].includes(payload?.value)) {
+          Services.prefs.setStringPref("lima.mascotTheme", payload.value);
+          broadcastToLimaPages("ui.mascotTheme", payload.value);
+        }
+        return null;
+      }
       // An agent step's image, full size in Glance over the current tab.
       case "openGlance": {
         const url = String(payload?.url ?? "");
@@ -258,6 +265,7 @@ export class LimaParent extends JSWindowActorParent {
           provider: Services.prefs.getStringPref("lima.agent.provider", "claude"),
           models: Object.fromEntries(providers.map(provider => [provider, Services.prefs.getStringPref("lima.agent.model." + provider, "default")])),
           personality: Services.prefs.getStringPref("lima.personality", "full"),
+          mascotTheme: Services.prefs.getStringPref("lima.mascotTheme", "graphite"),
           theme: lazy.LimaAppearance.theme(),
           themeSetting: Services.prefs.getStringPref("lima.theme", "system"),
           browserActionOverlay: Services.prefs.getBoolPref("lima.browser.actionOverlay", false),

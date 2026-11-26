@@ -188,8 +188,12 @@ extension Runtime {
         }
         register("chat.create") { [unowned self] params, _ in
             let provider = CLIProvider(rawValue: params.optionalString("provider") ?? "claude") ?? .claude
-            return try JSONValue.from(try await self.conversations.create(provider: provider, model: params.optionalString("model"), workingDirectory: params.optionalString("cwd"),
-                                                                          companion: params?["companion"]?.boolValue == true))
+            var conversation = try await self.conversations.create(provider: provider, model: params.optionalString("model"), workingDirectory: params.optionalString("cwd"),
+                                                                   companion: params?["companion"]?.boolValue == true)
+            if let effort = params.optionalString("effort"), effort != "default" {
+                conversation = try await self.conversations.setEffort(conversation.id, effort: effort)
+            }
+            return try JSONValue.from(conversation)
         }
         register("chat.configure") { [unowned self] params, _ in
             let provider = CLIProvider(rawValue: try params.string("provider")) ?? .claude
@@ -198,7 +202,12 @@ extension Runtime {
                try await self.workspaces.get(workspaceID).browserTestURL != nil, provider != .claude {
                 throw BridgeError(.notAuthorized, "Browser-only helpers use Claude with built-in tools disabled.")
             }
-            return try JSONValue.from(try await self.conversations.configure(id, provider: provider, model: params.optionalString("model")))
+            var conversation = try await self.conversations.configure(id, provider: provider, model: params.optionalString("model"))
+            // "effort": low | medium | high, or "default" to use the CLI's own.
+            if let effort = params.optionalString("effort") {
+                conversation = try await self.conversations.setEffort(id, effort: effort == "default" ? nil : effort)
+            }
+            return try JSONValue.from(conversation)
         }
         register("chat.send") { [unowned self] params, context in
             let id = try params.string("id")

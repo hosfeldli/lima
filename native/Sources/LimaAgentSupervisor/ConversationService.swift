@@ -55,6 +55,8 @@ public struct Conversation: Codable, Equatable, Sendable {
     /// Set for a workspace's agent conversation.
     public var workspaceID: String?
     public var mascot: ChatMascot? = nil
+    /// Reasoning effort for this chat's turns (low, medium, high; nil = CLI default).
+    public var effort: String? = nil
     /// A Companion request thread: lives in the Companion window only.
     public var companion: Bool? = nil
     /// Orchestrator tasks this Companion thread handed off.
@@ -219,6 +221,15 @@ public actor ConversationService {
     /// Switches the provider or model, effective immediately: a reply that is
     /// still streaming restarts on the new choice (with the transcript as
     /// context) and says so; otherwise the next turn uses it.
+    /// Changes how hard the model thinks from the next turn on; the CLI
+    /// session carries on (effort is a per-run flag).
+    public func setEffort(_ id: String, effort: String?) async throws -> Conversation {
+        var conversation = try get(id)
+        conversation.effort = effort.flatMap { AgentCommandLine.efforts.contains($0) ? $0 : nil }
+        try await save(conversation)
+        return conversation
+    }
+
     public func configure(_ id: String, provider: CLIProvider, model: String?) async throws -> Conversation {
         var conversation = try get(id)
         let changed = conversation.provider != provider || conversation.model != model
@@ -491,6 +502,7 @@ public actor ConversationService {
             cliSessionID: conversation.provider == .opencode ? nil : conversation.cliSessionID,
             workingDirectory: URL(fileURLWithPath: conversation.workingDirectory), mode: .chat
         )
+        request.effort = conversation.effort
         if let configurator {
             let extras = await configurator(conversation)
             request.extraArguments = extras.arguments

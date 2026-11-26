@@ -60,7 +60,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
       el("button", { class: "ghost icon-only", title: "Close Companion", "aria-label": "Close Companion", onclick: close }, icon("close")));
   listView.append(
     el("div", { class: "handoff-composer composer-box" }, input,
-      el("div", { class: "composer-row handoff-controls" }, agent.provider, agent.model,
+      el("div", { class: "composer-row handoff-controls" }, agent.provider, agent.model, agent.effort,
         el("span", { class: "spacer" }), send)),
     el("p", { class: "ai-disclaimer", text: "AI can make mistakes. Check important details." }),
     status, overview, prompts.node, scheduleStrip, recent, requestList, home ? null : providerHelp);
@@ -678,7 +678,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     });
     if (!thread.conversation.local && thread.conversation.provider) controls.show(thread.conversation, false);
     const form = el("form", { class: "companion-thread-composer composer-box", onsubmit: event => { event.preventDefault(); followUp(thread, field); } },
-      tray.node, field, el("div", { class: "composer-row" }, controls.provider, controls.model, el("span", { class: "spacer" }), stop, now, reply), hint,
+      tray.node, field, el("div", { class: "composer-row" }, controls.provider, controls.model, controls.effort, el("span", { class: "spacer" }), stop, now, reply), hint,
       el("p", { class: "ai-disclaimer", text: "AI can make mistakes. Check important details." }));
     field.addEventListener("keydown", event => {
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); followUp(thread, field, sendMode(event)); }

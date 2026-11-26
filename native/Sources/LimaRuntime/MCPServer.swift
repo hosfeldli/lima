@@ -41,6 +41,16 @@ public enum MCPServer {
             let edits: JSONValue = .array([.object(["setMarkdown": .object(["_0": .string(existing.isEmpty ? addition : existing + "\n\n" + addition)])])])
             return try client.call("notes.apply", params: .object(["id": id, "edits": edits, "baseRevision": note["revision"] ?? .null, "author": .string("agent:mcp")]))
         },
+        Tool(name: "notes_update", description: """
+            Replace a note's whole Markdown as one undoable agent edit (the user can undo it in the note). Read it with notes_get first \
+            and keep what you aren't changing. Supports calculator blocks and value blocks ({{name := 4}}, {{name * 2}}). Requires notes:write.
+            """,
+             properties: ["id": ["type": "string"], "markdown": ["type": "string"]], required: ["id", "markdown"]) { args, client in
+            let id = args?["id"] ?? .null
+            let note = try client.call("notes.get", params: .object(["id": id]))
+            let edits: JSONValue = .array([.object(["setMarkdown": .object(["_0": args?["markdown"] ?? .string("")])])])
+            return try client.call("notes.apply", params: .object(["id": id, "edits": edits, "baseRevision": note["revision"] ?? .null, "author": .string("agent:mcp")]))
+        },
         Tool(name: "notes_folders", description: "Every note grouped by folder path (Notes, Notes/Recipes…), including Notes/Archive.",
              properties: [:], required: []) { _, client in
             try client.call("notes.folders")
@@ -356,9 +366,23 @@ extension MCPServer {
              properties: ["name": ["type": "string"]], required: ["name"]) { args, client in
             try client.call("workspace.rename", params: .object(["name": args?["name"] ?? .null]))
         },
-        Tool(name: "workspace_open_tab", description: "Open a web page as a tab inside this workspace's folder in Lima (the user sees it appear).",
-             properties: ["url": ["type": "string"], "title": ["type": "string"]], required: ["url"]) { args, client in
-            try client.call("workspace.openTab", params: .object(["url": args?["url"] ?? .null, "title": args?["title"] ?? .null]))
+        Tool(name: "workspace_open_tab", description: "Open a web page as a tab inside this workspace's folder in Lima (the user sees it appear). folder files it in a sub-folder of the workspace's Tabs folder, e.g. \"Docs\" or \"Research/API\".",
+             properties: ["url": ["type": "string"], "title": ["type": "string"], "folder": ["type": "string"]], required: ["url"]) { args, client in
+            var params: [String: JSONValue] = ["url": args?["url"] ?? .null, "title": args?["title"] ?? .null]
+            if let folder = args?["folder"] { params["folder"] = folder }
+            return try client.call("workspace.openTab", params: .object(params))
+        },
+        Tool(name: "workspace_organize_tabs", description: """
+            Group this workspace's tabs into folders in the sidebar (inside its Tabs folder), up to three levels deep. \
+            Pass each tab's url and a folder path such as "Docs" or "Research/API"; an empty folder moves it back to Tabs. \
+            Include title for a tab the user opened that isn't in workspace_list_tabs yet. Keep related pages together whenever a workspace has more than a few tabs.
+            """,
+             properties: [:], required: ["tabs"],
+             structuredProperties: ["tabs": .object(["type": .string("array"), "minItems": .number(1), "maxItems": .number(60),
+                "items": .object(["type": .string("object"), "required": .array([.string("url"), .string("folder")]),
+                    "properties": .object(["url": .object(["type": .string("string")]), "folder": .object(["type": .string("string")]),
+                                           "title": .object(["type": .string("string")])])])])]) { args, client in
+            try client.call("workspace.organizeTabs", params: .object(["tabs": args?["tabs"] ?? .null]))
         },
         Tool(name: "workspace_close_tab", description: "Remove a tab you opened from this workspace.", properties: ["url": ["type": "string"]], required: ["url"]) { args, client in
             try client.call("workspace.closeTab", params: .object(["url": args?["url"] ?? .null]))
@@ -369,6 +393,13 @@ extension MCPServer {
         },
         Tool(name: "workspace_files", description: "List files in this workspace's directory (or a sub-folder via path).", properties: ["path": ["type": "string"]], required: []) { args, client in
             try client.call("workspace.files", params: .object(["path": args?["path"] ?? .string("")]))
+        },
+        Tool(name: "workspace_make_folder", description: """
+            Create a folder (and any missing parent folders) inside this workspace's directory, e.g. "docs" or "src/components". \
+            Use it to organize files you create; it can't reach outside the workspace.
+            """,
+             properties: ["path": ["type": "string", "description": "Relative to the workspace directory"]], required: ["path"]) { args, client in
+            try client.call("workspace.makeFolder", params: .object(["path": args?["path"] ?? .null]))
         },
         Tool(name: "workspace_list_tabs", description: "The web pages currently in this workspace's Tabs folder in Lima, including ones the user added.", properties: [:], required: []) { _, client in
             try client.call("workspace.listTabs")

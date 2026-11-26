@@ -1,6 +1,6 @@
 /* Notes: index (organized by the bookmark tree), classic editor and canvas. */
 import { bar, bridge, call, debounce, el, errorText, hydrateEmbeds, icon, installEmbedActions, markdown, noteEmbed, onEvent, relativeTime, setPage } from "./lib.js";
-import { artifactFromBlock, CALCULATOR_TEMPLATE } from "./rich-content.js";
+import { artifactFromBlock, CALCULATOR_TEMPLATE, noteScope, valueChip, wireValues } from "./rich-content.js";
 
 installEmbedActions();
 
@@ -141,6 +141,7 @@ export function toMarkdown(root) {
       else if (tag === "code") text += `\`${child.textContent}\``;
       else if (tag === "s" || tag === "del" || tag === "strike") text += `~~${inner}~~`;
       else if (tag === "a") text += `[${inner}](${child.getAttribute("href")})`;
+      else if (child.classList?.contains("note-value")) text += `{{${child.dataset.valueSource ?? ""}}}`;
       else if (tag === "img") text += `![${child.alt ?? ""}${child.dataset.width ? `|${child.dataset.width}` : ""}](${child.dataset.src ?? child.getAttribute("src") ?? ""})`;
       else text += inner;
     }
@@ -206,7 +207,7 @@ async function renderClassic(app, note) {
   const status = el("span", { class: "page-status", role: "status" });
   const recover = el("button", { class: "ghost", hidden: true, onclick: saveCopy }, "Save a copy");
   const title = el("input", { class: "page-title", value: note.title === "Untitled" ? "" : note.title, placeholder: "Untitled", "aria-label": "Title" });
-  const body = el("div", { class: "page-body", contenteditable: "true", spellcheck: "true", "aria-label": "Page", "data-placeholder": "Start writing…" });
+  const body = el("div", { class: "page-body", contenteditable: "true", spellcheck: "true", role: "textbox", "aria-multiline": "true", "aria-label": "Page", "data-placeholder": "Start writing…" });
   const selectBody = () => {
     const selection = getSelection();
     if (document.activeElement !== body) body.focus();
@@ -313,6 +314,7 @@ async function renderClassic(app, note) {
     const card = artifactFromBlock("calculator", JSON.stringify(JSON.parse(CALCULATOR_TEMPLATE)), el);
     document.execCommand("insertHTML", false, card.outerHTML + "<p><br></p>");
     hydrateArtifacts();
+    wireValues(body);
   }
   /** Blocks pasted in as HTML lose their behaviour; rebuild them from their source. */
   function hydrateArtifacts() {
@@ -340,6 +342,7 @@ async function renderClassic(app, note) {
     { label: "Image from a file…", icon: "image", run: () => imageFile.click(), dirty: false },
     { label: "Image from an address…", icon: "globe", run: imageFromAddress, dirty: false },
     { label: "Calculator", icon: "calc", run: insertCalculator },
+    { label: "Value or formula (@)", icon: "hash", run: () => { document.execCommand("insertText", false, "@"); openPicker(); }, dirty: false },
     { label: "Embed a page…", icon: "link", run: insertEmbed },
   ]);
   const columnCount = () => { const columns = currentColumns(); return columns ? columns.querySelectorAll(":scope > .note-column").length : 1; };
@@ -353,8 +356,31 @@ async function renderClassic(app, note) {
     { label: "Undo", hint: "⌘Z", run: exec("undo") },
     { label: "Redo", hint: "⇧⌘Z", run: exec("redo") },
     "-",
+    { label: "Copy share link", icon: "link", run: () => copyShareLink(), dirty: false },
     { label: archived ? "Restore from archive" : "Archive note", icon: "archive", run: () => setArchived(!archived), dirty: false },
   ]);
+  /* A link that carries the note itself (compressed, after the #), opened
+   * read-only on lima.liamhosfeld.com. Browsers never send the part after #
+   * to a server, so nothing is uploaded. Images stay out (they'd make the link
+   * too long); calculators and value blocks still work. */
+  async function copyShareLink() {
+    try {
+      const current = draft();
+      const markdown = current.markdown.replace(/!\[([^\]]*)\]\(lima-attachment:[^)]+\)/g, "![$1](omitted)");
+      const json = JSON.stringify({ v: 1, t: current.title || "Untitled", m: markdown });
+      const stream = new Blob([json]).stream().pipeThrough(new CompressionStream("deflate-raw"));
+      const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+      let binary = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      const link = `https://lima.liamhosfeld.com/n#${btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
+      if (link.length > 60000) { status.textContent = "This note is too long to share as a link."; return; }
+      await navigator.clipboard.writeText(link);
+      status.textContent = /lima-attachment:/.test(current.markdown)
+        ? "Share link copied (images aren't included). Anyone with it can read this note."
+        : "Share link copied. Anyone with it can read this note.";
+    } catch (error) { status.textContent = errorText(error); }
+  }
+
   function insertEmbed() {
     const value = window.prompt("Paste an HTTPS or local preview URL");
     if (!value) return;
@@ -375,6 +401,93 @@ async function renderClassic(app, note) {
     insertMenu, moreMenu, imageFile,
     tool(icon("mic"), "Dictate (⌃⌥D)", () => bridge.browser("dictate", { noteId: note.id })),
     el("span", { class: "spacer" }), status, recover);
+
+
+  /* @ in the page: a picker of the note's values (calculator boxes and rows,
+   * and named values) plus New value and Formula. The choice becomes a light
+   * grey block that stays live. */
+  const picker = el("div", { class: "value-picker", role: "listbox", "aria-label": "Insert a value", hidden: true });
+  let pickerItems = [];
+  let pickerIndex = 0;
+  function closePicker() { picker.hidden = true; pickerItems = []; }
+  function insertValue(source) {
+    // Replace the @ that opened the picker with the block.
+    const selection = getSelection();
+    if (selection.rangeCount) {
+      const range = selection.getRangeAt(0);
+      if (range.collapsed && range.startContainer.nodeType === Node.TEXT_NODE && range.startOffset > 0 &&
+          range.startContainer.textContent[range.startOffset - 1] === "@") {
+        range.setStart(range.startContainer, range.startOffset - 1);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+    }
+    document.execCommand("insertHTML", false, valueChip(source, el).outerHTML + " ");
+    hydrateValues();
+    markDirty();
+  }
+  /** Blocks pasted in as HTML lose their behaviour; rebuild them from their source. */
+  function hydrateValues() {
+    for (const chip of body.querySelectorAll(".note-value")) {
+      if (chip.limaLive) continue;
+      const live = valueChip(chip.dataset.valueSource ?? "", el);
+      chip.replaceWith(live);
+    }
+    wireValues(body);
+  }
+  function choosePicker(index) {
+    const item = pickerItems[index];
+    closePicker();
+    if (!item) return;
+    selectBody();
+    if (item.kind === "use") { insertValue(item.name); return; }
+    const names = Object.keys(noteScope(body));
+    if (item.kind === "new") {
+      const answer = window.prompt("A name and a number, such as budget = 120");
+      const match = /^\s*([A-Za-z_][A-Za-z0-9_]{0,39})\s*[:=]+\s*(-?\d+(?:\.\d+)?)\s*$/.exec(answer ?? "");
+      if (!match) { if (answer) status.textContent = "Use a name and a number, such as budget = 120."; return; }
+      selectBody();
+      insertValue(`${match[1]} := ${match[2]}`);
+      return;
+    }
+    const formula = window.prompt(names.length ? `A formula using ${names.slice(0, 8).join(", ")}${names.length > 8 ? "…" : ""}` : "A formula, such as 120 / 4");
+    if (!formula?.trim()) return;
+    selectBody();
+    insertValue(formula.trim().slice(0, 200));
+  }
+  function paintPicker() {
+    picker.replaceChildren(...pickerItems.map((item, index) => el("button", { type: "button", role: "option", class: "value-picker-item",
+      "aria-selected": String(index === pickerIndex), onmousedown: event => event.preventDefault(), onclick: () => choosePicker(index) },
+      el("span", { class: "value-picker-label", text: item.label }), item.detail ? el("span", { class: "value-picker-detail", text: item.detail }) : null)));
+  }
+  function openPicker() {
+    const scope = noteScope(body);
+    pickerItems = [
+      ...Object.entries(scope).slice(0, 12).map(([name, value]) => ({ kind: "use", name, label: name, detail: String(Math.round(value * 100) / 100) })),
+      { kind: "new", label: "New value…", detail: "a number you can change" },
+      { kind: "formula", label: "Formula…", detail: "computed from values" },
+    ];
+    pickerIndex = 0;
+    paintPicker();
+    const rect = getSelection().rangeCount ? getSelection().getRangeAt(0).getBoundingClientRect() : body.getBoundingClientRect();
+    picker.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - 240))}px`;
+    picker.style.top = `${Math.min(rect.bottom + 6, innerHeight - 220)}px`;
+    picker.hidden = false;
+  }
+  body.addEventListener("input", event => {
+    if (event.inputType === "insertText" && event.data === "@") openPicker();
+    else if (!picker.hidden) closePicker();
+  });
+  body.addEventListener("keydown", event => {
+    if (picker.hidden) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      pickerIndex = (pickerIndex + (event.key === "ArrowDown" ? 1 : pickerItems.length - 1)) % pickerItems.length;
+      paintPicker();
+    } else if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); choosePicker(pickerIndex); }
+    else if (event.key === "Escape") { event.preventDefault(); closePicker(); }
+  }, true);
+  body.addEventListener("blur", () => setTimeout(closePicker, 150));
 
   /* Images: click one to resize it (S, M, L or full width). */
   const sizeBar = el("div", { class: "image-size", role: "toolbar", "aria-label": "Image size", hidden: true },
@@ -406,7 +519,7 @@ async function renderClassic(app, note) {
   setPage(note.title || "Untitled", "note");
   app.replaceChildren(el("div", { class: "page-wrap" },
     trashedNotice(note, () => renderNote(app, note.id)) ?? "", archivedNotice,
-    toolbar, sizeBar,
+    toolbar, sizeBar, picker,
     el("article", { class: "page-sheet" }, title, el("div", { class: "page-date", text: dateLine(note.createdAt) }), body)));
   document.execCommand("defaultParagraphSeparator", false, "p");
 
@@ -417,6 +530,7 @@ async function renderClassic(app, note) {
     setTableTools(false);
     body.replaceChildren(...rendered.childNodes);
     body.classList.toggle("empty", !note.markdown.trim());
+    wireValues(body);
   }
 
   function tableCell() {

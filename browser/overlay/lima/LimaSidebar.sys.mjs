@@ -375,25 +375,32 @@ function attachDock(win) {
   // Other sources playing at the same time stack above the bar, one slim
   // row each; clicking a row makes it the one the bar controls.
   const stack = el(doc, "div", { class: "lima-music-stack", role: "group", "aria-label": "Also playing" });
-  const mute = el(doc, "button", { class: "lima-music-btn", title: "Mute", "aria-label": "Mute", onclick: toggleMute }, glyph(doc, "volume"));
-  const bar = el(doc, "div", { class: "lima-music-bar", title: "Expand music controls",
-    // Buttons stop their own clicks; anywhere else on the bar expands.
-    onclick: () => toggleSpotify() },
+  const mute = el(doc, "button", { class: "lima-music-btn", title: "Volume", "aria-label": "Volume", "aria-expanded": "false", onclick: toggleMute }, glyph(doc, "volume"));
+  // Just the simple controls: what's playing, previous / play / next, Spotify
+  // DJ when Spotify plays, and a volume button that springs up a slider.
+  const bar = el(doc, "div", { class: "lima-music-bar" },
     sources,
     el(doc, "span", { class: "lima-music-transport" },
       el(doc, "button", { class: "lima-music-btn", title: "Previous", "aria-label": "Previous", onclick: control("previous") }, glyph(doc, "previous")),
       el(doc, "button", { class: "lima-music-btn big", title: "Play / pause", "aria-label": "Play / pause", onclick: control("playpause") }, glyph(doc, "play")),
       el(doc, "button", { class: "lima-music-btn", title: "Next", "aria-label": "Next", onclick: control("next") }, glyph(doc, "next"))),
-    mute);
+    dj, mute);
+  // The volume slider row, above the bar while it's open.
+  const tabMute = el(doc, "button", { class: "lima-music-btn", title: "Mute tab", "aria-label": "Mute tab", hidden: true,
+    onclick: event => { event.stopPropagation(); if (browserTab?.isConnected) { browserTab.toggleMuteAudio(); paintTrack(); } } }, glyph(doc, "mute"));
+  const volumeLabel = el(doc, "span", { class: "lima-volume-value", "aria-hidden": "true" });
+  const volumePop = el(doc, "div", { class: "lima-volume-pop", hidden: true, role: "group", "aria-label": "Volume" },
+    glyph(doc, "volume"), volume, volumeLabel, tabMute);
   const playerHeader = el(doc, "div", { class: "lima-music-row" },
     djScene, el(doc, "span", { class: "lima-music-text" }, title, artist),
     el(doc, "span", { class: "lima-music-notes", "aria-hidden": "true" }, el(doc, "i", {}, "♪"), el(doc, "i", {}, "♫")));
   const expanded = el(doc, "div", { class: "lima-music-expanded" }, playerHeader, timeline,
-    el(doc, "div", { class: "lima-music-audio" }, dj, showTab, volume, output), outputs);
+    // The DJ and volume live in the bar and its slider row now.
+    el(doc, "div", { class: "lima-music-audio" }, showTab, output), outputs);
   expanded.inert = true;
   const music = el(doc, "div", { id: "lima-music", hidden: true, "aria-label": "Now playing" },
-    stack, bar, el(doc, "div", { class: "lima-music-reveal" }, expanded));
-  const spotify = el(doc, "button", { id: "lima-spotify", title: "Music", "aria-label": "Music", "aria-expanded": "false", onclick: toggleSpotify },
+    stack, volumePop, bar);
+  const spotify = el(doc, "button", { id: "lima-spotify", title: "Music", "aria-label": "Music", "aria-expanded": "false", onclick: () => toggleMute() },
     el(doc, "span", { class: "lima-spotify-icon" }));
 
   const level = el(doc, "div", { class: "lima-dict-level" }, ...Array.from({ length: 5 }, () => el(doc, "i")));
@@ -511,7 +518,11 @@ function attachDock(win) {
     const key = entryKey(current);
     let button = sources.firstChild;
     if (button?.dataset.key !== key) {
-      button = el(doc, "button", { class: "lima-music-source", "data-key": key, onclick: event => { event.stopPropagation(); toggleSpotify(); } }, sourceIcon(current));
+      button = el(doc, "button", { class: "lima-music-source", "data-key": key, onclick: event => {
+        event.stopPropagation();
+        // A tab playing audio: go to it.
+        if (source === "browser" && browserTab?.isConnected) win.gBrowser.selectedTab = browserTab;
+      } }, sourceIcon(current));
       sources.replaceChildren(button);
     }
     button.dataset.player = current.player;
@@ -545,16 +556,29 @@ function attachDock(win) {
     paintTrack();
     refresh(true);
   }
+  /** The volume button: a slider springs up above the bar (and folds away). */
   function toggleMute(event) {
-    event.stopPropagation();
-    if (source === "browser" && browserTab?.isConnected) {
-      browserTab.toggleMuteAudio();
-      paintTrack();
-      return;
-    }
-    // Spotify and Music: the volume slider is in the expanded controls.
-    if (!music.hasAttribute("data-open")) toggleSpotify();
+    event?.stopPropagation();
+    const open = volumePop.hidden || volumePop.limaLeaving;
+    mute.setAttribute("aria-expanded", String(open));
+    if (!open) { sinkAway(volumePop, { flow: true, gap: 0 }); return; }
+    tabMute.hidden = source !== "browser";
+    popIn(volumePop, { flow: true, gap: 0 });
+    lazy.LimaBridge.request("audio.volume").then(value => {
+      volume.value = Math.round((value ?? 0) * 100);
+      volumeLabel.textContent = `${volume.value}%`;
+    }).catch(() => {});
     volume.focus();
+    keepVolumeOpen();
+  }
+  let volumeTimer;
+  function keepVolumeOpen() {
+    win.clearTimeout(volumeTimer);
+    volumeTimer = win.setTimeout(() => {
+      if (volumePop.matches(":hover, :focus-within")) { keepVolumeOpen(); return; }
+      mute.setAttribute("aria-expanded", "false");
+      sinkAway(volumePop, { flow: true, gap: 0 });
+    }, 4000);
   }
   let flashTimer = null;
   let controlBusy = false;
@@ -569,6 +593,7 @@ function attachDock(win) {
   const fmt = ms => { const s = Math.max(0, Math.round(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
   function flash(text) {
     artist.textContent = text;
+    bar.title = text;
     win.clearTimeout(flashTimer);
     flashTimer = win.setTimeout(() => paintTrack(), 1600);
   }
@@ -586,7 +611,8 @@ function attachDock(win) {
     const muteLabel = source === "browser" ? (muted ? "Unmute tab" : "Mute tab") : "Volume";
     mute.title = muteLabel;
     mute.setAttribute("aria-label", muteLabel);
-    bar.title = open ? "Collapse music controls" : "Expand music controls";
+    // With no panel, the bar's tooltip names what's playing.
+    bar.title = track?.title ? [track.title, track.artist].filter(Boolean).join(" · ") : NAMES[source];
     paintSources();
     title.textContent = track?.title || NAMES[source];
     artist.textContent = track?.title ? track.artist : `${NAMES[source]} is idle`;
@@ -750,6 +776,7 @@ function attachDock(win) {
     control("seek", () => ({ seconds }))(event).finally(() => { scrubbing = false; tick(); });
   });
   progress.addEventListener("blur", () => { scrubbing = false; });
+  volume.addEventListener("input", () => { volumeLabel.textContent = `${volume.value}%`; keepVolumeOpen(); });
   volume.addEventListener("change", () => lazy.LimaBridge.request("audio.volume", { value: Number(volume.value) / 100 }).catch(error => flash(error.message)));
   // One volume control: scroll on the pill.
   let volumeBusy = false;

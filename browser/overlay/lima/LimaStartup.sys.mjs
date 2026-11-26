@@ -37,6 +37,14 @@ export const LimaStartup = {
     step("sidebar routing", () => lazy.disableSpaceRouting());
     step("blocked sites", () => ChromeUtils.importESModule("resource://lima/LimaBlockedSites.sys.mjs").LimaBlockedSites.start());
     step("usage", () => ChromeUtils.importESModule("resource://lima/LimaUsage.sys.mjs").LimaUsage.start());
+    // Gecko builds its accessibility tree only once a client asks, so the
+    // first ⌘G (or VoiceOver read) in a note or Lima page could find nothing.
+    // Keeping the service on exposes Lima's pages and notes from the start.
+    step("accessibility", () => {
+      if (Services.prefs.getBoolPref("lima.accessibility.alwaysOn", true)) {
+        LimaStartup.accessibility = Cc["@mozilla.org/accessibilityService;1"].getService(Ci.nsIAccessibilityService);
+      }
+    });
     log("bootstrap loaded");
 
     step("ui substitution", () => {

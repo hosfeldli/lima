@@ -83,16 +83,16 @@
 #navigator-toolbox .tab-label,
 #navigator-toolbox .tab-group-label,
 #navigator-toolbox .bookmark-item { font-size: var(--lima-tab-font, 11.5px); }
-/* Agent folders match every other tab. A top-level workspace, where the
-   coordinating agent works, is 25% larger. */
-#navigator-toolbox zen-folder[lima-workspace]:not([lima-agent]) > .tab-group-label-container {
+/* Every folder row, top-level workspaces included, is a tab row: the same
+   height, text size and 16px icon. */
+#navigator-toolbox zen-folder > .tab-group-label-container {
   /* A tab row is the min height plus 4px of margin and padding (30px). */
-  min-block-size: calc((var(--tab-min-height, 26px) + 4px) * 1.25);
+  min-block-size: calc(var(--tab-min-height, 26px) + 4px);
 }
-#navigator-toolbox zen-folder[lima-workspace]:not([lima-agent]) > .tab-group-label-container .tab-group-label { font-size: calc(var(--lima-tab-font, 11.5px) * 1.25); }
+#navigator-toolbox zen-folder > .tab-group-label-container .tab-group-label { font-size: var(--lima-tab-font, 11.5px); }
 #navigator-toolbox zen-folder[lima-workspace]:not([lima-agent]) > .tab-group-label-container > .tab-group-folder-icon::after {
-  width: calc(16px * 1.25);
-  height: calc(16px * 1.25);
+  width: 16px;
+  height: 16px;
 }
 #navigator-toolbox zen-folder[lima-workspace][lima-agent] > .tab-group-label-container > .tab-group-folder-icon::after {
   width: 16px;
@@ -1185,3 +1185,33 @@ zen-folder:is([lima-agents], [lima-tabs], [lima-images])[collapsed] > .tab-group
 #lima-search-where[data-mode="here"] { color: var(--lima-fg); }
 #lima-search-where .lima-s-glyph { width: 11px; height: 11px; }
 #lima-search-where[hidden] { display: none; }
+
+/* Music bar, compact only: Spotify DJ sits in the bar; volume springs up a slider row. */
+#lima-dock .lima-music-bar > .lima-music-dj { width: 24px; height: 24px; margin: 0; flex: none; }
+#lima-dock .lima-music-bar > .lima-music-dj[hidden] { display: none; }
+#lima-dock .lima-music-bar > .lima-music-dj img { width: 18px; height: 18px; }
+#lima-dock #lima-music .lima-music-btn[aria-expanded="true"] { background: var(--lima-hover); }
+.lima-volume-pop {
+  display: flex; align-items: center; gap: 7px; padding: 6px 9px 4px; overflow: clip; transform-origin: 50% 100%;
+  border-block-end: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+}
+.lima-volume-pop[hidden] { display: none; }
+#lima-dock .lima-volume-pop > .lima-glyph { width: 12px; height: 12px; opacity: .7; }
+#lima-dock .lima-volume-pop input[type="range"] { flex: 1; min-inline-size: 0; margin: 0; }
+.lima-volume-value { min-inline-size: 30px; text-align: end; font-size: 10.5px; color: var(--lima-ink-2); font-variant-numeric: tabular-nums; }
+#lima-dock .lima-volume-pop .lima-music-btn { width: 22px; height: 22px; }
+
+/* The archive confirmation, compact: name, one line, two buttons. The folder
+   path appears only once the ZIP is saved. */
+.lima-archive-content { width: min(272px, 80vw); padding: 11px 12px 10px; }
+.lima-archive-header { gap: 8px; }
+.lima-archive-heading { font-size: 13px; }
+.lima-archive-title { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lima-archive-mark { flex-basis: 26px; height: 26px; border-radius: 7px; }
+.lima-archive-mark::after { width: 14px; height: 14px; }
+.lima-archive-content p { margin: 7px 0; font-size: 12px; }
+.lima-archive-panel[data-phase="confirm"] .lima-archive-location,
+.lima-archive-panel[data-phase="working"] .lima-archive-location { display: none; }
+.lima-archive-location { padding: 6px 8px; }
+.lima-archive-actions { margin-block-start: 10px; gap: 6px; }
+.lima-archive-actions button { padding-block: 3px; font-size: 12px; }

@@ -1454,3 +1454,49 @@ button.send-now { white-space: nowrap; }
 .ai-disclaimer { margin: 6px 0 0; text-align: center; color: var(--ink-3); font-size: 10.5px; }
 .rich-artifact .calc-rows :is(th, td) { border: 0; border-top: 1px solid var(--line); padding: 6px 0; background: none; }
 .rich-artifact .calc-rows tr:first-child :is(th, td) { border-top: 0; }
+
+/* Note values: light grey blocks (defined numbers you can change, and live results). */
+.note-value {
+  display: inline-flex; align-items: center; gap: 5px; margin: 0 1px; padding: 1px 7px; vertical-align: baseline;
+  border-radius: 6px; background: color-mix(in srgb, var(--ink) 7%, var(--paper)); border: 1px solid color-mix(in srgb, var(--ink) 9%, transparent);
+  font: 600 .92em/1.5 var(--font); color: var(--ink); white-space: nowrap; font-variant-numeric: tabular-nums; user-select: none;
+}
+.note-value-name { color: var(--ink-2); font-weight: 550; }
+.note-value-name::after { content: " ="; color: var(--ink-3); }
+.note-value-input {
+  width: 5.5ch; min-width: 0; padding: 0 2px; border: 0; border-radius: 4px; background: transparent;
+  font: inherit; color: inherit; text-align: end; -moz-appearance: textfield;
+}
+.note-value-input:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.note-value-input:focus-visible { outline: 2px solid var(--action); outline-offset: 0; background: var(--paper); }
+.note-value.result { cursor: help; }
+.note-value.result::before { content: "="; color: var(--ink-3); font-weight: 500; }
+.note-value[data-error] { color: var(--ink-3); border-style: dashed; }
+.value-picker {
+  position: fixed; z-index: 8; display: grid; width: 232px; max-height: 220px; overflow-y: auto; padding: 4px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--paper); box-shadow: var(--shadow-1);
+  animation: fmt-menu-in 140ms cubic-bezier(.2, .8, .25, 1);
+}
+.value-picker-item {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px; height: 28px; padding: 0 9px;
+  border: 0; border-radius: 7px; background: transparent; color: var(--ink); font: 500 var(--t-sm)/1 var(--font); text-align: start;
+}
+.value-picker-item[aria-selected="true"], .value-picker-item:hover { background: var(--panel); }
+.value-picker-detail { color: var(--ink-3); font-size: var(--t-xs); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Mascot engine (mascot.js): each companion shows only its generated parts. */
+.companion :is(.ears-pointy, .ears-round, .ears-floppy, .eyes-dots, .eyes-happy, .eyes-sleepy, .eyes-sparkle,
+  .marking-spots, .marking-patch, .marking-stripes, .extra-scarf, .extra-bow, .extra-glasses, .extra-headphones, .extra-flower) { display: none; }
+.companion:not([data-ears]) .ears-pointy, .companion[data-ears="pointy"] .ears-pointy, .companion[data-ears="round"] .ears-round,
+.companion[data-ears="floppy"] .ears-floppy,
+.companion:not([data-eyes]) .eyes-dots, .companion[data-eyes="dots"] .eyes-dots, .companion[data-eyes="happy"] .eyes-happy,
+.companion[data-eyes="sleepy"] .eyes-sleepy, .companion[data-eyes="sparkle"] .eyes-sparkle,
+.companion[data-marking="spots"] .marking-spots, .companion[data-marking="patch"] .marking-patch, .companion[data-marking="stripes"] .marking-stripes,
+.companion[data-extra="scarf"] .extra-scarf, .companion[data-extra="bow"] .extra-bow, .companion[data-extra="glasses"] .extra-glasses,
+.companion[data-extra="headphones"] .extra-headphones, .companion[data-extra="flower"] .extra-flower { display: inline; }
+/* A task costume owns the head: head accessories step aside for it. */
+.companion[data-variant]:not([data-variant="classic"]) :is(.extra-headphones, .extra-flower, .extra-bow) { display: none; }
+/* The patch sits behind the eye, the markings never cover the face line. */
+.companion-ears, .companion-extras, .companion-reaction { transform-box: fill-box; transform-origin: 50% 100%; }
+.companion-body { rotate: var(--mascot-tilt, 0deg); }
+.companion[data-mascot-theme="outline"] .companion-markings { display: none; }

@@ -2,5 +2,6 @@
 User-agent: *
 Allow: /
 Disallow: /download
+Disallow: /n
 
 Sitemap: https://lima.liamhosfeld.com/sitemap.xml

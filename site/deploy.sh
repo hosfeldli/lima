@@ -5,6 +5,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 cp ../browser/branding/lima-app-icon.svg public/lima.svg
+# Shared notes render calculators and value blocks with the app's own code.
+cp ../browser/overlay/lima/ui/rich-content.js public/rich-content.js
 gcloud run deploy stem-portfolio-host \
   --project stem-471602 --region us-east1 --source . \
   --allow-unauthenticated --port 8080 --cpu 1 --memory 256Mi \

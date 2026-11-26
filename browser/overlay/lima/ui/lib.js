@@ -1,7 +1,7 @@
 /* Shared helpers for about:lima pages. `window.lima` is the only bridge to
  * the native runtime (installed by the LimaChild actor). */
 import { ICONS } from "./icons.js";
-import { artifactFromBlock, markdownCells, markdownTableAt } from "./rich-content.js";
+import { artifactFromBlock, markdownCells, markdownTableAt, valueChip, wireValues } from "./rich-content.js";
 
 function requestBridge() {
   // Ask the LimaChild actor to install window.lima (dispatch is synchronous).
@@ -361,10 +361,27 @@ export function markdown(source, { onTaskToggle, attachments, embeds = false, br
     } else root.append(inline(el("p"), para.join(" "), attachments));
   }
   if (embeds) hydrateEmbeds(root);
+  if (root.querySelector(".note-value, .calculator")) wireValues(root);
   return root;
 }
 
+/* {{…}} becomes a note value block (rich-content.js); the rest is ordinary inline Markdown. */
 function inline(node, text, attachments) {
+  text = String(text);
+  let last = 0;
+  // Code spans are skipped, so `{{x}}` in code stays literal.
+  for (const match of text.matchAll(/(`[^`]*`)|\{\{([^{}\n]{1,200})\}\}/g)) {
+    if (match[2] === undefined) continue;
+    if (match.index > last) inlineText(node, text.slice(last, match.index), attachments);
+    node.append(valueChip(match[2], el));
+    last = match.index + match[0].length;
+  }
+  if (!last) return inlineText(node, text, attachments);
+  if (last < text.length) inlineText(node, text.slice(last), attachments);
+  return node;
+}
+
+function inlineText(node, text, attachments) {
   const pattern = /(!\[([^\]]*)\]\(([^)\s]+)\))|(\[([^\]]+)\]\(([^)\s]+)\))|(`([^`]+)`)|(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(~~([^~]+)~~)/g;
   let last = 0;
   for (const match of text.matchAll(pattern)) {

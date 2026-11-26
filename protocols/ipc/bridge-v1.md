@@ -155,3 +155,15 @@ Fenced `calculator` blocks render number inputs and rows computed from them: `{ 
 
 A workspace's main chat is `conversationID`. `workspace.chats { id }` lists its chats (`{ id, title, main, running }`, main first); `workspace.newChat { id }` opens another with the same provider, folder and tools (not for helpers; at most twelve); `workspace.closeChat { id, chatId }` deletes one that isn't the main chat. Each broadcasts `workspace.chats { id }`. Messages to the main chat go through `workspace.instruct`; the others use `chat.send`. Browser only.
 
+## Workspace folders
+
+`workspace.makeFolder { path }` (a workspace agent's own workspace, or `id` from the browser) creates a folder and any missing parents inside the workspace directory and returns `{ path, absolutePath, created }`. The path is relative (such as `src/components`, at most 12 levels); absolute paths, `~`, `.`/`..` and any existing level that resolves outside the workspace through a symbolic link are refused, as is a file in the way. New folders are recorded in activity.
+
+## Effort, tab folders and value blocks
+
+`chat.configure` and `chat.create` accept `effort`: `low`, `medium` or `high` (or `default` for the CLI's own). The conversation keeps it and every turn passes it on: Claude Code as `--effort`, Codex as `model_reasoning_effort`. OpenCode has no such setting and ignores it. Quick Ask always runs at low effort.
+
+`workspace.openTab` accepts `folder`, a path inside the workspace's Tabs folder (up to three levels, such as `Docs` or `Research/API`), and `workspace.organizeTabs { tabs: [{ url, folder, title? }] }` (1–60) files tabs into those folders; an empty folder moves a tab back to Tabs, and `title` adds a tab the user opened that the workspace doesn't track yet. It returns `{ folders, notFound }`. The browser builds the folders inside the Tabs folder and moves a tab only when its folder changes, so a tab the user dragged elsewhere stays there. `workspace.listTabs` reports each tab's `folder`.
+
+Notes support value blocks: `{{name := 120}}` defines an adjustable number, shown as a light grey block, and `{{expression}}` shows a live result computed with the calculator formula rules from defined names and the input and row ids of calculators in the same note. Calculators can read defined names too. Typing @ in a note opens a picker of these values. MCP `notes_update` replaces a note's Markdown as one undoable agent edit.
+

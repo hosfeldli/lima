@@ -403,6 +403,7 @@ class Workspaces {
       added.forEach(tab => this.#animateTab(tab));
     }
     this.folderFor(workspace.id, "tabs", win)?.setAttribute("lima-tabs", workspace.id);
+    if (!helper) this.#arrangeTabFolders(win, workspace, allTabs());
     this.#reconcileImages(win, workspace, folder, map, entry);
     this.#orderCore(win, folder);
     // Restored lazy tabs come back without our icons.
@@ -474,6 +475,56 @@ class Workspaces {
         try { win.gBrowser.moveTabBefore(tab, firstFolder); } catch (error) { log(`reorder: ${error}`); }
       }
     });
+  }
+
+  // MARK: Tab folders (agents group a workspace's pages)
+
+  /** The folder at `path` inside a workspace's Tabs folder, made as needed. */
+  #tabSubfolder(win, tabsFolder, workspaceId, path) {
+    let parent = tabsFolder;
+    let sofar = "";
+    for (const part of path.split("/")) {
+      sofar = sofar ? `${sofar}/${part}` : part;
+      let next = [...win.document.querySelectorAll("zen-folder[lima-tab-folder]")].find(folder =>
+        folder.group === parent && folder.getAttribute("lima-tab-folder") === sofar && folder.getAttribute("lima-tabs-of") === workspaceId);
+      if (!next) {
+        next = this.#createFolder(win, [], part, parent, false);
+        next.setAttribute("lima-tab-folder", sofar);
+        next.setAttribute("lima-tabs-of", workspaceId);
+      }
+      parent = next;
+    }
+    return parent;
+  }
+
+  /** Each web tab sits in the folder its entry names (or in Tabs itself). */
+  #arrangeTabFolders(win, workspace, tabs) {
+    const tabsFolder = this.folderFor(workspace.id, "tabs", win);
+    if (!tabsFolder) return;
+    for (const entry of workspace.tabs) {
+      if (!/^https?:/.test(entry.url)) continue;
+      const tab = tabs.find(item => sameURL(tabURL(item), entry.url));
+      if (!tab) continue;
+      // Only when the agent (re)files it: a tab you dragged elsewhere stays put.
+      const wanted = entry.folder ?? "";
+      if (tab.limaFiledAs === wanted) continue;
+      tab.limaFiledAs = wanted;
+      const target = entry.folder ? this.#tabSubfolder(win, tabsFolder, workspace.id, entry.folder) : tabsFolder;
+      if (tab.group !== target && (entry.folder || tab.group?.hasAttribute("lima-tab-folder"))) {
+        try { preserveFolderDisclosure(target, () => target.addTabs([tab])); } catch (error) { log(`tab folder: ${error}`); }
+      }
+    }
+    // Folders agents made that hold nothing any more go away.
+    for (const folder of win.document.querySelectorAll(`zen-folder[lima-tabs-of="${win.CSS.escape(workspace.id)}"]`)) {
+      const path = folder.getAttribute("lima-tab-folder");
+      const used = workspace.tabs.some(entry => entry.folder === path || entry.folder?.startsWith(`${path}/`));
+      if (!used && !this.#allTabs(folder).length) Promise.resolve().then(() => folder.delete?.()).catch(() => {});
+    }
+  }
+
+  /** A tab's folder path inside its workspace's Tabs folder ("" = Tabs itself). */
+  #tabFolderPath(tab) {
+    return tab.group?.getAttribute?.("lima-tab-folder") ?? "";
   }
 
   #allTabs(folder) {
@@ -607,7 +658,7 @@ class Workspaces {
     header.append(mark, summary);
     const description = element("p", "lima-archive-description", workspace.parentID
       ? "Close this agent and its tabs."
-      : "Close this workspace and save a verified ZIP. Linked or shared folders keep their originals.");
+      : "Closes it and saves its folder as a verified ZIP.");
     const path = element("code", "lima-archive-path", workspace.parentID ? "" : workspace.directory);
     const source = element("div", "lima-archive-location");
     const pathLabel = element("span", "", "Project folder");
@@ -860,7 +911,7 @@ class Workspaces {
       if (request.kind === "notesOrganize") return reply(await lazy.LimaNotesBookmarks.organize(request.noteId, request.folder));
       if (request.kind === "notesArchive") return reply(await lazy.LimaNotesBookmarks.archiveNote(request.noteId));
       if (request.kind === "notesUnarchive") return reply(await lazy.LimaNotesBookmarks.unarchiveNote(request.noteId));
-      if (request.kind === "listTabs") return reply(this.#pages(win, request.workspaceId).map(tab => ({ url: tabURL(tab), title: tab.label, selected: tab.selected })));
+      if (request.kind === "listTabs") return reply(this.#pages(win, request.workspaceId).map(tab => ({ url: tabURL(tab), title: tab.label, selected: tab.selected, folder: this.#tabFolderPath(tab) })));
       if (request.kind === "action") return reply(await this.#act(win, request));
       if (request.kind === "readTab") return reply(await this.#read(win, request.workspaceId, request.url));
       throw new Error(`unknown request ${request.kind}`);
