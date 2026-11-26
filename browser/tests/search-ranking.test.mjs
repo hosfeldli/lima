@@ -172,3 +172,16 @@ test("the empty state shows at most four recent destinations, unfinished work fi
   assert.ok(!recent.includes("t2"), "duplicates of one page are merged");
   assert.ok(!recent.includes("n2"), "stale items are left out");
 });
+
+test("a late tab for a selected note preserves the note row and its destination", () => {
+  const set = new ResultSet("plan", { webExpected: false });
+  const url = "about:lima?note=a";
+  const note = { ...local("n", "Weekend plan"), url, kind: "note", subtitle: "Plan a hike", highlights: ["plan"] };
+  set.addLocal([note], NOW);
+  set.freeze();
+  set.addLocal([{ ...local("t", "Weekend plan"), kind: "tab", url }], NOW);
+  const rows = set.layout().sections.flatMap(section => section.items);
+  assert.deepEqual(rows.map(row => [row.key, row.kind, row.subtitle]), [["n", "note", "Plan a hike"]]);
+  set.expand();
+  assert.deepEqual(set.layout().sections.flatMap(section => section.items).map(row => row.kind), ["tab"]);
+});

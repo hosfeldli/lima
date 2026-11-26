@@ -210,7 +210,7 @@ export async function openPalette(initial = "") {
       return;
     }
     if (item.action) {
-      call("search.select", { key: item.key }).catch(() => {});
+      call("search.select", { key: item.key, query: input.value.trim() }).catch(() => {});
       const url = urlForAction(item.action);
       if (url) bridge.openTab(url);
       close();

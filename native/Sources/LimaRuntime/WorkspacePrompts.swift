@@ -122,6 +122,7 @@ actor WorkspacePrompts {
         var expires: Date
         var trusted: Bool
         var limit: Date
+        var grantID: String?
     }
     private var sessions: [String: Session] = [:]
     /// Idle time a session survives; each permitted action renews it, up to its limit.
@@ -314,6 +315,45 @@ actor WorkspacePrompts {
         return stored.grant
     }
 
+    func activeGrants(family: String, now: Date = Date()) -> JSONValue {
+        let items = grants.values.filter { $0.family == family && $0.expires > now }.sorted { $0.expires < $1.expires }
+        return .array(items.map { item in
+            let grant = item.grant
+            return .object([
+                "id": .string(grant.id), "request": .string(grant.request), "kind": .string(grant.kind.rawValue),
+                "detail": grant.detail.map(JSONValue.string) ?? .null,
+                "site": grant.url.flatMap(Self.origin).map(JSONValue.string) ?? .null,
+                "paths": .array(grant.paths.sorted().map(JSONValue.string)),
+                "actions": .array(grant.actions.sorted().map(JSONValue.string)),
+                "expiresAt": .number(item.expires.timeIntervalSince1970 * 1000),
+            ])
+        })
+    }
+
+    func revokeGrant(family: String, id: String) {
+        grants.removeValue(forKey: "\(family)/\(id)")
+        sessions = sessions.filter { $0.value.family != family || $0.value.grantID != id }
+    }
+
+    private var pendingPlans: [String: Task<Bool, Error>] = [:]
+
+    func approveBrowserPlan(_ runtime: Runtime, workspace: Workspace, family: String, key: String,
+                            goal: String, plan: String, facts: [Fact]) async throws -> Bool {
+        let pendingKey = "\(family)/\(key)"
+        if let pending = pendingPlans[pendingKey] { return try await pending.value }
+        let request = Task {
+            if let remembered = try await browserPermission(key, store: runtime.store) { return remembered }
+            let response = try await ask(runtime, workspace: workspace, question: goal, detail: plan, approval: true,
+                actionLabel: "Allow", facts: facts + [.init(label: "Remembered", value: "This exact plan, across Lima")], risk: "account")
+            let approved = response["approved"]?.boolValue == true
+            try await rememberBrowserPermission(approved, key: key, store: runtime.store)
+            return approved
+        }
+        pendingPlans[pendingKey] = request
+        defer { pendingPlans.removeValue(forKey: pendingKey) }
+        return try await request.value
+    }
+
     /// An up-front browser grant covering this plan (same site, paths and actions within it).
     func preapprovedBrowser(family: String, url: String, paths: Set<String>, actions: Set<String>, now: Date = Date()) -> Grant? {
         let origin = Self.origin(of: url)
@@ -380,12 +420,14 @@ actor WorkspacePrompts {
         return "\(scheme)://\(host)\(parts.port.map { ":\($0)" } ?? "")"
     }
 
-    func authorize(family: String, url: String, paths: Set<String>, actions: Set<String>, trusted: Bool = false, now: Date = Date()) -> String {
+    func authorize(family: String, url: String, paths: Set<String>, actions: Set<String>, trusted: Bool = false, grantID: String? = nil, now: Date = Date()) -> String {
         sessions = sessions.filter { $0.value.expires > now }
         let token = UUID().uuidString
+        let maximum = now.addingTimeInterval(trusted ? Self.taskLimit : Self.onceLimit)
+        let limit = grantID.flatMap { grants["\(family)/\($0)"]?.expires }.map { min($0, maximum) } ?? (grantID == nil ? maximum : now)
         sessions[token] = Session(family: family, origin: Self.origin(of: url) ?? url, paths: paths, actions: actions,
-                                  expires: now.addingTimeInterval(Self.sessionIdle), trusted: trusted,
-                                  limit: now.addingTimeInterval(trusted ? Self.taskLimit : Self.onceLimit))
+                                  expires: min(limit, now.addingTimeInterval(Self.sessionIdle)), trusted: trusted,
+                                  limit: limit, grantID: grantID)
         return token
     }
 
@@ -412,10 +454,10 @@ actor WorkspacePrompts {
     /// After the user approves a sensitive step: optionally trust the session
     /// for the rest of the task, and add a path they allowed it to visit.
     func grant(_ token: String?, trust: Bool, path: String? = nil, now: Date = Date()) -> Set<String>? {
-        guard let token, var session = sessions[token] else { return nil }
+        guard let token, var session = sessions[token], session.expires > now else { return nil }
         if trust && !session.trusted {
             session.trusted = true
-            session.limit = now.addingTimeInterval(Self.taskLimit)
+            if session.grantID == nil { session.limit = now.addingTimeInterval(Self.taskLimit) }
         }
         if let path { session.paths.insert(path) }
         session.expires = min(session.limit, max(session.expires, now.addingTimeInterval(Self.sessionIdle)))

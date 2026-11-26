@@ -25,7 +25,7 @@ extension Runtime {
             if let id = workspace.conversationID { main = try? await self.conversations.get(id) }
             let conversation = try await self.conversations.create(provider: main?.provider ?? workspace.provider, model: main?.model,
                                                                    workingDirectory: workspace.directory, workspaceID: workspace.id,
-                                                                   title: "Chat \(count + 1)")
+                                                                   title: "Chat \(count + 1)", inherit: main)
             self.focus.bind(conversation: conversation.id, to: workspace.id)
             self.broadcast("workspace.chats", .object(["id": .string(workspace.id)]))
             return try JSONValue.from(conversation)

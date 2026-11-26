@@ -93,7 +93,7 @@ extension Runtime {
                     if let index = workspace.tabs.firstIndex(where: { $0.url == url }) { workspace.tabs[index].folder = Workspace.tabFolder(folder) }
                 }) { self.broadcast("workspace.updated", updated.publicView) }
             }
-            self.recordActivity(ActivityEvent(kind: .note, title: note.title, detail: "moved to \(result["folder"]?.stringValue ?? folder)"))
+            self.recordActivity(ActivityEvent(kind: .note, title: note.title, detail: "moved to \(result["folder"]?.stringValue ?? folder)", metadata: ["noteId": note.id]))
             return result
         }
         register("notes.archive") { [unowned self] params, context in
@@ -101,7 +101,7 @@ extension Runtime {
             let id = try params.string("id")
             let note = try await self.notes.get(id)
             let result = try await organize(self, "notesArchive", ["noteId": .string(id)], context)
-            self.recordActivity(ActivityEvent(kind: .note, title: note.title, detail: "archived"))
+            self.recordActivity(ActivityEvent(kind: .note, title: note.title, detail: "archived", metadata: ["noteId": note.id]))
             return result
         }
         register("notes.unarchive") { [unowned self] params, context in
@@ -109,7 +109,7 @@ extension Runtime {
             let id = try params.string("id")
             let note = try await self.notes.get(id)
             let result = try await organize(self, "notesUnarchive", ["noteId": .string(id)], context)
-            self.recordActivity(ActivityEvent(kind: .note, title: note.title, detail: "restored from the archive"))
+            self.recordActivity(ActivityEvent(kind: .note, title: note.title, detail: "restored from the archive", metadata: ["noteId": note.id]))
             return result
         }
         // `source`: an HTTPS address or a file path. Returns the attachment

@@ -1,4 +1,4 @@
-import { lastVisibleTool, replyActivity } from "./tool-activity.sys.mjs";
+import { lastVisibleTool, replyActivity, replyPreview } from "./tool-activity.sys.mjs";
 
 const READY = { state: "idle", label: "Ready", motion: "idle" };
 const DISCONNECTED = { state: "disconnected", label: "Reconnecting to Lima…", motion: "paused", icon: "warning" };
@@ -58,7 +58,9 @@ export class VisualState {
         const tool = message?.status !== "streaming" ? undefined
           : (prior?.message?.id !== message.id || prior.message.toolCount !== message.toolCount)
             ? lastVisibleTool(reply.tools) : prior.tool;
-        this.chats.set(data.id, { id: data.id, workspaceID: data.workspaceID, provider: data.provider, updatedAt: data.updatedAt, message, tool });
+        const finished = data.messages?.findLast(item => item.role === "assistant" && item.status === "complete");
+        const lastResult = (finished?.text ? replyPreview(finished.text) : undefined) ?? prior?.lastResult;
+        this.chats.set(data.id, { id: data.id, workspaceID: data.workspaceID, provider: data.provider, updatedAt: data.updatedAt, message, tool, lastResult });
         break;
       }
       case "chat.delta": {
@@ -182,6 +184,7 @@ export class VisualState {
         activity = { state: "working", label: "Working on task…", motion: "think", icon: "notebook", startedAt: task.startedAt };
       }
       workspaces[id] = { ...activity,
+        lastResult: task?.report?.summary?.slice(0, 160) || task?.resultSummary || chat?.lastResult || undefined,
         target: ["working", "starting"].includes(activity.state) && (target?.surface !== "terminal" || agentAtTerminal) ? target : undefined,
         role: task?.role };
     }

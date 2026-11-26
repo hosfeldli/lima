@@ -16,10 +16,34 @@ const RISK = {
 export function workspacePrompts({ workspace = () => null, signal } = {}) {
   const tray = el("section", { class: "workspace-prompts", hidden: true, "aria-label": "Requests awaiting your response" });
   const rows = new Map();
+  const groups = new Map();
   function draw() {
     const id = workspace();
+    const related = new Map();
     for (const card of rows.values()) {
       card.hidden = id !== null && card.dataset.workspace !== id && card.dataset.parent !== id;
+      if (!card.hidden && card.limaGroup) {
+        const siblings = related.get(card.limaGroup) ?? [];
+        siblings.push(card);
+        related.set(card.limaGroup, siblings);
+      }
+    }
+    for (const [key, cards] of related) {
+      if (cards.length < 2) continue;
+      let group = groups.get(key);
+      if (!group) {
+        group = el("details", { class: "prompt-group", open: true }, el("summary"));
+        tray.insertBefore(group, cards[0].parentElement === tray ? cards[0] : null);
+        groups.set(key, group);
+      }
+      group.firstChild.textContent = `${cards[0].limaSite} · ${cards[0].limaAction} · ${cards.length} requests`;
+      for (const card of cards) if (card.parentElement !== group) group.append(card);
+    }
+    for (const [key, group] of groups) {
+      if ((related.get(key)?.length ?? 0) >= 2) continue;
+      for (const card of [...group.children].slice(1)) tray.insertBefore(card, group);
+      group.remove();
+      groups.delete(key);
     }
     tray.hidden = ![...rows.values()].some(card => !card.hidden);
   }
@@ -72,6 +96,13 @@ export function workspacePrompts({ workspace = () => null, signal } = {}) {
           ? el("button", { type: "button", class: "link prompt-link", title: fact.value, onclick: () => bridge.openTab(fact.value) }, fact.value)
           : fact.value)])) : null,
       detail, form);
+    const site = facts.find(fact => fact.label === "Site")?.value;
+    const action = facts.find(fact => fact.label === "Can")?.value ?? prompt.question.match(/^(Click|Type|Go to)\b/)?.[0];
+    if (prompt.approval && site && action) {
+      card.limaSite = site;
+      card.limaAction = action;
+      card.limaGroup = JSON.stringify([prompt.parentWorkspaceId ?? prompt.workspaceId, site, action, prompt.risk]);
+    }
     rows.set(prompt.id, card);
     tray.append(card);
     draw();

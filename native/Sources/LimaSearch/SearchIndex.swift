@@ -42,6 +42,7 @@ public struct SearchResult: Codable, Equatable, Sendable {
     public var title: String
     public var subtitle: String
     public var score: Double
+    public var learned: Double? = nil
     public var action: SearchAction
 
     public init(key: String, source: String, title: String, subtitle: String, score: Double, action: SearchAction) {

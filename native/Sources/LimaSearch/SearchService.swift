@@ -34,6 +34,7 @@ public struct SearchResponse: Codable, Equatable, Sendable {
     public var intent: SearchIntent
     public var results: [SearchResult]
     public var elapsedMs: Double
+    public var learning: [String: Double]? = nil
 }
 
 /// Federated search over the in-memory index plus synthesized action rows.
@@ -54,21 +55,25 @@ public actor SearchService {
 
     public func setExcludedSources(_ sources: Set<String>) { excludedSources = sources }
 
-    public func search(_ raw: String, mode: SearchIntent.Mode? = nil, limit: Int = 30) -> SearchResponse {
+    public func search(_ raw: String, mode: SearchIntent.Mode? = nil, limit: Int = 30, source: String? = nil) -> SearchResponse {
         let start = Date()
         let intent = SearchIntent.parse(raw, mode: mode)
         var results: [SearchResult] = []
         let now = Date().timeIntervalSince1970 * 1000
+        let words = Self.learningQuery(intent.query)
 
         if intent.mode == .everything || intent.mode == .tools {
-            let sources: Set<String>? = intent.mode == .tools ? ["tool"] : nil
+            let sources: Set<String>? = intent.mode == .tools ? ["tool"] : source.map { [$0] }
             for (document, relevance) in index.query(intent.query, sources: sources, limit: limit) where !excludedSources.contains(document.source) {
                 let ageDays = document.timestamp > 0 ? max(0, (now - document.timestamp) / 86_400_000) : 30
                 let recency = 1 / (1 + ageDays / 14)
-                let learned = log(1 + Double(selections[document.key] ?? 0))
-                let score = relevance * (sourceWeights[document.source] ?? 1) + recency * 2 + learned * 6
-                results.append(SearchResult(key: document.key, source: document.source, title: document.title,
-                                            subtitle: document.subtitle, score: score, action: document.action))
+                let learned = log1p(Double(selections["\(words)\u{1F}\(document.key)"] ?? 0)) * 6
+                let score = relevance * (sourceWeights[document.source] ?? 1) + recency * 2 + learned
+                let subtitle = document.source == "note" ? Self.excerpt(document.body, matching: intent.query) ?? document.subtitle : document.subtitle
+                var result = SearchResult(key: document.key, source: document.source, title: document.title,
+                                          subtitle: subtitle, score: score, action: document.action)
+                if learned > 0 { result.learned = learned }
+                results.append(result)
             }
             // Exact title prefix beats fuzzy body hits (e.g. typing an app name).
             let lower = intent.query.lowercased()
@@ -100,13 +105,43 @@ public actor SearchService {
             results.append(web)
         case .tools: break
         }
-        return SearchResponse(intent: intent, results: results, elapsedMs: Date().timeIntervalSince(start) * 1000)
+        let prefix = "\(words)\u{1F}local:"
+        let localLearning = selections.compactMap { key, value -> (String, Double)? in
+            guard key.hasPrefix(prefix) else { return nil }
+            return (String(key.dropFirst(prefix.count)), log1p(Double(value)) * 6)
+        }
+        return SearchResponse(intent: intent, results: results, elapsedMs: Date().timeIntervalSince(start) * 1000,
+                              learning: localLearning.isEmpty ? nil : Dictionary(uniqueKeysWithValues: localLearning))
     }
 
-    /// Learned ranking: count selections per result key.
-    public func recordSelection(_ key: String) -> [String: Int] {
-        selections[key, default: 0] += 1
+    /// Count selections for the same query words. Old, unqualified counts
+    /// stay readable during migration but cannot influence unrelated queries.
+    public func recordSelection(_ key: String, query: String) -> [String: Int] {
+        let words = Self.learningQuery(SearchIntent.parse(query).query)
+        guard !words.isEmpty, key.count <= 512 else { return selections }
+        let bucket = "\(words)\u{1F}\(key)"
+        if selections[bucket] == nil, selections.count >= 10_000 {
+            if let first = selections.min(by: { $0.value < $1.value })?.key {
+                selections.removeValue(forKey: first)
+            }
+        }
+        selections[bucket] = min(selections[bucket, default: 0], 999) + 1
         return selections
+    }
+
+    private static func learningQuery(_ text: String) -> String {
+        String(text.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).joined(separator: " ").prefix(256))
+    }
+
+    private static func excerpt(_ body: String, matching query: String) -> String? {
+        let text = body.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let words = query.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        let match = text.range(of: query, options: [.caseInsensitive, .diacriticInsensitive])
+            ?? words.lazy.compactMap { text.range(of: $0, options: [.caseInsensitive, .diacriticInsensitive]) }.first
+        guard let match else { return nil }
+        let start = text.index(match.lowerBound, offsetBy: -35, limitedBy: text.startIndex) ?? text.startIndex
+        let end = text.index(start, offsetBy: 140, limitedBy: text.endIndex) ?? text.endIndex
+        return (start == text.startIndex ? "" : "…") + String(text[start..<end]) + (end == text.endIndex ? "" : "…")
     }
 
     public func resetLearning() { selections = [:] }

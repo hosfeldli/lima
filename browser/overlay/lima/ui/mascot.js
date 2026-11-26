@@ -1,3 +1,5 @@
+import { SPRING, SETTLE } from "./motion.sys.mjs";
+import { generateMascot, mascotColors } from "./mascot-look.sys.mjs";
 /* The mascot engine: every workspace and chat gets its own companion,
  * generated from its id (ears, eyes, markings, an accessory and a colour),
  * drawn in the chosen theme, kept lively with small idle moments, and
@@ -10,61 +12,9 @@
 
 // MARK: Generation
 
-/** A small deterministic generator (mulberry32) seeded from a string. */
-function seeded(seed) {
-  let h = 1779033703 ^ String(seed).length;
-  for (let i = 0; i < String(seed).length; i++) {
-    h = Math.imul(h ^ String(seed).charCodeAt(i), 3432918353);
-    h = (h << 13) | (h >>> 19);
-  }
-  let state = h >>> 0;
-  return () => {
-    state = (state + 0x6D2B79F5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-export const EARS = ["pointy", "round", "floppy"];
-export const EYES = ["dots", "happy", "sleepy", "sparkle"];
-export const MARKINGS = ["none", "none", "spots", "patch", "stripes"];
-export const EXTRAS = ["none", "none", "scarf", "bow", "glasses", "headphones", "flower"];
-
-/** The look for one id: the same id always gets the same mascot. */
-export function generateMascot(seed) {
-  if (!seed) return { ears: "pointy", eyes: "dots", marking: "none", extra: "none", hue: 30, tilt: 0 };
-  const random = seeded(seed);
-  const pick = list => list[Math.floor(random() * list.length)];
-  return {
-    ears: pick(EARS), eyes: pick(EYES), marking: pick(MARKINGS), extra: pick(EXTRAS),
-    hue: Math.floor(random() * 360),
-    // A touch of individual posture.
-    tilt: Math.round((random() - .5) * 6),
-  };
-}
-
-// MARK: Theming
-
 export const THEMES = { graphite: "Graphite", pastel: "Pastel", outline: "Outline" };
 let theme = "graphite";
 try { theme = localStorage.getItem("lima.mascotTheme") ?? "graphite"; } catch {}
-
-/** Colours for a look in the current theme, as CSS custom properties. */
-export function mascotColors(look, dark = document.documentElement.getAttribute("lima-theme") === "dark") {
-  if (theme === "pastel") {
-    return {
-      "--mascot-fill": `hsl(${look.hue} ${dark ? 22 : 62}% ${dark ? 30 : 93}%)`,
-      "--mascot-tone": `hsl(${look.hue} ${dark ? 24 : 48}% ${dark ? 40 : 82}%)`,
-      "--mascot-accent": `hsl(${(look.hue + 150) % 360} ${dark ? 40 : 55}% ${dark ? 62 : 58}%)`,
-    };
-  }
-  if (theme === "outline") return { "--mascot-fill": "var(--paper)", "--mascot-tone": "transparent", "--mascot-accent": "var(--paper)" };
-  // Graphite: Lima's greys, each mascot a slightly different shade.
-  const light = dark ? 22 + (look.hue % 7) : 96 - (look.hue % 6);
-  return { "--mascot-fill": `hsl(0 0% ${light}%)`, "--mascot-tone": `hsl(0 0% ${dark ? light + 10 : light - 9}%)`, "--mascot-accent": "var(--ink-2)" };
-}
 
 export function setMascotTheme(value) {
   if (!THEMES[value]) return;
@@ -81,7 +31,7 @@ export function paintLook(character) {
   const look = character.limaLook;
   if (!look) return;
   for (const [mode, dark] of [["light", false], ["dark", true]]) {
-    for (const [name, value] of Object.entries(mascotColors(look, dark))) character.style.setProperty(`${name}-${mode}`, value);
+    for (const [name, value] of Object.entries(mascotColors(look, dark, theme))) character.style.setProperty(`${name}-${mode}`, value);
   }
   character.dataset.look = "";
   character.dataset.ears = look.ears;
@@ -97,7 +47,6 @@ export function paintLook(character) {
 const lively = character => character.dataset.personality === "full" && !character.hasAttribute("data-offscreen") &&
   !document.documentElement.hasAttribute("lima-hidden") && !matchMedia("(prefers-reduced-motion: reduce)").matches;
 const part = (character, name) => character.querySelector(`.companion-${name}`);
-const SPRINGY = "linear(0, 0.25 8%, 0.7 18%, 1.04 28%, 1.1 34%, 1.03 46%, 0.99 60%, 1)";
 
 /** Small things a resting mascot does now and then. */
 const IDLES = {
@@ -110,7 +59,7 @@ const IDLES = {
   twitch: c => c.querySelector(".companion-ears")?.animate([{ transform: "none" }, { transform: "rotate(-6deg)", offset: .2 },
     { transform: "rotate(4deg)", offset: .4 }, { transform: "none", offset: .6 }], { duration: 650, easing: "ease-out" }),
   hop: c => part(c, "body")?.animate([{ transform: "none" }, { transform: "translateY(-5px) scale(.97, 1.04)", offset: .4 },
-    { transform: "scale(1.05, .93)", offset: .7 }, { transform: "none" }], { duration: 650, easing: SPRINGY }),
+    { transform: "scale(1.05, .93)", offset: .7 }, { transform: "none" }], { duration: 650, easing: SPRING }),
   yawn: c => part(c, "speaking")?.animate([{ opacity: 0, transform: "scale(.6)" }, { opacity: 1, transform: "scale(1.5)", offset: .4 },
     { opacity: 1, transform: "scale(1.5)", offset: .7 }, { opacity: 0, transform: "scale(.6)" }], { duration: 1500, easing: "ease-in-out" }),
 };
@@ -132,7 +81,7 @@ function overlay(character, draw, keyframes, duration) {
   group.setAttribute("class", "companion-reaction");
   draw(group);
   art.append(group);
-  const animation = group.animate(keyframes, { duration, easing: "cubic-bezier(.2, .8, .3, 1)", fill: "forwards" });
+  const animation = group.animate(keyframes, { duration, easing: SETTLE, fill: "forwards" });
   animation.finished.then(() => group.remove(), () => group.remove());
 }
 
@@ -181,8 +130,8 @@ const PERFORM = {
     IDLES.hop(c);
   },
   perk: c => {
-    c.querySelector(".companion-ears")?.animate([{ transform: "none" }, { transform: "translateY(-2px) scale(1.05)", offset: .35 }, { transform: "none" }], { duration: 420, easing: SPRINGY });
-    part(c, "body")?.animate([{ transform: "none" }, { transform: "translateY(-2px)", offset: .35 }, { transform: "none" }], { duration: 420, easing: SPRINGY });
+    c.querySelector(".companion-ears")?.animate([{ transform: "none" }, { transform: "translateY(-2px) scale(1.05)", offset: .35 }, { transform: "none" }], { duration: 420, easing: SPRING });
+    part(c, "body")?.animate([{ transform: "none" }, { transform: "translateY(-2px)", offset: .35 }, { transform: "none" }], { duration: 420, easing: SPRING });
   },
   tilt: c => part(c, "body")?.animate([{ transform: "none" }, { transform: "rotate(-7deg)", offset: .35 }, { transform: "rotate(-7deg)", offset: .7 }, { transform: "none" }],
     { duration: 1100, easing: "ease-in-out" }),
@@ -214,8 +163,9 @@ function scheduleIdle() {
       character.limaLastIdle = name;
       try { IDLES[name](character); } catch {}
     }
-    scheduleIdle();
-  }, 5000 + Math.random() * 9000);
+    idleTimer = 0;
+    if (resting.size) scheduleIdle();
+  }, 30000 + Math.random() * 25000);
 }
 
 /** Gives a character its generated look and joins it to the idle moments. */

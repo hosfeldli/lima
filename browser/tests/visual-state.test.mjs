@@ -115,3 +115,10 @@ test("only what the user must do raises attention, and notices dismiss", () => {
   assert.equal(state.snapshot().workspaces.helper.notice, undefined);
   assert.equal(state.snapshot().workspaces.main.attention, undefined);
 });
+
+test("reply previews show a report's summary, never its JSON", async () => {
+  const { replyPreview } = await import("../overlay/lima/ui/tool-activity.sys.mjs");
+  assert.equal(replyPreview('Done.\n\n```lima-report\n{"status":"completed","summary":"Booked three hotels."}\n```'), "Booked three hotels.");
+  assert.equal(replyPreview("Here:\n```js\nx()\n```\n**Ready** to ship"), "Here: Ready to ship");
+  assert.equal(replyPreview("```lima-report\n{broken"), "");
+});

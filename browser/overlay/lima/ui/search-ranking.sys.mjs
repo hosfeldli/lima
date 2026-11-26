@@ -122,7 +122,7 @@ export function normalizeURL(url) {
 }
 
 const KIND_BONUS = { tab: 14, workspace: 12, bookmark: 9, note: 8, command: 8, app: 7, chat: 6, file: 5, history: 0, other: 0 };
-const KIND_RANK = { tab: 3, bookmark: 2, history: 1 };
+const KIND_RANK = { tab: 3, note: 2, chat: 2, bookmark: 2, history: 1 };
 const KIND_LABEL = { tab: "Open tab", bookmark: "Bookmarked", history: "History" };
 const DAY = 86_400_000;
 
@@ -133,6 +133,7 @@ export function scoreItem(query, item, now = Date.now()) {
   if (!relevance && Number.isFinite(item.score)) relevance = Math.min(70, Math.max(20, item.score / 15));
   if (!relevance) return 0;
   let score = relevance + (KIND_BONUS[item.kind] ?? 0);
+  score += item.learned ?? 0;
   if (item.inCurrentWorkspace) score += 8;
   if (item.lastUsed) score += Math.max(0, 10 - ((now - item.lastUsed) / DAY) * 2);
   if (item.frecency) score += Math.min(8, Math.log10(item.frecency + 1) * 2);
@@ -156,17 +157,20 @@ export function dedupe(items) {
     }
     const sources = [...new Set([...existing.sources, item.kind])];
     const winner = (KIND_RANK[item.kind] ?? 0) > (KIND_RANK[existing.kind] ?? 0) ? item : existing;
-    Object.assign(existing, { ...winner, sources, rank: Math.max(existing.rank ?? 0, item.rank ?? 0),
+    const note = sources.includes("note") && (item.kind === "note" ? item : existing);
+    const highlights = note?.highlights;
+    const subtitle = highlights?.length ? note.subtitle : winner.subtitle;
+    Object.assign(existing, { ...winner, sources, subtitle, highlights, rank: Math.max(existing.rank ?? 0, item.rank ?? 0),
       lastUsed: Math.max(existing.lastUsed ?? 0, item.lastUsed ?? 0) || undefined,
       frecency: Math.max(existing.frecency ?? 0, item.frecency ?? 0) || undefined,
       inCurrentWorkspace: existing.inCurrentWorkspace || item.inCurrentWorkspace });
   }
-  for (const item of out) if (item.sources.length > 1) item.subtitle = mergedSubtitle(item);
+  for (const item of out) if (item.sources.length > 1 && !item.highlights?.length) item.subtitle = mergedSubtitle(item);
   return out;
 }
 
 function mergedSubtitle(item) {
-  const labels = item.sources.sort((a, b) => KIND_RANK[b] - KIND_RANK[a]).map(kind => KIND_LABEL[kind]);
+  const labels = item.sources.sort((a, b) => KIND_RANK[b] - KIND_RANK[a]).map(kind => KIND_LABEL[kind] ?? (kind === "note" ? "Note" : "AI chat"));
   const where = item.kind === "tab" && item.group ? `Tab in ${item.group}` : labels[0];
   return [where, ...labels.slice(1).filter(label => label !== "History")].join(" · ");
 }
@@ -200,6 +204,7 @@ export class ResultSet {
     this.query = query;
     this.limit = limit;
     this.best = [];
+    this.learning = {};
     this.pool = [];
     this.local = [];
     this.web = [];
@@ -212,7 +217,12 @@ export class ResultSet {
 
   addLocal(items, now = Date.now()) {
     this.pool.push(...items);
-    this.local = rankLocal(this.query, this.pool, now);
+    this.rank(now);
+  }
+
+  rank(now = Date.now()) {
+    this.local = rankLocal(this.query, this.pool.map(item => this.learning[item.learningKey] ?
+      { ...item, learned: this.learning[item.learningKey] } : item), now);
   }
 
   setWeb(items) {
@@ -230,7 +240,10 @@ export class ResultSet {
 
   /** Called when the user moves the selection: what's visible stays put. */
   freeze() {
-    if (!this.frozen) this.frozen = this.layout().sections.flatMap(section => section.items.map(item => item.key));
+    if (this.frozen) return;
+    const sections = this.layout().sections;
+    this.frozen = sections.flatMap(section => section.items.map(item => item.key));
+    this.frozenLocal = sections.find(section => section.id === "local")?.items ?? [];
   }
 
   layout() {
@@ -247,7 +260,14 @@ export class ResultSet {
     if (this.frozen) {
       const visible = new Set(this.frozen);
       const keep = list => list.filter(item => visible.has(item.key));
-      local = keep(this.local).sort((a, b) => this.frozen.indexOf(a.key) - this.frozen.indexOf(b.key));
+      const current = new Map(this.local.map(item => [item.key, item]));
+      local = this.frozenLocal.filter(item => visible.has(item.key)).map(item => {
+        const exact = current.get(item.key);
+        if (exact) return exact;
+        const merged = this.local.find(row => item.url && normalizeURL(row.url) === normalizeURL(item.url));
+        // Keep the destination and action the user was about to choose.
+        return merged?.highlights?.length ? { ...item, subtitle: merged.subtitle, highlights: merged.highlights } : item;
+      });
       // Web Suggestions is the last section, so new ones can only append below.
       const kept = keep(this.web);
       const spare = Math.max(0, cap - best.length - local.length - kept.length);

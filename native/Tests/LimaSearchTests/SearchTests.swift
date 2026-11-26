@@ -18,9 +18,15 @@ import Testing
     service.index.upsert(SearchDocument(source: "note", id: "n", title: "Meeting", body: "talked about github workflow", action: SearchAction("openNote")))
     var response = await service.search("github")
     #expect(response.results.first?.key == "app:gh")
-    for _ in 0..<5 { _ = await service.recordSelection("note:n") }
+    for _ in 0..<5 { _ = await service.recordSelection("note:n", query: "GitHub") }
     response = await service.search("github")
     #expect(response.results.first?.key == "note:n")
+    #expect(response.results.first?.subtitle == "talked about github workflow")
+    #expect((await service.search("workflow")).results.first?.learned == nil)
+    #expect(!(await service.search("github", source: "note")).results.contains { $0.key == "app:gh" })
+    _ = await service.recordSelection("local:tab:https://example.com", query: "GitHub")
+    #expect((await service.search("github")).learning?["tab:https://example.com"] ?? 0 > 0)
+    #expect((await service.search("workflow")).learning == nil)
     // Never sends to web/AI by itself: those rows are offered, not executed.
     #expect(response.results.contains { $0.action.type == "webSearch" })
 }

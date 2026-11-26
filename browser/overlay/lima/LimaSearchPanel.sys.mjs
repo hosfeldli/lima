@@ -1,3 +1,4 @@
+import { SETTLE } from "resource://lima/LimaMotion.sys.mjs";
 /* Lima Universal Search (docs/spec/universal-search.md). ⌘T, Zen's New Tab
  * and ＋ → New Tab open one floating panel over the current page: an input,
  * a short list of results and a footer of key hints. The page underneath is
@@ -134,15 +135,16 @@ class Panel {
     this.live = el(doc, "div", { id: "lima-search-live", class: "lima-s-visually-hidden", "aria-live": "polite" });
     const hint = (key, label) => el(doc, "span", {}, el(doc, "kbd", { text: key }), ` ${label}`);
     // Where to look: everything, or one kind of thing. Same as typing @tabs.
+    this.scopeHint = el(doc, "div", { id: "lima-search-scope-hint", class: "lima-s-empty", hidden: true });
     this.scopeBar = el(doc, "div", { id: "lima-search-scopes", role: "toolbar", "aria-label": "Search in" },
       SCOPES.filter(([target]) => !this.private || !target || target === "tabs").map(([target, label, icon], index) =>
         el(doc, "button", { type: "button", class: "lima-s-scope", "data-target": target ?? "", title: `${label} (⌘${index + 1})`,
           onmousedown: event => event.preventDefault(), onclick: () => this.setTarget(target) }, glyph(doc, icon), el(doc, "span", { text: label }))));
     this.panel = el(doc, "div", { id: "lima-search", role: "dialog", "aria-label": "Lima Search" },
       el(doc, "div", { id: "lima-search-field" }, this.mark, this.scope, this.input, this.spinner, this.where),
-      this.scopeBar, this.contextChip, this.status, this.results, this.live,
+      this.scopeBar, this.scopeHint, this.contextChip, this.status, this.results, this.live,
       el(doc, "div", { id: "lima-search-foot", "aria-hidden": "true" },
-        hint("↑↓", "Select"), this.openHint = hint("↩", "Open"), hint("⇥", "Complete"), hint("⌥↩", "Other tab"),
+        hint("↑↓", "Select"), this.openHint = hint("↩", "Open"), hint("⇥", "Cycle scopes"), hint("⌥↩", "Other tab"),
         this.private ? null : hint("⌘↩", "AI Chat"), this.tabHint = hint("⌘⌫", "Close tab"), hint("esc", "Close")));
     this.scrim = el(doc, "div", { id: "lima-search-scrim", hidden: true, onpointerdown: event => { if (event.target === this.scrim) this.close(); } }, this.panel);
     doc.documentElement.append(this.scrim);
@@ -226,7 +228,8 @@ class Panel {
   /** Searches one scope (or all): rewrites the @target in the query. */
   setTarget(target) {
     const { text } = parseQuery(this.input.value);
-    this.input.value = target ? `@${target} ${text}` : text;
+    const rest = text.replace(/(^|\s)@[\p{L}]*$/u, "").trim();
+    this.input.value = target ? `@${target} ${rest}` : rest;
     if (target !== "page") this.setContext(null);
     this.selectedKey = null;
     this.answering = null;
@@ -237,7 +240,12 @@ class Panel {
   }
 
   paintScopes(target) {
-    for (const button of this.scopeBar.children) button.setAttribute("aria-pressed", String((button.dataset.target || null) === target));
+    const partial = target == null ? this.input.value.match(/(?:^|\s)@([a-z]*)$/i)?.[1]?.toLowerCase() : undefined;
+    const choices = [...this.scopeBar.children];
+    for (const button of choices) button.setAttribute("aria-pressed", String((button.dataset.target || null) === target));
+    this.scopeMatches = partial === undefined ? [] : choices.filter(button => button.dataset.target && button.dataset.target.startsWith(partial));
+    this.scopeHint.hidden = !this.scopeMatches.length;
+    this.scopeHint.textContent = this.scopeMatches.map(button => `@${button.dataset.target}`).join("  ·  ");
   }
 
   currentPage() {
@@ -300,6 +308,7 @@ class Panel {
     this.holdHeight();
     const local = rows => {
       if (generation !== this.generation) return;
+      for (const row of rows) row.learningKey ??= `${row.kind}:${row.url ?? row.key}`;
       this.set.addLocal(rows);
       this.metrics.local ??= this.win.performance.now() - started;
       this.paint();
@@ -323,7 +332,13 @@ class Panel {
     }
     this.set.setBest(this.bestRows(text, target));
     if (!target || target === "tabs") local(this.tabRows());
-    if (!target || target === "notes") run(() => this.limaRows(text, target).then(local));
+    if (!this.private && target !== "page") run(async () => {
+      const response = await lazy.LimaBridge.request("search.query", { query: text, limit: 18, ...(target === "notes" ? { source: "note" } : {}) });
+      if (generation !== this.generation) return;
+      this.set.learning = response.learning ?? {};
+      if (!target || target === "notes") local(this.limaRows(text, target, response));
+      else { this.set.rank(); this.paint(); }
+    });
     if (target === "files") run(() => this.fileRows(text).then(local), 2500);
     if (!target || target === "workspace") run(() => this.workspaceRows().then(local));
     if (!target) run(() => this.historyRows(text).then(local));
@@ -400,24 +415,25 @@ class Panel {
       });
   }
 
-  async limaRows(text, target) {
-    if (this.private) return [];
-    const response = await lazy.LimaBridge.request("search.query", { query: text, limit: 18 });
+  limaRows(text, target, response) {
     const wanted = target === "notes" ? "note" : target === "files" ? "file" : null;
     const results = response.results
       .filter(r => !["web", "tab"].includes(r.source) && !["agentAsk", "quickAsk", "webSearch", "navigate", "switchTab"].includes(r.action.type))
       .filter(r => !wanted || r.source === wanted);
     // An activity record of opening a note or chat repeats that note or chat.
-    const named = new Set(results.filter(r => r.source !== "context").map(r => r.title?.trim().toLowerCase()));
+    const notes = new Set(results.filter(r => r.source === "note").map(r => r.action.payload?.id));
     return results
-      .filter(r => r.source !== "context" || !named.has(r.title?.trim().toLowerCase()))
+      .filter(r => r.source !== "context" || !notes.has(r.action.payload?.noteId))
       .map(r => {
         const command = r.action.type === "runCapability";
         const source = SOURCE[r.source] ?? { kind: "other", icon: "search" };
         return { key: `lima:${r.key}`, kind: command ? "command" : source.kind, icon: command ? "bolt" : source.icon, title: r.title,
           // Apps show their own icon, as in the Dock.
           image: r.action.type === "openApp" && r.action.payload?.path ? macIcon(r.action.payload.path) : undefined,
-          subtitle: r.subtitle, score: r.score, command,
+          subtitle: r.subtitle, score: r.score, learned: r.learned, nativeKey: r.key, command,
+          url: r.action.type === "openNote" ? `about:lima?note=${encodeURIComponent(r.action.payload.id)}` :
+            r.action.type === "openConversation" ? `about:lima?chat=${encodeURIComponent(r.action.payload.id)}` : undefined,
+          highlights: r.source === "note" ? text.match(/[\p{L}\p{N}]+/gu) : null,
           action: r.action.type === "openApp" ? "Launch" : command ? "Run" : r.action.type === "copyText" ? "Copy" : "Open",
           run: () => this.runLima(r) };
       });
@@ -443,7 +459,13 @@ class Panel {
       run: () => {
         const local = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
         local.initWithPath(file.path);
-        if (file.directory) local.reveal(); else local.launch();
+        if (file.directory) { local.reveal(); return; }
+        const url = Services.io.newFileURI(local).spec;
+        if (/\.(?:pdf|png|jpe?g|gif|webp|avif|bmp|ico|svg)$/i.test(file.path)) {
+          return lazy.LimaTabs.openOrFocus(this.win, url);
+        }
+        if (/\.(?:md|markdown)$/i.test(file.path)) return lazy.LimaTabs.openOrFocus(this.win, `view-source:${url}`);
+        local.launch();
       },
     }));
   }
@@ -580,7 +602,6 @@ class Panel {
   }
 
   async runLima(result) {
-    lazy.LimaBridge.request("search.select", { key: result.key }).catch(() => {});
     const p = result.action.payload ?? {};
     const q = encodeURIComponent;
     switch (result.action.type) {
@@ -619,10 +640,14 @@ class Panel {
     if (item.inline) return item.run();
     this.running = true;
     const generation = this.generation;
+    const query = parseQuery(this.input.value).text;
     if (item.command) this.setStatus("busy", "Running command…");
     else this.close({ restoreFocus: false });
     try {
       await item.run();
+      if (query && !this.private && item.learningKey) {
+        lazy.LimaBridge.request("search.select", { key: item.nativeKey ?? `local:${item.learningKey}`, query }).catch(() => {});
+      }
       if (item.command && generation === this.generation) this.close({ restoreFocus: false });
       try { this.win.gBrowser.selectedBrowser.focus(); } catch {}
     } catch (error) {
@@ -768,7 +793,7 @@ class Panel {
     if (!this.isOpen || Math.abs(before - after) < 2 || this.win.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     this.heightAnimation?.cancel();
     this.heightAnimation = this.panel.animate([{ height: `${before}px` }, { height: `${after}px` }],
-      { duration: Math.min(260, 140 + Math.abs(before - after) / 3), easing: "cubic-bezier(.2, .8, .25, 1)" });
+      { duration: Math.min(260, 140 + Math.abs(before - after) / 3), easing: SETTLE });
   }
 
   paint() {
@@ -792,7 +817,7 @@ class Panel {
         onmousedown: event => { event.preventDefault(); this.activate(item); } },
         el(doc, "span", { class: "lima-s-icon", "data-kind": item.kind ?? item.key.split(":")[0] }, item.image ? picture(doc, item.image, item.icon) : glyph(doc, item.icon)),
         el(doc, "span", { class: "lima-s-text" }, el(doc, "span", { class: "lima-s-title", text: item.title }),
-          item.subtitle ? el(doc, "span", { class: "lima-s-sub", text: item.subtitle }) : null),
+          item.subtitle ? el(doc, "span", { class: "lima-s-sub" }, this.highlight(item.subtitle, item.highlights)) : null),
         selected ? el(doc, "span", { class: "lima-s-action", "aria-hidden": "true" }, el(doc, "kbd", { text: "↩" }), ` ${item.action}`)
           : (item.when ?? item.lastUsed) ? el(doc, "span", { class: "lima-s-when", text: ago(item.when ?? item.lastUsed) }) : null,
         item.closeTab ? el(doc, "button", { type: "button", class: "lima-s-close", title: "Close tab (⌘⌫)", "aria-label": `Close ${item.title}`,
@@ -817,6 +842,13 @@ class Panel {
     this.results.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
     this.tabHint.hidden = !this.items.find(item => item.key === this.selectedKey)?.closeTab;
     this.announce(text);
+  }
+
+  highlight(subtitle, words) {
+    if (!words?.length) return subtitle;
+    const pattern = new RegExp(`(${words.slice(0, 20).join("|")})`, "giu");
+    return subtitle.split(pattern).map((part, index) =>
+      index % 2 ? el(this.doc, "mark", { text: part }) : part);
   }
 
   /** One polite announcement after results settle, not one per source. */
@@ -879,7 +911,17 @@ class Panel {
       clipboard().copyString(this.items[index].url);
       this.setStatus("ok", "Link copied", this.items[index].url);
       this.win.setTimeout(() => { if (this.status.dataset.tone === "ok") this.clearStatus(); }, 1600);
-    } else if (event.key === "Tab" && !event.shiftKey && !this.answering) {
+    } else if (event.key === "Tab" && !event.altKey && !event.metaKey && !event.ctrlKey && !this.answering) {
+      event.preventDefault();
+      if (this.scopeMatches?.length) {
+        this.setTarget(this.scopeMatches[event.shiftKey ? this.scopeMatches.length - 1 : 0].dataset.target);
+        return;
+      }
+      const current = parseQuery(this.input.value).target ?? "";
+      const choices = [...this.scopeBar.children].map(button => button.dataset.target);
+      const index = choices.indexOf(current);
+      this.setTarget(choices[(index + (event.shiftKey ? choices.length - 1 : 1)) % choices.length] || null);
+    } else if (event.key === "ArrowRight" && event.altKey && !this.answering) {
       if (this.complete()) event.preventDefault();
     } else if (event.key === "Enter" && event.metaKey && event.shiftKey) {
       event.preventDefault();

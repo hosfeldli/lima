@@ -45,7 +45,7 @@ enum SecurityPolicy {
         add(["integrations.messages.compose"], "write a message in Messages for you", "account")
         add(["integrations.grammar.configure", "integrations.google.configure", "integrations.google.refresh", "integrations.setup.start"],
             "change Lima's integrations", "system")
-        add(["update.install", "update.rollback", "update.check"], "install, check or roll back Lima updates", "system")
+        add(["update.install", "update.rollback", "update.check", "update.moveToApplications"], "install, check or roll back Lima updates", "system")
         add(["agents.failover"], "change provider failover", "system")
         add(["search.select", "search.resetLearning", "search.rebuild", "search.indexTabs"], "change Lima Search's index", "system")
         add(["notes.migrateLegacy"], "import your Lima 4 notes", "system")

@@ -201,3 +201,16 @@ export function stepParts(raw, { cwd = "" } = {}) {
   if (query) return { verb: DONE[name], kind: "text", target: `“${query}”`, full: query };
   return { verb: label, kind: "text", target: short, note: server, full: short };
 }
+
+/** One line for a finished reply: the summary of its lima-report when it
+ * has one, otherwise its prose with code blocks and Markdown marks removed,
+ * so a list never shows a report's raw JSON. */
+export function replyPreview(text, limit = 160) {
+  const source = String(text ?? "");
+  let summary = "";
+  const report = /```lima-report[^\n]*\n([\s\S]*?)(?:\n```|$)/.exec(source);
+  if (report) { try { summary = JSON.parse(report[1])?.summary; } catch {} }
+  const prose = source.replace(/```[\s\S]*?(?:```|$)/g, " ").replace(/[#*_`>|]+/g, "").replace(/\s+/g, " ").trim();
+  const line = typeof summary === "string" && summary.trim() ? summary.replace(/\s+/g, " ").trim() : prose;
+  return line.length > limit ? `${line.slice(0, limit - 1)}…` : line;
+}
