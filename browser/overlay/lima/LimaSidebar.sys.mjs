@@ -104,8 +104,14 @@ export const LimaCreate = {
 
   async note(win, folder = null) {
     const note = await lazy.LimaNotesBookmarks.createNote({ title: "Untitled", kind: "classic" });
-    const tab = win.gBrowser.addTab(`about:lima?note=${encodeURIComponent(note.id)}`, { triggeringPrincipal: system() });
+    const url = `about:lima?note=${encodeURIComponent(note.id)}`;
+    const tab = win.gBrowser.addTab(url, { triggeringPrincipal: system() });
     this.place(win, tab, folder);
+    const id = folder?.closest("zen-folder[lima-workspace]")?.getAttribute("lima-workspace");
+    if (id) {
+      const path = folder.getAttribute("lima-tab-folder") ?? "";
+      await lazy.LimaBridge.request("workspace.organizeTabs", { id, tabs: [{ url, title: note.title, folder: path }] });
+    }
     return note;
   },
 
@@ -228,8 +234,8 @@ function installMenus(win) {
   if (tabMenu && !doc.getElementById("lima-tabctx-note")) {
     const contextTab = () => win.TabContextMenu?.contextTab;
     const folderOfTab = () => contextTab()?.group?.isZenFolder ? contextTab().group : null;
-    const addTo = workspaceMenu(win, "lima-tabctx-add", "Add Tab to Workspace", (workspace, tab) => {
-      lazy.LimaWorkspaces.addTab(win, workspace.id, tab);
+    const addTo = workspaceMenu(win, "lima-tabctx-add", "Add Tab to Workspace (⌃⌥M)", async (workspace, tab) => {
+      await lazy.LimaWorkspaces.addTab(win, workspace.id, tab);
       showSidebarNotice(win, { title: `Added to ${workspace.name}`, detail: tab.label, actions: [["Open Agent", () => lazy.LimaWorkspaces.openChat(win, workspace.id)]] });
     }, contextTab);
     tabMenu.prepend(
@@ -298,7 +304,8 @@ function workspaceMenu(win, id, label, choose, contextTab) {
       const entry = doc.createXULElement("menuitem");
       entry.setAttribute("label", workspace.name);
       entry.addEventListener("command", () => {
-        try { choose(workspace, tab); } catch (error) { failed(win, label, error, () => choose(workspace, tab)); }
+        Promise.resolve().then(() => choose(workspace, tab))
+          .catch(error => failed(win, label, error, () => choose(workspace, tab)));
       });
       return entry;
     }));

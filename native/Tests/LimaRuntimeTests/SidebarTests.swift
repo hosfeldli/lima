@@ -117,7 +117,7 @@ import LimaAuthorization
     #expect(notBrowser.error?.code == .notAuthorized)
     _ = await call(runtime, "workspace.browserReply", ["requestId": .string(pending), "result": .object(["text": .string("Example Domain")])])
     let answered = await request.value
-    #expect(answered.result?["text"]?.stringValue == "Example Domain")
+    #expect(answered.result?["text"]?.stringValue == "\(Untrusted.open)\nExample Domain\n\(Untrusted.close)")
     #expect(runtime.focus.state(id) == .init(surface: .chat))
 }
 
@@ -318,4 +318,13 @@ private func pendingPrompt(_ runtime: Runtime) async throws -> JSONValue {
     #expect(await prompts.preapprovedBrowser(family: "lead", url: "https://docs.example/guide", paths: ["/admin"], actions: ["click"], now: now) == nil)
     #expect(await prompts.preapprovedBrowser(family: "lead", url: "https://docs.example/guide", paths: ["/guide"], actions: ["type"], now: now) == nil)
     #expect(await prompts.preapprovedBrowser(family: "lead", url: "https://stake.example/sports", paths: ["/sports"], actions: ["click"], now: now) == nil)
+    let session = await prompts.authorize(family: "lead", url: "https://docs.example/guide",
+                                         paths: ["/guide"], actions: ["click"], grantID: "docs", now: now)
+    #expect(await prompts.activeGrants(family: "lead", now: now).arrayValue?.count == 2)
+    #expect(await prompts.permittedPaths(session, family: "lead", url: "https://docs.example/guide", action: "click", now: now) == ["/guide"])
+    await prompts.revokeGrant(family: "other", id: "docs")
+    #expect(await prompts.preapproval(family: "lead", id: "docs", now: now) != nil)
+    await prompts.revokeGrant(family: "lead", id: "docs")
+    #expect(await prompts.permittedPaths(session, family: "lead", url: "https://docs.example/guide", action: "click", now: now) == nil)
+    #expect(await prompts.activeGrants(family: "lead", now: now).arrayValue?.count == 1)
 }

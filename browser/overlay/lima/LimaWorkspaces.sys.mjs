@@ -1,3 +1,5 @@
+import { SETTLE } from "resource://lima/LimaMotion.sys.mjs";
+import { characterArt, generateMascot, mascotColors } from "resource://lima/ui/mascot-look.sys.mjs";
 /* AI workspaces in Zen's sidebar (docs/architecture/sidebar-workspaces.md).
  *
  *   ✦ Name            zen-folder[lima-workspace]; the ✦ icon opens Chat
@@ -87,13 +89,18 @@ export function approximateLocation(win) {
 class Workspaces {
   #started = false;
   #queue = Promise.resolve();
+  #mapValue = null;
+  #mapRaw = null;
   #workspaces = new Map();
   #visuals = {};
   #observed = new WeakSet();
+  #mascotTemplates = new WeakMap();
   #observers = new WeakMap();
   #deleting = new Set();
   #archived = new Set();
   #mascots = new Map();
+  #seenWorkspaceNotes = new Set();
+  #finishedHelpers = new Set();
 
   start() {
     if (this.#started) return;
@@ -111,12 +118,20 @@ class Workspaces {
           const workspace = this.#workspaces.get(data.id);
           this.#archived.add(data.id);
           this.#workspaces.delete(data.id);
+          this.#finishedHelpers.delete(data.id);
           this.#mascots.delete(workspace?.conversationID);
           this.#enqueue(() => this.remove(data.id, data.parentId, workspace));
           break;
         }
         case "chat.updated": {
           if (!data.workspaceID) break;
+          if (this.#workspaces.get(data.workspaceID)?.parentID) {
+            const reply = data.messages?.findLast(message => message.role === "assistant");
+            const finished = reply?.status === "complete" && !data.messages.some(message => ["streaming", "queued"].includes(message.status));
+            const changed = this.#finishedHelpers.has(data.workspaceID) !== finished;
+            if (finished) this.#finishedHelpers.add(data.workspaceID); else this.#finishedHelpers.delete(data.workspaceID);
+            if (changed) this.#enqueue(() => this.reconcile(this.#workspaces.get(data.workspaceID)));
+          }
           const mascot = data.mascot ?? "classic";
           if (this.#mascots.get(data.id) !== mascot) {
             this.#mascots.set(data.id, mascot);
@@ -144,10 +159,14 @@ class Workspaces {
         if (JSON.stringify(previous[id]) !== JSON.stringify(workspaces[id])) this.#paintFocus(id);
       }
     });
+    const repaint = () => { for (const workspace of this.workspaces) this.#paintFocus(workspace.id); };
+    Services.prefs.addObserver("lima.mascotTheme", repaint);
+    Services.obs.addObserver(repaint, "lima-theme-changed");
     this.#enqueue(async () => {
       const all = (await lazy.LimaBridge.request("workspace.list")).filter(workspace => !this.#archived.has(workspace.id));
       const chats = await lazy.LimaBridge.request("chat.list").catch(() => []);
       for (const chat of chats) {
+        if (chat.workspaceID && chat.lastStatus === "complete" && !chat.running) this.#finishedHelpers.add(chat.workspaceID);
         if (chat.workspaceID && !this.#mascots.has(chat.id)) this.#mascots.set(chat.id, chat.mascot ?? "classic");
       }
       for (const workspace of all) if (!this.#workspaces.has(workspace.id)) this.#workspaces.set(workspace.id, workspace);
@@ -170,11 +189,18 @@ class Workspaces {
   // MARK: Folder map (folder ids persist with Zen's session)
 
   #map() {
-    try { return JSON.parse(Services.prefs.getStringPref(MAP_PREF, "{}")); } catch { return {}; }
+    const raw = Services.prefs.getStringPref(MAP_PREF, "{}");
+    if (raw !== this.#mapRaw || !this.#mapValue) {
+      this.#mapRaw = raw;
+      try { this.#mapValue = JSON.parse(raw); } catch { this.#mapValue = {}; }
+    }
+    return this.#mapValue;
   }
 
   #saveMap(map) {
-    Services.prefs.setStringPref(MAP_PREF, JSON.stringify(map));
+    this.#mapRaw = JSON.stringify(map);
+    this.#mapValue = map;
+    Services.prefs.setStringPref(MAP_PREF, this.#mapRaw);
   }
 
   #win() {
@@ -240,6 +266,12 @@ class Workspaces {
     const win = lazy.BrowserWindowTracker.orderedWindows.find(window => this.folderFor(workspace.id, "folder", window)) ?? this.#win();
     if (win) this.#reconcileFolder(win, workspace);
     if (!workspace.parentID) await this.#reconcileBookmarks(workspace);
+    else {
+      if (win) this.#updateDone(win, workspace.parentID);
+      let root = workspace;
+      while (root.parentID && this.#workspaces.has(root.parentID)) root = this.#workspaces.get(root.parentID);
+      if (!root.parentID) await this.#reconcileBookmarks({ ...workspace, name: root.name, id: root.id, bookmarks: [] });
+    }
   }
 
   #makeTab(win, workspace, entry) {
@@ -301,7 +333,9 @@ class Workspaces {
     const helper = !!workspace.parentID;
     let parentFolder = null;
     if (helper) {
-      parentFolder = this.#agentsFolder(win, workspace.parentID, map);
+      parentFolder = this.#finishedHelpers.has(workspace.id)
+        ? this.#doneFolder(win, workspace.parentID, map)
+        : this.#agentsFolder(win, workspace.parentID, map);
       if (!parentFolder) return; // parent not shown yet; reconciled again with it
     }
 
@@ -317,6 +351,10 @@ class Workspaces {
       map[workspace.id] = entry;
       this.#saveMap(map);
       log(`folder for “${workspace.name}”${helper ? " (agent)" : ""}`);
+    }
+    if (helper && folder.group !== parentFolder) {
+      preserveFolderDisclosure(parentFolder, () => parentFolder.groupContainer.append(folder));
+      win.gBrowser.tabContainer._invalidateCachedTabs();
     }
     folder.setAttribute("lima-workspace", workspace.id);
     if (workspace.companionTask && !folder.hasAttribute("lima-companion-task")) {
@@ -412,11 +450,7 @@ class Workspaces {
       tab.toggleAttribute("lima-workspace-chat", url === chatURL);
       if (url?.startsWith("about:lima?")) {
         tab.setAttribute("undiscardable", "true");
-        if (tab.hasAttribute("pending") && !tab.hasAttribute("lima-reactivating")) {
-          tab.setAttribute("lima-reactivating", "true");
-          win.gBrowser.insertBrowser(tab);
-          tab.linkedBrowser.loadURI(Services.io.newURI(url), { triggeringPrincipal: system(), loadFlags: Ci.nsIWebNavigation.LOAD_FLAGS_REPLACE_HISTORY });
-        }
+        if (tab.selected) this.#activateLimaTab(win, tab, url);
       }
       if (!tab.hasAttribute("pending") || tab.getAttribute("image")) continue;
       const icon = imageWorkspaceForURL(url) ? IMAGE_ICON : url?.startsWith("about:lima?chat=") ? MASCOT
@@ -431,8 +465,17 @@ class Workspaces {
     const desired = new Set(workspace.tabs.filter(tab => imageWorkspaceForURL(tab.url) === id).map(tab => tab.url));
     let folder = this.folderFor(id, "images", win);
     if (folder?.group !== parent) folder = null;
-    const existing = [...win.gBrowser.tabs].filter(tab => !tab.closing && imageWorkspaceForURL(tabURL(tab)) === id &&
-      (!this.workspaceForTab(tab) || this.workspaceForTab(tab) === id));
+    const existing = [...win.gBrowser.tabs].filter(tab => {
+      if (tab.closing) return false;
+      // A dormant note/chat is not an image tab. Skip session-state decoding
+      // unless its live URI or Lima metadata identifies an image document.
+      const current = tab.linkedBrowser?.currentURI?.spec;
+      const url = tab.getAttribute("lima-url") || (current && current !== "about:blank" ? current : "") ||
+        (tab.hasAttribute("pending") ? lazy.SessionStore.getCustomTabValue(tab, "lima-url") : "");
+      if (imageWorkspaceForURL(url) !== id) return false;
+      const owner = this.workspaceForTab(tab);
+      return !owner || owner === id;
+    });
     const present = new Set(existing.map(tabURL));
     const moving = existing.filter(tab => !folder || tab.group !== folder);
     for (const tab of moving) {
@@ -519,11 +562,114 @@ class Workspaces {
         try { preserveFolderDisclosure(target, () => target.addTabs([tab])); } catch (error) { log(`tab folder: ${error}`); }
       }
     }
-    // Folders agents made that hold nothing any more go away.
+    this.#styleTabs(win, workspace, tabs);
+    this.#styleTabFolders(win, workspace, folder);
+    this.#orderTabs(win, workspace, folder, tabs);
+    // Folders agents made that hold nothing any more go away (unless the
+    // agent keeps one, empty, for work to come).
+    const styled = new Set((workspace.tabFolderStyles ?? []).map(style => style.path));
     for (const folder of win.document.querySelectorAll(`zen-folder[lima-tabs-of="${win.CSS.escape(workspace.id)}"]`)) {
       const path = folder.getAttribute("lima-tab-folder");
-      const used = workspace.tabs.some(entry => entry.folder === path || entry.folder?.startsWith(`${path}/`));
+      const inside = value => value === path || value?.startsWith(`${path}/`);
+      const used = workspace.tabs.some(entry => inside(entry.folder)) || [...styled].some(inside);
       if (!used && !this.#allTabs(folder).length) Promise.resolve().then(() => folder.delete?.()).catch(() => {});
+    }
+  }
+
+  /** A Lima icon name or an emoji, as an image URL. */
+  iconURL(icon) {
+    if (!icon) return null;
+    if (/^[a-z][a-z-]*$/.test(icon)) return `resource://lima-ui/icons/${icon}.svg`;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><text x="16" y="17" font-size="26" text-anchor="middle" dominant-baseline="central">${icon.replace(/[<&>"]/g, "")}</text></svg>`;
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  }
+
+  /* Names and icons an agent gave its tabs. Each is applied when the agent
+   * changes it, so a name or icon you set yourself afterwards stays. */
+  #styleTabs(win, workspace, tabs) {
+    for (const entry of workspace.tabs) {
+      const web = /^https?:/.test(entry.url);
+      const tab = tabs.find(item => web ? sameURL(tabURL(item), entry.url) : tabURL(item) === entry.url);
+      if (!tab) continue;
+      const label = entry.label ?? null;
+      if (tab.limaLabelAs !== label) {
+        const had = tab.limaLabelAs;
+        tab.limaLabelAs = label;
+        if (label) {
+          tab.zenStaticLabel = label;
+          try { win.gBrowser._setTabLabel(tab, label, { _zenChangeLabelFlag: true }); } catch { tab.label = label; }
+        } else if (had && tab.zenStaticLabel === had) {
+          delete tab.zenStaticLabel;
+          try { win.gBrowser.setTabTitle(tab); } catch {}
+        }
+      }
+      const icon = this.iconURL(entry.icon);
+      if (tab.limaIconAs !== (entry.icon ?? null)) {
+        tab.limaIconAs = entry.icon ?? null;
+        tab.limaAgentIcon = icon;
+        if (icon) {
+          tab.setAttribute("lima-agent-icon", entry.icon);
+          try { win.gBrowser.setIcon(tab, icon); } catch {}
+        } else if (tab.hasAttribute("lima-agent-icon")) {
+          tab.removeAttribute("lima-agent-icon");
+          try { win.gBrowser.setIcon(tab, tab.getAttribute("lima-icon") || null); } catch {}
+        }
+      }
+    }
+  }
+
+  /** Keeps an agent's icon on a tab when the page loads its own favicon. */
+  watchAgentIcons(win) {
+    win.gBrowser.tabContainer.addEventListener("TabAttrModified", event => {
+      const tab = event.target;
+      if (!tab.limaAgentIcon || !event.detail?.changed?.includes("image") || tab.getAttribute("image") === tab.limaAgentIcon) return;
+      try { win.gBrowser.setIcon(tab, tab.limaAgentIcon); } catch {}
+    });
+  }
+
+  /** Icons and open state the agent chose for its folders (made if empty). */
+  #styleTabFolders(win, workspace, folder) {
+    for (const style of workspace.tabFolderStyles ?? []) {
+      const target = this.#tabSubfolder(win, folder, workspace.id, style.path);
+      const icon = style.icon ?? null;
+      if (target.limaIconAs !== icon) {
+        target.limaIconAs = icon;
+        const url = this.iconURL(icon);
+        if (url) {
+          target.setAttribute("lima-folder-icon", /^[a-z]/.test(icon) ? "mask" : "image");
+          target.style.setProperty("--lima-folder-icon", `url("${url}")`);
+        } else {
+          target.removeAttribute("lima-folder-icon");
+          target.style.removeProperty("--lima-folder-icon");
+        }
+      }
+      const collapsed = style.collapsed ?? null;
+      if (target.limaCollapsedAs !== collapsed) {
+        target.limaCollapsedAs = collapsed;
+        if (collapsed !== null && target.collapsed !== collapsed) target.collapsed = collapsed;
+      }
+    }
+  }
+
+  /** Puts the agent's tabs in the order it set, within each folder, once per change. */
+  #orderTabs(win, workspace, folder, tabs) {
+    const version = workspace.tabOrder ?? 0;
+    if (!version || folder.limaTabOrder === version) return;
+    folder.limaTabOrder = version;
+    const byGroup = new Map();
+    for (const entry of workspace.tabs) {
+      const web = /^https?:/.test(entry.url);
+      const tab = tabs.find(item => web ? sameURL(tabURL(item), entry.url) : tabURL(item) === entry.url);
+      if (!tab?.group) continue;
+      if (!byGroup.has(tab.group)) byGroup.set(tab.group, []);
+      byGroup.get(tab.group).push(tab);
+    }
+    for (const [group, list] of byGroup) {
+      preserveFolderDisclosure(group, () => {
+        for (let i = 1; i < list.length; i++) {
+          try { if (list[i].previousElementSibling !== list[i - 1]) win.gBrowser.moveTabAfter(list[i], list[i - 1]); } catch (error) { log(`order: ${error}`); }
+        }
+      });
     }
   }
 
@@ -549,6 +695,28 @@ class Workspaces {
     map[parentID] = { ...(map[parentID] ?? {}), agents: agents.id };
     this.#saveMap(map);
     return agents;
+  }
+
+  #doneFolder(win, parentID, map) {
+    const agents = this.#agentsFolder(win, parentID, map);
+    if (!agents) return null;
+    let done = this.folderFor(parentID, "done", win);
+    if (!done || done.group !== agents) {
+      done = this.#createFolder(win, [], "Done", agents, true);
+      done.setAttribute("lima-agents-done", "");
+      map[parentID] = { ...(map[parentID] ?? {}), done: done.id };
+      this.#saveMap(map);
+    }
+    return done;
+  }
+
+  #updateDone(win, parentID) {
+    const done = this.folderFor(parentID, "done", win);
+    if (!done) return;
+    const count = [...done.groupContainer.children].filter(node => node.hasAttribute?.("lima-agent")).length;
+    done.hidden = count === 0;
+    done.label = count ? `Done (${count})` : "Done";
+    win.limaRelayoutFolders?.();
   }
 
   /** Forget folders of workspaces that no longer exist. */
@@ -729,7 +897,7 @@ class Workspaces {
         tab.ownerDocument.defaultView.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     tab.querySelector(".tab-content")?.animate(
       [{ opacity: 0.55, transform: "translateX(-5px)" }, { opacity: 1, transform: "translateX(0)" }],
-      { duration: 220, easing: "cubic-bezier(.2,.8,.2,1)" },
+      { duration: 220, easing: SETTLE },
     );
   }
 
@@ -746,8 +914,18 @@ class Workspaces {
     }, 0);
   }
 
+  #activateLimaTab(win, tab, url = tabURL(tab)) {
+    if (!url?.startsWith("about:lima?") || !tab.hasAttribute("pending") || tab.hasAttribute("lima-reactivating")) return;
+    tab.setAttribute("lima-reactivating", "true");
+    win.gBrowser.insertBrowser(tab);
+    tab.linkedBrowser.loadURI(Services.io.newURI(url), {
+      triggeringPrincipal: system(), loadFlags: Ci.nsIWebNavigation.LOAD_FLAGS_REPLACE_HISTORY,
+    });
+  }
+
   onTabSelect(win) {
     const selected = win.gBrowser.selectedTab;
+    if (selected.hasAttribute("undiscardable")) this.#activateLimaTab(win, selected);
     const id = this.workspaceForTab(selected);
     for (const folder of win.document.querySelectorAll("zen-folder[lima-workspace]")) {
       folder.toggleAttribute("lima-chat-selected", folder.getAttribute("lima-workspace") === id && selected.hasAttribute("lima-workspace-chat"));
@@ -771,7 +949,7 @@ class Workspaces {
     const folder = this.folderFor(id, "folder", win);
     const url = workspace?.conversationID && `about:lima?chat=${workspace.conversationID}`;
     const tab = folder && url && folder.tabs.find(t => tabURL(t) === url);
-    if (tab) { win.gBrowser.selectedTab = tab; return; }
+    if (tab) { this.#activateLimaTab(win, tab, url); win.gBrowser.selectedTab = tab; return; }
     if (url) win.gBrowser.selectedTab = win.gBrowser.addTab(url, { triggeringPrincipal: system() });
   }
 
@@ -795,12 +973,14 @@ class Workspaces {
 
   /** Tab menu → Add Tab to Workspace: the page joins the workspace's Tabs
    * folder, where its agent can read and act on it. */
-  addTab(win, id, tab) {
+  async addTab(win, id, tab) {
     const workspace = this.#workspaces.get(id);
     const folder = this.folderFor(id, "folder", win);
     if (!workspace || !folder) throw new Error("This workspace isn't in the sidebar of this window.");
     const url = tabURL(tab);
     if (!/^https?:/.test(url)) throw new Error("Only web pages can be added to a workspace.");
+    const from = this.workspaceForTab(tab);
+    if (from === id) return workspace;
     if (tab.pinned) win.gBrowser.unpinTab(tab);
     let tabs = this.folderFor(id, "tabs", win);
     if (tabs && tabs.group === folder) tabs.addTabs([tab]);
@@ -814,6 +994,10 @@ class Workspaces {
     try { lazy.SessionStore.setCustomTabValue(tab, "lima-workspace", id); } catch {}
     tabs.collapsed = false;
     this.#animateTab(tab);
+    await lazy.LimaBridge.request("workspace.organizeTabs", { id, tabs: [{ url, title: tab.label, folder: "" }] });
+    if (from && !this.#pages(win, from).some(page => sameURL(tabURL(page), url))) {
+      await lazy.LimaBridge.request("workspace.closeTab", { id: from, url });
+    }
     return workspace;
   }
 
@@ -833,7 +1017,7 @@ class Workspaces {
 
   #paintFocus(id) {
     if (!id) return;
-    const win = this.#win();
+    const win = lazy.BrowserWindowTracker.orderedWindows.find(window => this.folderFor(id, "folder", window));
     const folder = win && this.folderFor(id, "folder", win);
     if (!folder) return;
     const activity = this.#visuals[id];
@@ -861,10 +1045,70 @@ class Workspaces {
     const attention = activity?.attention || ["blocked", "failed"].includes(activity?.state);
     folder.toggleAttribute("lima-attention", attention);
     const label = folder.querySelector(":scope > .tab-group-label-container");
-    if (label && activity) {
-      const minutes = activity.startedAt ? Math.floor((Date.now() - activity.startedAt) / 60000) : 0;
-      label.title = `${folder.label} · ${activity.label}${minutes > 0 && moving ? ` · ${minutes} min` : ""}`;
+    if (label) {
+      const title = [folder.label, activity?.label ?? "Ready", activity?.detail, activity?.lastResult].filter(Boolean).join(" · ");
+      if (activity && label.limaLastState !== activity.state) {
+        const prior = label.limaLastState;
+        label.limaLastState = activity.state;
+        if (prior && ["working", "blocked", "complete", "failed"].includes(activity.state)) this.#announce(win, folder.label, activity.label);
+      }
+      if (label.title !== title) {
+        label.title = title;
+        label.setAttribute("aria-label", title);
+      }
+      if (label.limaVisible) this.#paintMascot(win, label, folder, id, title);
     }
+  }
+
+  #announce(win, name, activity) {
+    let live = win.document.getElementById("lima-sidebar-announcement");
+    if (!live) {
+      live = win.document.createElementNS("http://www.w3.org/1999/xhtml", "div");
+      live.id = "lima-sidebar-announcement";
+      live.className = "lima-s-visually-hidden";
+      live.setAttribute("role", "status");
+      live.setAttribute("aria-live", "polite");
+      live.setAttribute("aria-atomic", "true");
+      win.document.documentElement.append(live);
+    }
+    win.requestAnimationFrame(() => { if (live.isConnected) live.textContent = `${name}. ${activity}`; });
+  }
+
+  #paintMascot(win, label, folder, id, title) {
+    const slot = label.querySelector(":scope > .tab-group-folder-icon");
+    if (!slot) return;
+    const variant = folder.getAttribute("lima-mascot");
+    const theme = Services.prefs.getStringPref("lima.mascotTheme", "graphite");
+    const dark = win.document.documentElement.getAttribute("lima-theme") === "dark";
+    const key = `${id}/${variant}/${theme}/${dark}`;
+    let art = slot.querySelector(":scope > .lima-sidebar-pip");
+    if (art?.dataset.look !== key) {
+      art?.remove();
+      let template = this.#mascotTemplates.get(win);
+      if (!template) {
+        template = characterArt(win.document, "sidebar");
+        this.#mascotTemplates.set(win, template);
+      }
+      art = template.cloneNode(true);
+      art.classList.add("lima-sidebar-pip");
+      art.dataset.look = key;
+      const { ears, eyes, marking, extra, tilt, ...other } = generateMascot(id);
+      for (const [part, value] of Object.entries({ ears, eyes, marking, extra })) {
+        const prefix = part === "ears" ? "ears" : part;
+        for (const group of art.querySelectorAll(`g[class^="${prefix}-"]`)) {
+          const show = group.classList.contains(`${prefix}-${value}`) &&
+            !(part === "marking" && theme === "outline") &&
+            !(part === "extra" && variant !== "classic" && ["headphones", "flower", "bow"].includes(value));
+          if (!show) group.style.display = "none";
+        }
+      }
+      for (const costume of art.querySelectorAll(".mascot-accent")) costume.style.display = costume.classList.contains(variant) ? "inline" : "none";
+      for (const part of art.querySelectorAll(".companion-speaking, .companion-sparks")) part.style.display = "none";
+      for (const [name, value] of Object.entries(mascotColors({ ...other }, dark, theme))) art.style.setProperty(name, value);
+      art.style.setProperty("--mascot-tilt", `${tilt}deg`);
+      slot.append(art);
+    }
+    slot.title = title;
   }
 
   #observeMascot(win, folder) {
@@ -876,7 +1120,13 @@ class Workspaces {
       observer = new win.IntersectionObserver(entries => {
         for (const { target, isIntersecting } of entries) {
           if (!target.isConnected) observer.unobserve(target);
-          else target.toggleAttribute("lima-offscreen", !isIntersecting);
+          else {
+            target.toggleAttribute("lima-offscreen", !isIntersecting);
+            target.limaVisible = isIntersecting;
+            const workspace = target.parentElement;
+            const id = workspace?.getAttribute("lima-workspace");
+            if (isIntersecting && id) this.#paintMascot(win, target, workspace, id, target.title);
+          }
         }
       });
       this.#observers.set(win, observer);
@@ -916,7 +1166,7 @@ class Workspaces {
       if (request.kind === "notesOrganize") return reply(await lazy.LimaNotesBookmarks.organize(request.noteId, request.folder));
       if (request.kind === "notesArchive") return reply(await lazy.LimaNotesBookmarks.archiveNote(request.noteId));
       if (request.kind === "notesUnarchive") return reply(await lazy.LimaNotesBookmarks.unarchiveNote(request.noteId));
-      if (request.kind === "listTabs") return reply(this.#pages(win, request.workspaceId).map(tab => ({ url: tabURL(tab), title: tab.label, selected: tab.selected, folder: this.#tabFolderPath(tab) })));
+      if (request.kind === "listTabs") return reply(this.#pages(win, request.workspaceId).map(tab => ({ url: tabURL(tab), title: tab.label, selected: tab.selected, folder: this.#tabFolderPath(tab), icon: tab.limaIconAs ?? null })));
       if (request.kind === "action") return reply(await this.#act(win, request));
       if (request.kind === "readTab") return reply(await this.#read(win, request.workspaceId, request.url));
       throw new Error(`unknown request ${request.kind}`);
@@ -1069,12 +1319,40 @@ class Workspaces {
   }
 
   async #reconcileBookmarks(workspace) {
-    if (!workspace.bookmarks.length) return;
+    const notes = workspace.tabs.filter(tab => tab.url.startsWith("about:lima?note=") && !this.#seenWorkspaceNotes.has(tab.url));
+    if (!workspace.bookmarks.length && !notes.length && !this.#map()[workspace.id]?.bookmarks) return;
     const root = await this.#bookmarkRoot();
-    const folder = await this.#childFolder(root, workspace.name);
+    const map = this.#map();
+    const saved = map[workspace.id]?.bookmarks;
+    let item = saved && await lazy.PlacesUtils.bookmarks.fetch(saved);
+    if (item?.parentGuid !== root) item = null;
+    let folder;
+    if (item) {
+      folder = item.guid;
+      if (item.title !== workspace.name) await lazy.PlacesUtils.bookmarks.update({ guid: folder, title: workspace.name });
+    } else {
+      const reserved = new Set(Object.values(map).map(entry => entry.bookmarks).filter(Boolean));
+      await lazy.PlacesUtils.bookmarks.fetch({ parentGuid: root }, child => {
+        if (!folder && child.type === lazy.PlacesUtils.bookmarks.TYPE_FOLDER && child.title === workspace.name && !reserved.has(child.guid)) folder = child.guid;
+      });
+      folder ??= (await lazy.PlacesUtils.bookmarks.insert({ parentGuid: root, type: lazy.PlacesUtils.bookmarks.TYPE_FOLDER, title: workspace.name })).guid;
+      map[workspace.id] = { ...(map[workspace.id] ?? {}), bookmarks: folder };
+      this.#saveMap(map);
+    }
+    for (const tab of notes) {
+      const id = decodeURIComponent(tab.url.slice("about:lima?note=".length).split("&")[0]);
+      // Note creation and the Places observer can reach the browser in either order.
+      const note = await lazy.LimaBridge.request("notes.get", { id }).catch(() => null);
+      if (!note || note.trashedAt) continue;
+      let parent = folder;
+      for (const part of (tab.folder ?? "").split("/").filter(Boolean)) parent = await this.#childFolder(parent, part);
+      await lazy.LimaNotesBookmarks.ensureWorkspaceNote(note, parent);
+      this.#seenWorkspaceNotes.add(tab.url);
+    }
     for (const bookmark of workspace.bookmarks) {
       let parent = folder;
       for (const part of bookmark.folder.split("/").filter(Boolean)) parent = await this.#childFolder(parent, part);
+      if (bookmark.url.startsWith("about:lima?note=")) continue;
       await this.#ensureBookmark(parent, bookmark.url, bookmark.title);
     }
   }

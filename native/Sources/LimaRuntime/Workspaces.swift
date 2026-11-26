@@ -22,7 +22,19 @@ public struct Workspace: Codable, Sendable, Equatable {
         public var title: String
         /// A folder path inside the workspace's Tabs folder ("Docs", "Research/API"); nil = Tabs itself.
         public var folder: String? = nil
-        public init(url: String, title: String, folder: String? = nil) { self.url = url; self.title = title; self.folder = folder }
+        /// An icon the agent chose: a Lima icon name ("star") or an emoji. Replaces the page's favicon.
+        public var icon: String? = nil
+        /// A name the agent gave the tab; it stays when the page changes its title.
+        public var label: String? = nil
+        public init(url: String, title: String, folder: String? = nil, icon: String? = nil, label: String? = nil) {
+            self.url = url; self.title = title; self.folder = folder; self.icon = icon; self.label = label
+        }
+    }
+    /// How an agent styled one of its tab folders.
+    public struct TabFolderStyle: Codable, Sendable, Equatable {
+        public var path: String
+        public var icon: String? = nil
+        public var collapsed: Bool? = nil
     }
 
     /// A tab folder path, tidied: up to three levels of short names, or nil.
@@ -45,6 +57,10 @@ public struct Workspace: Codable, Sendable, Equatable {
     public var terminalID: String?
     public var conversationID: String?
     public var tabs: [Tab]
+    /// Icons and open state of the agent's tab folders (also keeps an empty folder it made).
+    public var tabFolderStyles: [TabFolderStyle]? = nil
+    /// Bumped when the agent sets the order of its tabs; the browser re-sorts once per bump.
+    public var tabOrder: Int? = nil
     public var bookmarks: [Bookmark]
     public var createdAt: Double
     public var parentID: String?
@@ -274,7 +290,7 @@ extension Runtime {
         let tools = """
         Work visibly through the `lima` MCP tools, which the user watches in Lima's sidebar: open web pages as tabs \
         (workspace_open_tab), see and read the pages in your Tabs folder (workspace_list_tabs, workspace_read_tab), run shell \
-        commands with your own built-in shell tool in your working directory, organize files into folders (workspace_make_folder, or mkdir in your shell), keep the workspace tidy by grouping its tabs into sidebar folders (workspace_organize_tabs, or folder on workspace_open_tab) and filing notes into Notebook folders (notes_organize) (start long-running servers in the background and check their logs). Use Lima for file links (workspace_bookmark, folder paths like "Research/Docs") and \
+        commands with your own built-in shell tool in your working directory, organize files into folders (workspace_make_folder, or mkdir in your shell), keep the workspace organized as it grows: group its tabs into sidebar folders, order them, and give tabs and folders icons and short names (workspace_arrange, or folder on workspace_open_tab), collapse folders you are done with, and file notes into Notebook folders (notes_organize) (start long-running servers in the background and check their logs). Use Lima for file links (workspace_bookmark, folder paths like "Research/Docs") and \
         write summaries or findings as notes (workspace_note). Use workspace_ask_user for missing decisions. Prefer labeled fields of the appropriate types for dates, times, numbers or choices. Use workspace_location to request approximate location when needed and workspace_browser_plan before browser interactions. Include the exact same-site paths you will visit and re-inspect live controls when a target moves.
         Use Lima's Studio tools for visual work. image_generate queues local text-to-image generation when configured and allowed. Check the operation ID through image_generation_status before reporting or retrying; reuse the same idempotency key across retries. Open supported files with image_open, inspect the exact revision, and use image_select_subject and image_remove_background for local foreground masks. vector_trace makes editable paths; get exact IDs with vector_inspect before editing. Build and verify animation exports with animation_create, animation_add_frame or animation_tween, then animation_export or animation_export_spritesheet. Give users the returned studio_url and verified workspace paths. Preserve originals and never claim an unsupported result.
         Before you start the work, think through what it will need from the user. If you can foresee approvals (a destructive \
@@ -463,7 +479,8 @@ extension Runtime {
             let url = try params.string("url")
             self.setFocus(workspace.id, .tab, url: url)
             defer { self.setFocus(workspace.id, .chat, replacing: .init(surface: .tab, url: url)) }
-            return try await self.browserCalls.call(self, kind: "readTab", workspaceID: workspace.id, payload: ["url": .string(url)], timeout: 30)
+            let page = try await self.browserCalls.call(self, kind: "readTab", workspaceID: workspace.id, payload: ["url": .string(url)], timeout: 30)
+            return Untrusted.mark(page)
         }
         register("workspace.prompts") { [unowned self] _, context in
             guard context.origin == .browser else { throw BridgeError(.notAuthorized, "Only the user can view pending requests.") }
@@ -488,6 +505,18 @@ extension Runtime {
         // one card listing each item. Approving it lets later approvals that
         // name an item (and browser plans inside an approved site) continue
         // without stopping for the user.
+        register("workspace.permissions") { [unowned self] params, context in
+            guard context.origin == .browser else { throw BridgeError(.notAuthorized, "Only the Lima interface can list permissions.") }
+            let family = await self.familyRoot(try target(params, context))
+            return await self.workspacePrompts.activeGrants(family: family)
+        }
+        register("workspace.revokePermission") { [unowned self] params, context in
+            guard context.origin == .browser else { throw BridgeError(.notAuthorized, "Only the user can revoke a workspace permission.") }
+            let family = await self.familyRoot(try target(params, context))
+            await self.workspacePrompts.revokeGrant(family: family, id: try params.string("grantId"))
+            self.broadcast("workspace.permissionsChanged", .object(["family": .string(family)]))
+            return await self.workspacePrompts.activeGrants(family: family)
+        }
         register("workspace.requestPermissions") { [unowned self] params, context in
             guard let bound = context.workspaceID else { throw BridgeError(.notAuthorized, "Only a workspace agent can request permissions.") }
             let workspace = try await self.workspaces.get(bound)
@@ -515,6 +544,7 @@ extension Runtime {
             }
             let family = await self.familyRoot(bound)
             await self.workspacePrompts.addGrants(items, family: family)
+            self.broadcast("workspace.permissionsChanged", .object(["family": .string(family)]))
             return .object(["approved": .bool(true),
                             "granted": .array(items.filter { !$0.askAnyway }.map { .string($0.id) }),
                             "asksAgain": .array(items.filter(\.askAnyway).map { .string($0.id) }),
@@ -578,9 +608,9 @@ extension Runtime {
                 try await self.ensureTab(bound, url: url, changed: changed)
                 return .object(["approved": .bool(true), "session": .string(shared), "note": .string("Covered by an approval the user already gave for this task.")])
             }
-            if review != .highRisk, await self.workspacePrompts.preapprovedBrowser(family: family, url: url, paths: paths, actions: actions) != nil {
+            if review != .highRisk, let grant = await self.workspacePrompts.preapprovedBrowser(family: family, url: url, paths: paths, actions: actions) {
                 try await self.ensureTab(bound, url: url, changed: changed)
-                let token = await self.workspacePrompts.authorize(family: family, url: url, paths: paths, actions: actions)
+                let token = await self.workspacePrompts.authorize(family: family, url: url, paths: paths, actions: actions, grantID: grant.id)
                 return .object(["approved": .bool(true), "session": .string(token), "note": .string("Covered by the permissions the user approved at the start of this task.")])
             }
             if review == .highRisk {
@@ -594,15 +624,8 @@ extension Runtime {
                 trusted = response["scope"]?.stringValue == "task"
             } else if review == .needsUser {
                 let key = WorkspacePrompts.permissionKey(scope: scope, goal: goal, plan: plan)
-                let approved: Bool
-                if let remembered = try await self.workspacePrompts.browserPermission(key, store: self.store) {
-                    approved = remembered
-                } else {
-                    let response = try await self.workspacePrompts.ask(self, workspace: workspace, question: goal,
-                        detail: plan, approval: true, actionLabel: "Allow", facts: facts + [.init(label: "Remembered", value: "This exact plan, across Lima")], risk: "account")
-                    approved = response["approved"]?.boolValue == true
-                    try await self.workspacePrompts.rememberBrowserPermission(approved, key: key, store: self.store)
-                }
+                let approved = try await self.workspacePrompts.approveBrowserPlan(self, workspace: workspace, family: family,
+                    key: key, goal: goal, plan: plan, facts: facts)
                 guard approved else { return .object(["approved": .bool(false), "reason": .string("This action plan was denied.")]) }
             }
             try await self.ensureTab(bound, url: url, changed: changed)
@@ -665,6 +688,11 @@ extension Runtime {
                     payload["paths"] = .array(paths.sorted().map(JSONValue.string))
                 }
             }
+            let family = await self.familyRoot(workspace.id)
+            if WorkspacePrompts.browserActions.contains(action),
+               await self.workspacePrompts.permittedPaths(session, family: family, url: url, action: action) == nil {
+                throw BridgeError(.confirmationRequired, "This browser session ended. Ask for a new browser plan before interacting.")
+            }
             payload["confirmed"] = .bool(true)
             return try await self.browserCalls.call(self, kind: "action", workspaceID: workspace.id, payload: payload)
         }
@@ -724,6 +752,30 @@ extension Runtime {
             let folders = Set(workspace.tabs.compactMap(\.folder)).sorted()
             return .object(["folders": .array(folders.map(JSONValue.string)),
                             "notFound": .array(unknown.map(JSONValue.string))])
+        }
+        /// Folders, order, icons and names for a workspace's tabs, in one call.
+        register("workspace.arrange") { [unowned self] params, context in
+            let id = try target(params, context)
+            let folders = params?["folders"]?.arrayValue ?? []
+            let tabs = params?["tabs"]?.arrayValue ?? []
+            guard !(folders.isEmpty && tabs.isEmpty) else { throw BridgeError(.badRequest, "List tabs, folders or both to arrange.") }
+            guard folders.count <= 30, tabs.count <= 80 else { throw BridgeError(.badRequest, "Arrange up to 80 tabs and 30 folders at a time.") }
+            // Checked on a copy first, so a bad icon or path changes nothing.
+            var draft = try await self.workspaces.get(id)
+            let missing = try draft.arrange(folders: folders, tabs: tabs)
+            let arranged = draft
+            let workspace = try await self.workspaces.update(id) { workspace in
+                workspace.tabs = arranged.tabs
+                workspace.tabFolderStyles = arranged.tabFolderStyles
+                workspace.tabOrder = arranged.tabOrder
+            }
+            changed(workspace)
+            guard case .object(var view) = workspace.layoutView else { return .null }
+            view["notFound"] = .array(missing.map(JSONValue.string))
+            return .object(view)
+        }
+        register("workspace.layout") { [unowned self] params, context in
+            try await self.workspaces.get(try target(params, context)).layoutView
         }
         register("workspace.closeTab") { [unowned self] params, context in
             let id = try target(params, context)

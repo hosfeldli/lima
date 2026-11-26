@@ -80,23 +80,95 @@
   --tab-min-height: var(--lima-tab-height, 26px) !important;
   --tab-margin-block: 1px !important;
 }
-#navigator-toolbox .tab-label,
-#navigator-toolbox .tab-group-label,
-#navigator-toolbox .bookmark-item { font-size: var(--lima-tab-font, 11.5px); }
-/* Every folder row, top-level workspaces included, is a tab row: the same
-   height, text size and 16px icon. */
-#navigator-toolbox zen-folder > .tab-group-label-container {
-  /* A tab row is the min height plus 4px of margin and padding (30px). */
-  min-block-size: calc(var(--tab-min-height, 26px) + 4px);
+#navigator-toolbox :is(.tab-label, .tab-group-label, .bookmark-item) { font-size: var(--lima-tab-font, 11.5px); }
+
+/* MARK: Sidebar rows. Tabs, folders and workspaces share these measurements,
+   and every rule for a row's size, icon, arrow, rename box and drop preview
+   lives in this section, so each is set once. */
+#navigator-toolbox {
+  --lima-row-height: calc(var(--tab-min-height, 26px) + 4px);
+  --lima-row-icon-size: 16px;
+  --lima-row-chevron: 5px;
+  --lima-row-chevron-ink: var(--lima-ink-2, currentColor);
 }
-#navigator-toolbox zen-folder > .tab-group-label-container .tab-group-label { font-size: var(--lima-tab-font, 11.5px); }
-#navigator-toolbox zen-folder[lima-workspace]:not([lima-agent]) > .tab-group-label-container > .tab-group-folder-icon::after {
-  width: 16px;
-  height: 16px;
+/* A collapsed workspace whose (hidden) chat is the selected tab shows
+   nothing inside it. Zen keeps a collapsed folder's selected tab in view and
+   left the next row (the Tabs folder) taking up its space, a blank gap. */
+zen-folder[lima-workspace][lima-chat-selected][collapsed] > .tab-group-container { display: none !important; }
+
+/* One folder icon everywhere (workspaces keep their Pip): Lima's outline
+   folder, open while expanded, drawn in the sidebar's text colour at the
+   size of a tab's icon. Replaces Zen's filled folder and Lima's older glyphs. */
+#navigator-toolbox zen-folder:not([lima-workspace]) > .tab-group-label-container > .tab-group-folder-icon > :is(svg, image, .icon, .dots) { display: none !important; }
+#navigator-toolbox zen-folder:not([lima-workspace]) > .tab-group-label-container > .tab-group-folder-icon {
+  display: grid !important; place-items: center; filter: none !important;
 }
-#navigator-toolbox zen-folder[lima-workspace][lima-agent] > .tab-group-label-container > .tab-group-folder-icon::after {
-  width: 16px;
-  height: 16px;
+#navigator-toolbox zen-folder:not([lima-workspace]) > .tab-group-label-container > .tab-group-folder-icon::after {
+  content: ""; display: block; width: var(--lima-row-icon-size); height: var(--lima-row-icon-size); background: currentColor; opacity: .82;
+  mask: url("resource://lima-ui/marks/folder.svg") center / contain no-repeat;
+}
+#navigator-toolbox zen-folder:not([lima-workspace]):not([collapsed]) > .tab-group-label-container > .tab-group-folder-icon::after {
+  mask-image: url("resource://lima-ui/marks/folder-open.svg");
+}
+
+/* Every folder shows the disclosure arrow workspaces have, in the same place
+   at the row's end: down while open, right while collapsed. The whole row
+   still toggles the folder; the arrow only shows which way it will go. */
+#navigator-toolbox zen-folder:not([lima-workspace]) > .tab-group-label-container:not([lima-drop-target])::after {
+  content: ""; display: block !important; flex: none; box-sizing: border-box; width: var(--lima-row-chevron); height: var(--lima-row-chevron);
+  margin-inline: auto 8px; border: solid var(--lima-row-chevron-ink); border-width: 0 1.5px 1.5px 0;
+  transform: translateY(-2px) rotate(45deg); transition: transform 160ms var(--lima-motion-settle, ease); pointer-events: none;
+}
+#navigator-toolbox zen-folder:not([lima-workspace])[collapsed] > .tab-group-label-container:not([lima-drop-target])::after { transform: rotate(-45deg); }
+#navigator-toolbox zen-folder:not([lima-workspace]) > .tab-group-label-container > .tab-group-label { flex: 1 1 auto; min-inline-size: 0; }
+:root:not([zen-sidebar-expanded]) #navigator-toolbox zen-folder > .tab-group-label-container::after { display: none; }
+
+/* Renaming a folder or tab keeps the label's own size and weight; Zen's
+   rename box otherwise falls back to the system's input font. */
+#navigator-toolbox #tab-label-input {
+  font: inherit; font-size: var(--lima-tab-font, 11.5px); color: inherit; line-height: inherit; min-inline-size: 0;
+}
+#navigator-toolbox zen-folder > .tab-group-label-container > #tab-label-input { flex: 1; font-weight: var(--font-weight-semibold, 600); }
+
+
+zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon:has(.lima-sidebar-pip)::after { display: none !important; }
+zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon > svg.lima-sidebar-pip {
+  display: block !important; width: var(--lima-row-icon-size); height: var(--lima-row-icon-size);
+  --ink: var(--lima-ink); --ink-2: var(--lima-ink-2); --paper: var(--lima-bg, Canvas); --panel-2: var(--lima-hover);
+}
+.lima-sidebar-pip .companion-body { rotate: var(--mascot-tilt, 0deg); transform-origin: center; }
+#navigator-toolbox .tab-group-label-container[lima-drop-target]::after {
+  content: attr(lima-drop-target); color: var(--lima-ink); max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* A folder an agent gave an icon: a Lima icon is drawn in the text colour
+   like the folder glyph it replaces; an emoji keeps its own colours. */
+#navigator-toolbox zen-folder[lima-folder-icon="mask"] > .tab-group-label-container > .tab-group-folder-icon::after {
+  mask-image: var(--lima-folder-icon) !important;
+}
+#navigator-toolbox zen-folder[lima-folder-icon="image"] > .tab-group-label-container > .tab-group-folder-icon::after {
+  mask: none !important; background: var(--lima-folder-icon) center / contain no-repeat !important; opacity: 1 !important;
+}
+/* End of sidebar rows. */
+
+/* Native tab and folder elements share a row footprint and focus treatment. */
+#navigator-toolbox :is(.tabbrowser-tab, zen-folder > .tab-group-label-container) {
+  min-block-size: var(--lima-row-height);
+}
+#navigator-toolbox :is(.tabbrowser-tab, .tab-group-label-container):focus-visible {
+  outline: 2px solid var(--lima-ink, currentColor);
+  outline-offset: -2px;
+}
+#navigator-toolbox .tab-group-label-container[lima-drop-target] {
+  outline: 2px solid var(--lima-ink, currentColor);
+  outline-offset: -2px;
+  background: var(--toolbarbutton-hover-background);
+}
+#navigator-toolbox .tab-group-label-container[lima-drop-target] > .tab-group-label { opacity: .65; }
+.lima-s-sub mark { background: transparent; color: inherit; font-weight: 750; text-decoration: underline; }
+#navigator-toolbox zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon::after {
+  width: var(--lima-row-icon-size);
+  height: var(--lima-row-icon-size);
 }
 #navigator-toolbox .bookmark-item { padding-block: 2px; }
 /* The shared icon set is drawn in graphite (#383838) for use as favicons,
@@ -963,8 +1035,8 @@ zen-folder[lima-workspace][lima-chat-selected] > .tab-group-label-container {
 .lima-workspace-disclosure::before {
   content: "";
   display: inline-block;
-  width: 5px;
-  height: 5px;
+  width: var(--lima-row-chevron, 5px);
+  height: var(--lima-row-chevron, 5px);
   border: solid currentColor;
   border-width: 0 1.5px 1.5px 0;
   transform: translateY(-2px) rotate(45deg);
@@ -1215,11 +1287,6 @@ zen-folder:is([lima-agents], [lima-tabs], [lima-images])[collapsed] > .tab-group
 .lima-archive-actions { margin-block-start: 10px; gap: 6px; }
 .lima-archive-actions button { padding-block: 3px; font-size: 12px; }
 
-/* A collapsed workspace whose (hidden) chat is the selected tab shows
-   nothing inside it. Zen keeps a collapsed folder's selected tab in view and
-   left the next row (the Tabs folder) taking up its space, a blank gap. */
-zen-folder[lima-workspace][lima-chat-selected][collapsed] > .tab-group-container { display: none !important; }
-
 /* Spotify's logo (in its green) marks a Spotify source in the music bar. */
 #lima-dock .lima-music-source .lima-spotify-mark, #lima-dock .lima-music-alt-icon .lima-spotify-mark {
   inline-size: 17px; block-size: 17px; background: #1ed760; mask-image: url("resource://lima-ui/marks/spotify.svg");
@@ -1256,18 +1323,3 @@ zen-folder[lima-workspace][lima-chat-selected][collapsed] > .tab-group-container
 /* Apps and files in search show their own macOS icon, full size, without a tile. */
 .lima-s-icon:is([data-kind="app"], [data-kind="file"]):has(.lima-s-favicon) { background: none; box-shadow: none; }
 .lima-s-icon:is([data-kind="app"], [data-kind="file"]) .lima-s-favicon { width: 24px; height: 24px; border-radius: 0; }
-
-/* One folder icon everywhere (workspaces keep their Pip): Lima's outline
-   folder, open while expanded, drawn in the sidebar's text colour at the
-   size of a tab's icon. Replaces Zen's filled folder and Lima's older glyphs. */
-#navigator-toolbox zen-folder:not([lima-workspace]) > .tab-group-label-container > .tab-group-folder-icon > :is(svg, image, .icon, .dots) { display: none !important; }
-#navigator-toolbox zen-folder:not([lima-workspace]) > .tab-group-label-container > .tab-group-folder-icon {
-  display: grid !important; place-items: center; filter: none !important;
-}
-#navigator-toolbox zen-folder:not([lima-workspace]) > .tab-group-label-container > .tab-group-folder-icon::after {
-  content: ""; display: block; width: 16px; height: 16px; background: currentColor; opacity: .82;
-  mask: url("resource://lima-ui/marks/folder.svg") center / contain no-repeat;
-}
-#navigator-toolbox zen-folder:not([lima-workspace]):not([collapsed]) > .tab-group-label-container > .tab-group-folder-icon::after {
-  mask-image: url("resource://lima-ui/marks/folder-open.svg");
-}

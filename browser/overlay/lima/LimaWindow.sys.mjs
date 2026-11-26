@@ -1,3 +1,4 @@
+import { SETTLE } from "resource://lima/LimaMotion.sys.mjs";
 /* Per-window integration: Lima's sidebar pieces (LimaSidebar) and the
  * Context Shelf recorder for non-private navigation metadata. */
 
@@ -7,6 +8,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
   LimaAppearance: "resource://lima/LimaAppearance.sys.mjs",
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
   LimaSidebar: "resource://lima/LimaSidebar.sys.mjs",
+  installSidebarRows: "resource://lima/LimaSidebarRows.sys.mjs",
   LimaTabs: "resource://lima/LimaTabs.sys.mjs",
   LimaWorkspaces: "resource://lima/LimaWorkspaces.sys.mjs",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
@@ -36,19 +38,39 @@ export const LimaWindow = {
     if (win.limaAttached) return;
     win.limaAttached = true;
     win.document.documentElement.setAttribute("lima-window", "true");
+    win.document.documentElement.style.setProperty("--lima-motion-settle", SETTLE);
     lazy.LimaSidebar.attach(win);
+    lazy.installSidebarRows(win, { privateWindow: lazy.PrivateBrowsingUtils.isWindowPrivate(win) });
     lazy.LimaAssistant.attach(win);
     lazy.LimaWorkspaces.keepChatFoldersCollapsed(win);
     lazy.LimaWorkspaces.watchLayout(win);
+    lazy.LimaWorkspaces.watchAgentIcons(win);
     // Tab size (Settings → General → Tabs): row height, with the label scaled to match.
     const applyTabSize = () => {
       const height = Math.max(22, Math.min(40, Services.prefs.getIntPref("lima.tabs.height", 26)));
       win.document.documentElement.style.setProperty("--lima-tab-height", `${height}px`);
       win.document.documentElement.style.setProperty("--lima-tab-font", `${(11.5 + (height - 26) * 0.2).toFixed(2)}px`);
     };
+    // A collapsed Zen folder hides its rows behind a margin measured when it
+    // collapsed. Lima adds, hides and resizes rows inside collapsed folders
+    // afterwards, which left that margin short (a blank gap under the folder)
+    // or long. Re-measure them, once things settle, whenever rows change.
+    let relayoutTimer = 0;
+    const relayoutFolders = () => {
+      win.clearTimeout(relayoutTimer);
+      relayoutTimer = win.setTimeout(() => {
+        try { win.gZenFolders?.relayoutCollapsedFolders?.(); } catch (error) { console.error("Lima folder relayout", error); }
+      }, 160);
+    };
+    win.limaRelayoutFolders = relayoutFolders;
+    for (const type of ["TabOpen", "TabClose", "TabGrouped", "TabUngrouped", "TabSelect", "TabShow", "TabHide",
+      "TabGroupExpand", "TabGroupCollapse", "TabGroupCreate", "TabGroupRemoved"]) {
+      win.gBrowser.tabContainer.addEventListener(type, relayoutFolders);
+    }
+    const resizeRows = () => { applyTabSize(); relayoutFolders(); };
     applyTabSize();
-    Services.prefs.addObserver("lima.tabs.height", applyTabSize);
-    win.addEventListener("unload", () => Services.prefs.removeObserver("lima.tabs.height", applyTabSize), { once: true });
+    Services.prefs.addObserver("lima.tabs.height", resizeRows);
+    win.addEventListener("unload", () => Services.prefs.removeObserver("lima.tabs.height", resizeRows), { once: true });
     const applyPersonality = () => win.document.documentElement.dataset.limaPersonality =
       Services.prefs.getStringPref("lima.personality", "full");
     applyPersonality();
@@ -56,7 +78,10 @@ export const LimaWindow = {
     // Light or dark, following macOS unless Settings pins one. Private
     // windows keep Zen's own look (see lima.css).
     const root = win.document.documentElement;
-    const applyTheme = theme => root.setAttribute("lima-theme", theme);
+    const applyTheme = theme => {
+      root.setAttribute("lima-theme", theme);
+      Services.obs.notifyObservers(null, "lima-theme-changed");
+    };
     applyTheme(lazy.LimaAppearance.theme());
     const unwatchTheme = lazy.LimaAppearance.subscribe(applyTheme);
     win.addEventListener("unload", () => {

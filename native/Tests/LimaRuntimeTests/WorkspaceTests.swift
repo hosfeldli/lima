@@ -343,3 +343,72 @@ private func archivedText(_ archive: URL, _ entry: String) throws -> String {
     #expect(tabs.first { $0.url == "https://user.example/c" }?.folder == "Reading")
     #expect(Workspace.tabFolder("a/b/c/d") == "a/b/c" && Workspace.tabFolder(" / ../ ") == nil)
 }
+
+@Test(.timeLimit(.minutes(1))) func agentsArrangeTabsWithIconsNamesOrderAndFolderStyles() async throws {
+    let (runtime, dir) = try await workspaceRuntime()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let id = try #require(await call(runtime, "workspace.create", ["name": .string("Trip")]).result?["id"]?.stringValue)
+    for url in ["https://a.example/", "https://b.example/", "https://c.example/"] {
+        _ = await call(runtime, "workspace.openTab", ["url": .string(url)], origin: .mcp, workspace: id)
+    }
+    let arranged = await call(runtime, "workspace.arrange", [
+        "tabs": .array([
+            .object(["url": .string("https://c.example/"), "folder": .string("Hotels"), "icon": .string("star"), "label": .string("  Best   pick ")]),
+            .object(["url": .string("https://a.example/"), "folder": .string("Hotels"), "icon": .string("🏨")]),
+        ]),
+        "folders": .array([
+            .object(["path": .string("Hotels"), "icon": .string("🧳"), "collapsed": .bool(false)]),
+            .object(["path": .string("Flights")]),
+        ]),
+    ], origin: .mcp, workspace: id)
+    #expect(arranged.error == nil)
+    var workspace = try await runtime.workspaces.get(id)
+    #expect(workspace.tabs.map(\.url) == ["https://c.example/", "https://b.example/", "https://a.example/"], "listed tabs take the listed order")
+    #expect(workspace.tabs[0].icon == "star" && workspace.tabs[0].label == "Best pick" && workspace.tabs[2].icon == "🏨")
+    #expect(workspace.tabOrder == 1)
+    #expect(workspace.tabFolderStyles?.first { $0.path == "Hotels" }?.icon == "🧳")
+    #expect(workspace.tabFolderStyles?.contains { $0.path == "Flights" } == true, "an empty folder the agent names is kept")
+
+    // Renaming carries tabs and styles along; removing moves tabs up a level.
+    _ = await call(runtime, "workspace.arrange", ["folders": .array([
+        .object(["path": .string("Hotels"), "renameTo": .string("Stay/Hotels")]),
+    ])], origin: .mcp, workspace: id)
+    workspace = try await runtime.workspaces.get(id)
+    #expect(workspace.tabs[0].folder == "Stay/Hotels" && workspace.tabFolderStyles?.first { $0.path == "Stay/Hotels" }?.icon == "🧳")
+    _ = await call(runtime, "workspace.arrange", ["folders": .array([.object(["path": .string("Stay/Hotels"), "remove": .bool(true)])])],
+                   origin: .mcp, workspace: id)
+    workspace = try await runtime.workspaces.get(id)
+    #expect(workspace.tabs[0].folder == "Stay" && workspace.tabFolderStyles?.contains { $0.path == "Stay/Hotels" } != true)
+
+    // A bad icon is refused and changes nothing; "" clears.
+    let bad = await call(runtime, "workspace.arrange", ["tabs": .array([
+        .object(["url": .string("https://b.example/"), "folder": .string("X"), "icon": .string("not-an-icon")]),
+    ])], origin: .mcp, workspace: id)
+    #expect(bad.error != nil)
+    #expect(try await runtime.workspaces.get(id).tabs[1].folder == nil)
+    _ = await call(runtime, "workspace.arrange", ["tabs": .array([.object(["url": .string("https://c.example/"), "icon": .string(""), "label": .string("")])])],
+                   origin: .mcp, workspace: id)
+    workspace = try await runtime.workspaces.get(id)
+    #expect(workspace.tabs[0].icon == nil && workspace.tabs[0].label == nil)
+    // Another workspace's agent can't arrange this one.
+    let other = try #require(await call(runtime, "workspace.create", ["name": .string("Other")]).result?["id"]?.stringValue)
+    #expect(await call(runtime, "workspace.arrange", ["id": .string(id), "folders": .array([.object(["path": .string("Z")])])],
+                       origin: .mcp, workspace: other).error != nil)
+}
+
+@Test func tabIconNamesMatchTheUIIconSet() throws {
+    let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("../../../browser/overlay/lima/ui/icons.json").standardized
+    let names = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]).keys
+    #expect(Set(names) == Workspace.tabIconNames)
+    #expect(try Workspace.tabIcon("Star") == "star" && Workspace.tabIcon("🍳") == "🍳" && Workspace.tabIcon(" ") == nil)
+    #expect(throws: (any Error).self) { try Workspace.tabIcon("<svg>") }
+    #expect(throws: (any Error).self) { try Workspace.tabIcon("1") }
+}
+
+@Test func anEmptyFolderAnAgentNamedStaysAcrossLaterArranges() throws {
+    var workspace = Workspace(id: "w", name: "W", directory: "/tmp", hue: 0, provider: .claude, tabs: [.init(url: "https://a.example/", title: "A")],
+                              bookmarks: [], createdAt: 0, token: "")
+    _ = try workspace.arrange(folders: [.object(["path": .string("Food")])], tabs: [])
+    _ = try workspace.arrange(folders: [], tabs: [.object(["url": .string("https://a.example/"), "folder": .string("Later")])])
+    #expect(workspace.tabFolderStyles?.map(\.path) == ["Food"], "a folder holding a tab needs no entry; the named empty one stays")
+}

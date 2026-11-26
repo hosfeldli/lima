@@ -41,6 +41,7 @@ export function noteIdFromURL(url) {
 class NotesBookmarks {
   #started = false;
   #pendingTrash = new Map();
+  #defaultFolder = null;
   /** Writes we made ourselves, so observers don't echo them back. */
   #ownWrites = new Set();
 
@@ -48,7 +49,7 @@ class NotesBookmarks {
     if (this.#started) return;
     this.#started = true;
     lazy.PlacesUtils.observers.addListener(
-      ["bookmark-added", "bookmark-removed", "bookmark-title-changed", "bookmark-url-changed"],
+      ["bookmark-added", "bookmark-removed", "bookmark-title-changed", "bookmark-url-changed", "bookmark-moved"],
       events => this.#onPlacesEvents(events).catch(error => log(`observer failed: ${error}`))
     );
     lazy.LimaBridge.onEvent(message => {
@@ -59,15 +60,20 @@ class NotesBookmarks {
   }
 
   async defaultFolderGuid() {
-    const saved = Services.prefs.getStringPref(FOLDER_PREF, "");
-    if (saved && (await lazy.PlacesUtils.bookmarks.fetch(saved))) return saved;
-    const folder = await lazy.PlacesUtils.bookmarks.insert({
-      parentGuid: lazy.PlacesUtils.bookmarks.menuGuid,
-      type: lazy.PlacesUtils.bookmarks.TYPE_FOLDER,
-      title: "Notes",
-    });
-    Services.prefs.setStringPref(FOLDER_PREF, folder.guid);
-    return folder.guid;
+    if (this.#defaultFolder) return this.#defaultFolder;
+    const resolve = async () => {
+      const saved = Services.prefs.getStringPref(FOLDER_PREF, "");
+      if (saved && await lazy.PlacesUtils.bookmarks.fetch(saved)) return saved;
+      const folder = await lazy.PlacesUtils.bookmarks.insert({
+        parentGuid: lazy.PlacesUtils.bookmarks.menuGuid,
+        type: lazy.PlacesUtils.bookmarks.TYPE_FOLDER,
+        title: "Notes",
+      });
+      Services.prefs.setStringPref(FOLDER_PREF, folder.guid);
+      return folder.guid;
+    };
+    this.#defaultFolder = resolve();
+    try { return await this.#defaultFolder; } finally { this.#defaultFolder = null; }
   }
 
   /** All note bookmarks: [{guid, noteId, title, parentGuid}]. */
@@ -148,6 +154,15 @@ class NotesBookmarks {
         folders.set(child.guid, { guid: child.guid, title: child.title, notes: [] });
       }
     });
+    const seen = new Set();
+    for (const [guid, folder] of folders) {
+      folder.path = await this.#path(guid);
+      folder.notes = folder.notes.filter(note => {
+        if (seen.has(note.id)) return false;
+        seen.add(note.id);
+        return true;
+      });
+    }
     return { defaultGuid, folders: [...folders.values()] };
   }
 
@@ -185,6 +200,44 @@ class NotesBookmarks {
   }
 
   // MARK: Folders and the archive (for people and agents alike)
+
+  async location(noteId) {
+    const bookmark = (await this.noteBookmarks()).find(item => item.noteId === noteId);
+    if (!bookmark) return null;
+    return { guid: bookmark.parentGuid, path: await this.#path(bookmark.parentGuid),
+      archived: bookmark.parentGuid === Services.prefs.getStringPref(ARCHIVE_PREF, "") };
+  }
+
+  async #path(guid) {
+    const names = [];
+    while (guid) {
+      const folder = await lazy.PlacesUtils.bookmarks.fetch(guid);
+      if (!folder || guid === lazy.PlacesUtils.bookmarks.rootGuid) break;
+      names.unshift(this.#folderTitle(folder));
+      if (guid === lazy.PlacesUtils.bookmarks.menuGuid) { if (names.length > 1) names.shift(); break; }
+      guid = folder.parentGuid;
+    }
+    return names.join(" / ");
+  }
+
+  async ensureWorkspaceNote(note, folderGuid) {
+    await this.#insertBookmark(note.id, note.title, folderGuid);
+    const noteId = note.id;
+    const current = await this.location(noteId);
+    if (current?.guid !== await this.defaultFolderGuid()) return;
+    await this.relocate(noteId, folderGuid, current.guid);
+  }
+
+  async relocate(noteId, folderGuid, expectedGuid) {
+    const before = await this.location(noteId);
+    if (!before || (expectedGuid && before.guid !== expectedGuid)) throw new Error("The note moved in another window.");
+    const archive = Services.prefs.getStringPref(ARCHIVE_PREF, "");
+    if (folderGuid === archive) return this.archiveNote(noteId);
+    if (!(await this.moveNote(noteId, folderGuid))) throw new Error("That note isn't in your notebook.");
+    this.#forgetArchived(noteId);
+    lazy.broadcastToLimaPages("notes.bookmarks");
+    return { archived: false };
+  }
 
   /** The folder at `path` ("Recipes/Desserts") inside Notes, made as needed. */
   async folderAt(path) {
@@ -300,7 +353,7 @@ class NotesBookmarks {
   // MARK: Places → notes
 
   async #onPlacesEvents(events) {
-    if (events.some(e => noteIdFromURL(e.url) || e.itemType === lazy.PlacesUtils.bookmarks.TYPE_FOLDER)) {
+    if (events.some(e => e.type === "bookmark-moved" || noteIdFromURL(e.url) || e.itemType === lazy.PlacesUtils.bookmarks.TYPE_FOLDER)) {
       lazy.broadcastToLimaPages("notes.bookmarks");
     }
     for (const event of events) {
