@@ -151,6 +151,20 @@ public actor EncryptedStore {
         }
     }
 
+    // MARK: Snapshots
+
+    /// A consistent copy of the database (records stay encrypted) at `url`.
+    public func snapshot(to url: URL) throws {
+        try? FileManager.default.removeItem(at: url)
+        let escaped = url.path.replacingOccurrences(of: "'", with: "''")
+        guard sqlite3_exec(db, "VACUUM INTO '\(escaped)'", nil, nil, nil) == SQLITE_OK else {
+            throw StoreError.sqlite(String(cString: sqlite3_errmsg(db)))
+        }
+    }
+
+    /// The encrypted attachment files, for copying into a snapshot.
+    public var attachmentDirectory: URL { blobDirectory }
+
     // MARK: Attachments
 
     public func putAttachment(_ data: Data, id: String) throws {

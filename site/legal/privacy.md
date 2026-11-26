@@ -5,16 +5,18 @@ summary: What stays on your Mac, what reaches which service and when, and your c
 Liam Hosfeld publishes Lima. We never see your notes, chats, files or browsing: Lima keeps them on your Mac and has no accounts. We collect no usage statistics, analytics or telemetry.
 
 ## What stays on your Mac
-Notes, chats, workspace history, recorded activity, Companion memory and the personal details you enter are kept in an encrypted store whose key is in your macOS Keychain. There is no cloud copy. Private windows are never recorded or shown to agents.
+Notes, chats, workspace history, recorded activity, Companion memory and the personal details you enter are kept in an encrypted store whose key is in your macOS Keychain. There is no cloud copy. Lima keeps a week of daily backups of that store on your Mac, still encrypted, and an export you make goes only where you save it. Private windows are never recorded or shown to agents.
+
+Problem reports stay on your Mac too. When you create one in Settings, Lima writes it to a file (recent logs with email addresses, tokens and your home folder removed) and opens an email draft; nothing is sent unless you send that email yourself.
 
 ## Where data goes, and when
 
 | Recipient | What it receives | When |
 | --- | --- | --- |
-| Your AI provider (Anthropic, OpenAI or your OpenCode provider) | Your messages and attachments, plus what agents read while working for you: pages and files they open, notes they read, and screenshots or location you approve | When you use AI features, under that provider's terms |
+| Your AI provider (Anthropic, OpenAI or your OpenCode provider) | Your messages and attachments, plus what agents read while working for you: pages and files they open, notes they read, and screenshots or location you approve. Page text is marked as untrusted, so a page can't instruct the agent | When you use AI features, under that provider's terms |
 | Your AI provider (Companion memory) | Your requests and recorded activity since its last update, to write short notes about you | Once a day while Companion memory is on (on by default; Settings turns it off) |
 | Your search engine (Google by default for new installs) | What you search for, and what you type into Lima Search for suggestions | When you search, outside private windows; you can change the engine or turn suggestions off in Settings |
-| Lima's update storage (Google Cloud Storage) | An ordinary download request, with no identifiers | Hourly update checks |
+| Lima's update storage (Google Cloud Storage) | Ordinary download requests, with no identifiers: the update feed, and the parts of an update your copy of Lima doesn't already have | Update checks every few hours; when an update is staged over a day, your Mac's random place in that day never leaves it |
 | Websites | What any browser sends | When you visit them; link previews and note images are fetched once, without cookies, when you add them |
 | Google (Gmail and Calendar) | Read-only access you grant | Only if you connect them; counts, meetings and mail previews stay on your Mac |
 | Apple | Audio if you choose Apple Speech dictation; location requests through Location Services | Only when you use those features; default dictation runs on your Mac |

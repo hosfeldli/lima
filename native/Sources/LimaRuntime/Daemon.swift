@@ -93,6 +93,7 @@ public enum Daemon {
         // minutes, and on wake, so a Mac asleep at Friday 3 PM catches up
         // once (dedupe by week ID; memory resumes from its last window).
         let checkReports: @Sendable () -> Void = {
+            Task { _ = try? await Snapshots.take(store: runtime.store, data: paths.data) }
             Task {
                 if let report = try? await runtime.context.runScheduledReportIfDue() {
                     runtime.search.index.upsert(Runtime.document(for: report))
@@ -117,8 +118,27 @@ public enum Daemon {
         leaseTimer.setEventHandler { Task { await runtime.terminals.expireIdleLeases(timeout: 300) } }
         leaseTimer.resume()
 
+        // A runtime no Lima window has used for 15 minutes, with no agent
+        // working and background mode off, stops: one started by a test, a
+        // developer build or an agent tool would otherwise run forever.
+        let idleTimer = DispatchSource.makeTimerSource(queue: .global())
+        let idle = IdleClock(limit: ProcessInfo.processInfo.environment["LIMA_IDLE_EXIT_SECONDS"].flatMap(Double.init) ?? 900)
+        idleTimer.schedule(deadline: .now() + 60, repeating: 60)
+        idleTimer.setEventHandler {
+            Task {
+                let working = await runtime.conversations.list().contains { $0.running }
+                let keep = runtime.hasBrowserClients || working || BackgroundAgent.status().installed
+                    || ProcessInfo.processInfo.environment["LIMA_KEEP_DAEMON"] != nil
+                guard idle.tick(busy: keep) else { return }
+                FileHandle.standardError.write(Data("lima-host: idle with no Lima window; stopping the runtime\n".utf8))
+                await runtime.terminals.closeAll()
+                exit(0)
+            }
+        }
+        idleTimer.resume()
+
         let appearance = runtime.watchAppearance()
-        defer { withExtendedLifetime((server, timer, leaseTimer, appearance)) {} }
+        defer { withExtendedLifetime((server, timer, leaseTimer, idleTimer, appearance)) {} }
         FileHandle.standardError.write(Data("lima-host: runtime \(limaRuntimeVersion) listening on \(paths.socket)\n".utf8))
         // The async entry point already runs the main dispatch loop. Keep
         // the server alive without driving that loop from a worker thread.
@@ -316,5 +336,20 @@ public enum StdioRelay {
             }
             if !delivered { exit(0) }
         }
+    }
+}
+
+/// How long the runtime has gone unused; `tick` says when it's time to stop.
+final class IdleClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var since: Date?
+    let limit: TimeInterval
+    init(limit: TimeInterval) { self.limit = limit }
+    func tick(busy: Bool, now: Date = Date()) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if busy { since = nil; return false }
+        let start = since ?? now
+        since = start
+        return now.timeIntervalSince(start) >= limit
     }
 }

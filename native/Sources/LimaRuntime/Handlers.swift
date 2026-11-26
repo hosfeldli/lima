@@ -57,7 +57,10 @@ extension Runtime {
                 "conversations": .number(Double(try await self.store.count(collection: ConversationService.collection))),
                 "events": .number(Double(try await self.store.count(collection: ContextService.eventsCollection))),
                 "legacyNotesMigration": (try await self.store.meta(LegacyNotesMigration.metaKey)).map(JSONValue.string) ?? .null,
-                "legacyPlaintext": .array(LegacyAudit.plaintextFiles().map(JSONValue.string))
+                "legacyPlaintext": .array(LegacyAudit.plaintextFiles().map(JSONValue.string)),
+                "schemaVersion": .number(Double(Int(try await self.store.meta(StoreSchema.key) ?? "") ?? 0)),
+                "newerFormat": .bool((Int(try await self.store.meta(StoreSchema.key) ?? "") ?? 0) > StoreSchema.current),
+                "snapshots": .number(Double(Snapshots.list(self.paths.data).count))
             ])
         }
         register("storage.exportRecoveryKey") { [unowned self] params, _ in
@@ -282,7 +285,7 @@ extension Runtime {
             try await self.requireNotesWrite(context)
             let kind = Note.Kind(rawValue: params.optionalString("kind") ?? "classic") ?? .classic
             let note = try await self.notes.create(title: params.optionalString("title") ?? "", kind: kind, markdown: params.optionalString("markdown") ?? "")
-            self.recordActivity(ActivityEvent(kind: .note, title: note.title, detail: "created"))
+            self.recordActivity(ActivityEvent(kind: .note, title: note.title, detail: "created", metadata: ["noteId": note.id]))
             return try JSONValue.from(note)
         }
         register("notes.trash") { [unowned self] params, context in
@@ -307,7 +310,7 @@ extension Runtime {
             let base = params?["baseRevision"]?.intValue
             do {
                 let note = try await self.notes.apply(edits, to: try params.string("id"), author: author, baseRevision: base)
-                self.recordActivity(ActivityEvent(kind: .note, title: note.title, detail: "edited"))
+                self.recordActivity(ActivityEvent(kind: .note, title: note.title, detail: "edited", metadata: ["noteId": note.id]))
                 return try JSONValue.from(note)
             } catch let error as NoteEditError {
                 throw BridgeError(.badRequest, error.description)
@@ -353,14 +356,14 @@ extension Runtime {
     func registerSearch() {
         register("search.query") { [unowned self] params, _ in
             let mode = params.optionalString("mode").flatMap(SearchIntent.Mode.init(rawValue:))
-            var response = await self.search.search(try params.string("query"), mode: mode, limit: params.limit("limit", default: 30, maximum: 200))
+            var response = await self.search.search(try params.string("query"), mode: mode, limit: params.limit("limit", default: 30, maximum: 200), source: params.optionalString("source"))
             if let instant = InstantAnswers.answer(for: response.intent.query) {
                 response.results.insert(instant, at: 0)
             }
             return try JSONValue.from(response)
         }
         register("search.select") { [unowned self] params, _ in
-            let selections = await self.search.recordSelection(try params.string("key"))
+            let selections = await self.search.recordSelection(try params.string("key"), query: params.optionalString("query") ?? "")
             try await self.store.put(selections, collection: "settings", id: "search.selections")
             return .null
         }

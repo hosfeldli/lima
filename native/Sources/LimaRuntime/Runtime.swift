@@ -76,11 +76,19 @@ public final class Runtime: @unchecked Sendable {
     public static func open(paths: RuntimePaths = .resolve()) async throws -> Runtime {
         let keyProvider: KeyProvider = ProcessInfo.processInfo.environment["LIMA_KEY_FILE"].map { FileKeyProvider(url: URL(fileURLWithPath: $0)) }
             ?? KeychainKeyProvider()
+        Snapshots.applyPendingRestore(data: paths.data)
         let store = try EncryptedStore(directory: paths.data.appendingPathComponent("store"), keyProvider: keyProvider)
+        // Record the store's format; an older one is snapshotted before it's upgraded.
+        let schema = Int(try await store.meta(StoreSchema.key) ?? "")
+        if schema.map({ $0 < StoreSchema.current }) ?? true {
+            if schema != nil { _ = try? await Snapshots.take(store: store, data: paths.data, force: true) }
+            try await store.setMeta(StoreSchema.key, String(StoreSchema.current))
+        }
         let sink = EventSink()
         let notes = try await NotesService(store: store)
         let conversations = try await ConversationService(store: store) { event in sink.conversation(event) }
         await conversations.setMediaDirectory(paths.data.appendingPathComponent("chat-media", isDirectory: true))
+        if let limits = try? await store.get(RunLimits.self, collection: "settings", id: "agents.limits") { await conversations.setLimits(limits) }
         let terminals = TerminalService(integrationDirectory: paths.data.appendingPathComponent("shell-integration")) { event in sink.terminal(event) }
         let selections = try await store.get([String: Int].self, collection: "settings", id: "search.selections") ?? [:]
         let search = SearchService(selections: selections)
@@ -130,6 +138,7 @@ public final class Runtime: @unchecked Sendable {
         registerNotes()
         registerNoteImages()
         registerWorkspaceChats()
+        registerSupport()
         registerFileSearch()
         registerSearch()
         registerContext()
@@ -168,8 +177,8 @@ public final class Runtime: @unchecked Sendable {
             var configuration = await self?.workspaceAgentConfiguration(conversation) ?? (arguments: [], environment: [:], preamble: nil)
             let richContent = """
             Lima renders standard Markdown tables and supports optional interactive fenced JSON blocks in chat and Notes. Use chart with {"title":"…","type":"bar","values":[{"label":"…","value":3}]} (type bar or line), checklist with {"title":"…","items":["…"]}, quiz with {"title":"…","options":["…"],"correct":0}, or details with {"title":"…","text":"…"} when useful. Use the block name as the fence language and valid JSON as the entire body. Use a map block for an offline world map: {"title":"Trip","markers":[{"label":"New York","latitude":40.71,"longitude":-74.01}],"routes":[{"label":"Route","points":[[40.71,-74.01],[42.36,-71.06]],"durationMinutes":255,"mode":"train"}]}. Coordinates are latitude then longitude. Provide intermediate waypoints for the route shape. The map displays the supplied route and does not compute directions. Leave Markdown tables outside code fences. In Notes, a line ::embed URL shows a link preview card that opens the live page side by side (YouTube and Spotify links can also play in place); most sites can't be framed, so don't promise an inline page.
-            For numbers the reader adjusts (a recipe scaled by servings, a budget split, a unit conversion), use a calculator block: {"title":"Pancakes","inputs":[{"id":"servings","label":"Servings","value":4,"min":1,"step":1}],"rows":[{"label":"Flour","value":"250 * servings / 4","unit":"g"},{"label":"Eggs","value":"ceil(2 * servings / 4)","decimals":0}],"note":"Written for 4 servings."}. Each row's value is arithmetic using input ids and earlier row ids (give a row an id to reuse it), with round, ceil, floor, min, max, abs and sqrt; nothing else runs.
-            In notes, value blocks make a small live flow: {{budget := 120}} shows "budget" as an adjustable number in a light grey block, and {{budget / 4}} shows a live result. Formulas can use these names and calculator input and row ids anywhere in the same note, so changing one value updates every block and calculator that depends on it. Use them for budgets, scaling, conversions and anything the reader may tweak; notes_update rewrites a note when you restructure it.
+            For numbers the reader adjusts (a recipe scaled by servings, a budget split, a unit conversion), use a calculator block: {"title":"Pancakes","inputs":[{"id":"servings","label":"Servings","value":4,"min":1,"step":1}],"rows":[{"label":"Flour","value":"250 * servings / 4","unit":"g"},{"label":"Eggs","value":"ceil(2 * servings / 4)","decimals":0}],"note":"Written for 4 servings."}. An input can be "type":"slider" (with min and max) or "type":"toggle" (value 1 or 0). Each row's value is a formula using input ids and earlier row ids (give a row an id to reuse it); nothing else runs.
+            In notes, value blocks make a small live flow in light grey blocks. Inputs: {{budget := 120}} (a number), {{guests := 4 in 1..12}} (a slider; add "step 2"), {{vegan := yes}} (a switch, 1 or 0), {{size := medium in small=1, medium=1.5, large=2}} (a choice whose value is its number). Results: {{budget / guests}} shows a live result, and {{each = budget / guests as $}} names it so later formulas can use "each". After "as", a result can be shown as money ($ € £), a percent (%), with fixed decimals (0, 0.0, 0.00), or with a short unit (g, kg, min), e.g. "as 0.0 kg". Formulas use + - * / % ^, comparisons (< <= > >= == !=, giving 1 or 0), and, or, not(x), if(test, then, else), round(x, digits), ceil, floor, min, max, sum, avg, abs, sqrt, pow, clamp(x, low, high), pct(part, whole), log, ln, exp, pi, yes and no. Every note also offers facts: tasks and done count its checklist items, and each Markdown table column of numbers gives <column>_sum, _avg, _min, _max and _count (the header in lower case with spaces as _), so {{done / tasks * 100 as %}} or {{cost_sum as $}} stay current as the reader ticks items or edits the table. Names work anywhere in the note, in any order, and changing one value updates every block and calculator that depends on it. Use them for budgets, scaling, conversions, progress and anything the reader may tweak; notes_update rewrites a note when you restructure it.
             To put an image in a note, call notes_add_image with an HTTPS image address or a file path; width resizes it (50% or 320), and you resize one already in a note by editing the |width in its ![alt|width](lima-attachment:…) Markdown. Organize notes: when you create a note or see related ones, file them into folders with notes_organize (for example Recipes or Work/Clients), and archive notes that are done with notes_archive instead of deleting them; notes_unarchive brings one back.
             """
             // The Companion is Pip, Lima's mascot; it says so when it introduces itself.
@@ -306,7 +315,7 @@ public final class Runtime: @unchecked Sendable {
         default:
             return SearchDocument(source: "context", id: event.id, title: event.title, body: event.detail,
                                   subtitle: "Activity · \(event.kind.rawValue)", timestamp: event.timestamp,
-                                  action: SearchAction("openContext", ["id": event.id]))
+                                  action: SearchAction("openContext", ["id": event.id].merging(event.metadata["noteId"].map { ["noteId": $0] } ?? [:]) { _, noteID in noteID }))
         }
     }
 

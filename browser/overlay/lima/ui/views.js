@@ -209,7 +209,10 @@ export async function renderIntegrations(app, section) {
       card("Your information", personalMemoryForm()), card("What the Companion remembers", companionMemorySettings()),
       card("Location Services", locationSettings()),
     ]],
-    ["agents", "AI providers", "claude codex opencode sign in install default model setup", [card("AI providers", providerSettings())]],
+    ["agents", "AI providers", "claude codex opencode sign in install default model setup limits steps minutes guardrails", [
+      card("AI providers", providerSettings(), policyLinks([["AI Usage Policy", "ai-usage"], ["Acceptable Use", "acceptable-use"]])),
+      card("Limits for one run", limitSettings()),
+    ]],
     ["image-generation", "Image Generation", "local ComfyUI checkpoints model artwork generator", [card("Local provider", generationSettings())]],
     ["writing", "Writing tools", "grammar accessibility global shortcut ai replace", [card("Grammar checker", grammarSettings())]],
     ["connections", "Integrations", "gmail google calendar oauth github reminders login spotify automation", [
@@ -217,12 +220,14 @@ export async function renderIntegrations(app, section) {
       card("Messages", messagesSettings()),
     ]],
     ["privacy", "Privacy", "privacy data tracking legal license terms disclaimer trademark", [
-      card("Your data stays on your Mac", privacySummary()),
+      card("Your data stays on your Mac", privacySummary(), policyLinks([["Privacy Policy", "privacy"]])),
       card("Legal & notices", legalNotices()),
     ]],
     ["data", "Data & permissions", "backup recovery encryption MCP storage grants permission", [
-      card("MCP for external agents", mcp), card("Encrypted storage", storage),
+      card("Backups & export", backupSettings()),
+      card("MCP for external agents", mcp), card("Encrypted storage", storage, policyLinks([["Data Retention", "retention"], ["Security Policy", "security"], ["Incident Response", "incident-response"]])),
     ]],
+    ["help", "Help & support", "help support bug report problem crash logs feedback contact email diagnostics", [card("Report a problem", supportSettings())]],
     ["updates", "Updates", "version download release restart stable check", [card(null, updateSettings())]],
   ];
   const aliases = { google: "connections", grammar: "writing", browsing: "search" };
@@ -354,7 +359,7 @@ function searchSettings() {
     paintEngines();
   }).catch(() => paintEngines());
   return [
-    card("Lima Search", addressRow,
+    card("Lima Search", addressRow, policyLinks([["Search and Commercial Data", "commercial-data"]]),
       el("div", { class: "row" },
         el("button", { onclick: async () => { await call("search.resetLearning"); alert("Learned ranking reset."); } }, "Reset learned ranking"),
         el("button", { onclick: async () => { const n = await call("search.rebuild", { source: "app" }); alert(`Index rebuilt (${n} items).`); } }, "Rebuild app index"))),
@@ -365,7 +370,88 @@ function searchSettings() {
   ];
 }
 
+function policyLinks(items) {
+  return el("div", { class: "row policy-links" }, items.map(([label, slug]) =>
+    el("button", { type: "button", class: "ghost", onclick: () => bridge.openTab(`https://lima.liamhosfeld.com/legal/${slug}`) }, label)));
+}
+
 /** Standard notices that hold for every user, with links to the full texts. */
+/* How far one agent run may go before Lima stops it and says so. */
+function limitSettings() {
+  const steps = el("input", { type: "number", min: "10", max: "2000", step: "10", "aria-label": "Most steps in one run" });
+  const minutes = el("input", { type: "number", min: "2", max: "600", step: "1", "aria-label": "Most minutes in one run" });
+  const status = el("p", { class: "muted", role: "status" });
+  const save = async () => {
+    try {
+      const limits = await call("agents.limits", { maxSteps: Number(steps.value), maxMinutes: Number(minutes.value) });
+      steps.value = limits.maxSteps; minutes.value = limits.maxMinutes;
+      status.textContent = "Saved. Runs already going keep the limits they started with.";
+    } catch (error) { status.textContent = errorText(error); }
+  };
+  steps.addEventListener("change", save);
+  minutes.addEventListener("change", save);
+  call("agents.limits", {}).then(limits => { steps.value = limits.maxSteps; minutes.value = limits.maxMinutes; }).catch(() => {});
+  return el("div", {},
+    el("p", { class: "muted", text: "Lima stops a run that goes past these and tells you in the chat; reply “continue” to let it keep going. Agents also read web pages as information only, and a reply lists any files it changed outside its workspace." }),
+    el("label", { class: "row" }, "Most steps", steps), el("label", { class: "row" }, "Most minutes", minutes), status);
+}
+
+/* Report a problem: Lima writes a report on this Mac (recent logs with
+ * personal details removed) and opens an email draft; nothing is sent until
+ * you send it. */
+function supportSettings() {
+  const description = el("textarea", { rows: "4", placeholder: "What happened, and what did you expect?", "aria-label": "What happened" });
+  const logs = el("input", { type: "checkbox", checked: true });
+  const status = el("p", { class: "muted", role: "status" });
+  const send = el("button", { class: "primary", onclick: async () => {
+    send.disabled = true;
+    status.textContent = "Writing the report…";
+    try {
+      const report = await call("support.report", { description: description.value, includeLogs: logs.checked });
+      status.textContent = `Saved ${report.path.split("/").pop()} and opened an email draft. Attach the report (it's selected in Finder) and send when you're ready.`;
+    } catch (error) { status.textContent = errorText(error); }
+    send.disabled = false;
+  } }, "Create report");
+  return el("div", { class: "support-form" },
+    el("p", { class: "muted", text: "Lima doesn't send anything about you automatically. This writes a report on your Mac and opens an email to lima.issues@gmail.com for you to review and send." }),
+    description,
+    el("label", { class: "row appearance-checkbox" }, logs, "Include recent logs and crash notes (email addresses, tokens and your home folder are removed)"),
+    el("div", { class: "row" }, send), status);
+}
+
+/* Daily encrypted backups of Lima's store, kept for a week; restoring one
+ * takes effect when Lima next starts. Export writes notes as Markdown. */
+function backupSettings() {
+  const list = el("ul", { class: "backup-list" });
+  const status = el("p", { class: "muted", role: "status" });
+  const when = ms => new Date(ms).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  async function draw() {
+    const snapshots = await call("storage.snapshots");
+    list.replaceChildren(...(snapshots.length ? snapshots : []).map(snapshot => el("li", { class: "row" },
+      el("span", { text: snapshot.name.endsWith("-before-restore") ? `${when(snapshot.createdAt)} (before a restore)` : when(snapshot.createdAt) }),
+      el("span", { class: "spacer" }),
+      el("button", { class: "ghost", onclick: async () => {
+        if (!confirm(`Restore Lima's notes, chats and workspaces to ${when(snapshot.createdAt)}? It takes effect when Lima restarts; what you have now is kept as a backup.`)) return;
+        try { await call("storage.restoreSnapshot", { name: snapshot.name }); status.textContent = "Restart Lima to finish restoring."; }
+        catch (error) { status.textContent = errorText(error); }
+      } }, "Restore…"))));
+    if (!snapshots.length) list.replaceChildren(el("li", { class: "muted", text: "The first backup is made automatically within a day." }));
+  }
+  const now = el("button", { class: "ghost", onclick: async () => {
+    try { await call("storage.snapshotNow"); status.textContent = "Backed up."; await draw(); } catch (error) { status.textContent = errorText(error); }
+  } }, "Back up now");
+  const exporter = el("button", { class: "ghost", onclick: async () => {
+    try {
+      const result = await call("data.export", {});
+      status.textContent = `Exported ${result.notes} note${result.notes === 1 ? "" : "s"} and ${result.workspaces} workspace${result.workspaces === 1 ? "" : "s"} to ${result.path.replace(/^\/Users\/[^/]+/, "~")}.`;
+    } catch (error) { status.textContent = errorText(error); }
+  } }, "Export notes & workspaces…");
+  draw().catch(error => { status.textContent = errorText(error); });
+  return el("div", {},
+    el("p", { class: "muted", text: "Lima backs up its encrypted store once a day and keeps a week of backups on this Mac. Export saves your notes as Markdown files (with their images) and your workspaces as JSON." }),
+    list, el("div", { class: "row" }, now, exporter), status);
+}
+
 function legalNotices() {
   const notices = [
     ["AI can make mistakes.", "Agents and answers can be wrong or out of date. Check important details before you rely on them."],
@@ -382,8 +468,9 @@ function legalNotices() {
     el("ul", { class: "privacy-facts" }, notices.map(([title, text]) => el("li", {}, icon("check"), el("span", {}, el("strong", { text: title }), " ", text)))),
     el("div", { class: "row" },
       link("Licenses", "about:license"),
-      link("Privacy", "https://github.com/hosfeldli/lima/blob/main/docs/PRIVACY.md"),
-      link("Terms, privacy and policies (PDF)", "https://lima.liamhosfeld.com/legal")));
+      link("Legal Center and PDFs", "https://lima.liamhosfeld.com/legal")),
+    policyLinks([["Terms of Service", "terms"], ["End User License Agreement", "eula"], ["Open-source licenses", "licenses"],
+      ["Partner Terms", "partner"]]));
 }
 
 /** What Lima keeps and where: plain facts, first. */
@@ -408,11 +495,18 @@ function updateSettings() {
   const progress = el("progress", { "aria-label": "Update in progress", hidden: true });
   const check = el("button", { class: "ghost", disabled: true, onclick: () => run("checkForUpdate") }, "Check for Updates");
   const install = el("button", { class: "primary", hidden: true, onclick: () => run("installUpdate") }, "Restart to Update");
-  const whatsNew = el("button", { class: "ghost", onclick: () => bridge.openTab("https://github.com/hosfeldli/lima/releases") }, "View What's New");
+  const notes = el("details", { id: "release-notes", class: "upgrade-notes", hidden: true, open: location.hash === "#release-notes" },
+    el("summary", { text: "What’s New" }));
+  const notesContent = el("section");
+  notes.append(notesContent);
+  const whatsNew = el("button", { class: "ghost", onclick: () => {
+    if (notes.hidden) bridge.openTab("https://github.com/hosfeldli/lima/releases");
+    else bridge.openTab("about:lima?view=whats-new");
+  } }, "View What's New");
   const checked = el("small", { class: "muted" });
   const node = el("div", { class: "update-settings" },
     el("div", { class: "update-summary" }, mascot, el("div", { class: "grow", role: "status" }, installed, heading, detail)),
-    progress, outcome, el("div", { class: "row update-actions" }, check, install, whatsNew, checked));
+    progress, outcome, el("div", { class: "row update-actions" }, check, install, whatsNew, checked), notes);
   let state;
   let working;
   let revision = 0;
@@ -436,6 +530,11 @@ function updateSettings() {
     heading.textContent = phase === "ready" && version ? `Lima ${version} · Ready to Restart`
       : phase === "idle" && !checkedAt ? "Check for a new version" : label;
     detail.textContent = phase === "idle" && !checkedAt ? "Check for the latest stable release." : explanation;
+    notes.hidden = !state.releaseNotes;
+    if (state.releaseNotes && notesContent.limaNotes !== state.releaseNotes) {
+      notesContent.limaNotes = state.releaseNotes;
+      notesContent.replaceChildren(markdown(state.releaseNotes));
+    }
     outcome.hidden = !(error || lastInstall?.ok === false);
     outcome.textContent = error || lastInstall?.error || "";
     progress.hidden = !busy;

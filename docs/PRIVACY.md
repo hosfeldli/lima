@@ -4,6 +4,9 @@ Lima is built so your browsing, notes and AI work stay on your Mac.
 
 ## What stays on your Mac
 - **Notes, chats, workspace history, activity and Companion memory** are kept in an encrypted local store whose key lives in your macOS Keychain. Lima has no account and no cloud copy. You can export a recovery key in Settings → Data & permissions.
+- **Backups and export.** Lima keeps a week of daily backups of the encrypted store under its data folder (`snapshots/`, still encrypted). Settings → Data & permissions restores one at the next start, or exports notes as Markdown and workspaces as JSON to a folder you choose.
+- **Problem reports** (Settings → Help & support) are written to `~/Library/Logs/Lima/Reports/` with email addresses, tokens, URL queries and the home path removed, then opened as an email draft. Nothing is sent unless you send it.
+- **Update rollout.** Each install keeps a random number in `Updates/rollout-slot` to take staged releases at its own time. It never leaves the Mac.
 - **Private windows** are never recorded in activity, never shown to agents, and never share media with the sidebar's music controls.
 - **Page cleanup** (hiding search engines' AI answers and sponsored results, and YouTube Shorts) runs entirely in the browser. It sends nothing anywhere.
 

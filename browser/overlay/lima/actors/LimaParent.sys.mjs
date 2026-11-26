@@ -19,7 +19,7 @@ const ALLOWED_PREFIXES = [
 ];
 const ALLOWED_METHODS = new Set(["quickAsk", "auth.approve", "auth.evaluate", "system.openApp", "host.hello"]);
 const PERSONAL_METHODS = new Set(["personalMemory.get", "personalMemory.save", "companionMemory.get", "companionMemory.update", "companionMemory.run",
-  "system.permissions"]);
+  "system.permissions", "support.report", "data.export", "storage.restoreSnapshot"]);
 // The walkthrough may save the optional details it asks for, and set the
 // Companion's memory on or off; nothing else personal.
 const WELCOME_METHODS = new Set(["personalMemory.get", "personalMemory.save", "companionMemory.get", "companionMemory.update", "system.permissions"]);
@@ -184,6 +184,18 @@ export class LimaParent extends JSWindowActorParent {
         if (kind === "welcomeMakeDefault") return LimaWelcome.makeDefaultBrowser();
         return LimaWelcome.isDefaultBrowser();
       }
+      // The What's New page reads this release's notes, and can close itself.
+      case "whatsNew": {
+        if (!browser?.currentURI?.spec.startsWith("about:lima?view=whats-new")) throw new Error("Open What’s New from Lima.");
+        const status = await lazy.LimaBridge.request("update.status");
+        return { version: status?.currentVersion ?? "", notes: status?.releaseNotes ?? "" };
+      }
+      case "closeWhatsNew": {
+        if (!browser?.currentURI?.spec.startsWith("about:lima?view=whats-new")) throw new Error("Not the What’s New page.");
+        const tab = win.gBrowser.getTabForBrowser(browser);
+        if (tab) win.gBrowser.removeTab(tab);
+        return null;
+      }
       case "updateStatus":
       case "checkForUpdate":
       case "installUpdate": {
@@ -195,7 +207,7 @@ export class LimaParent extends JSWindowActorParent {
           const { LimaUpdates } = ChromeUtils.importESModule("resource://lima/LimaUpdates.sys.mjs");
           return LimaUpdates.restartToUpdate();
         }
-        return lazy.LimaBridge.request(kind === "updateStatus" ? "update.status" : "update.check");
+        return kind === "updateStatus" ? lazy.LimaBridge.request("update.status") : lazy.LimaBridge.request("update.check", { manual: true });
       }
       case "filesPrivacySettings":
         return openPrivacyPane("files", "Privacy_FilesAndFolders");
@@ -360,10 +372,12 @@ export class LimaParent extends JSWindowActorParent {
       }
       case "noteFolders":
         return lazy.LimaNotesBookmarks.folderTree();
+      case "noteLocation":
+        return lazy.LimaNotesBookmarks.location(payload.noteId);
       case "createNote":
         return lazy.LimaNotesBookmarks.createNote(payload);
       case "moveNote":
-        return lazy.LimaNotesBookmarks.moveNote(payload.noteId, payload.folderGuid);
+        return lazy.LimaNotesBookmarks.relocate(payload.noteId, payload.folderGuid, payload.expectedGuid);
       case "createFolder":
         return lazy.LimaNotesBookmarks.createFolder(payload.title, payload.parentGuid);
       case "trashNote":
