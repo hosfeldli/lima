@@ -172,26 +172,13 @@
           </ul>
         </div>
 
-        <figure class="stage agent-tab" data-demo="handoff" aria-label="Demo: Claude Code fixes a checkout page in its own browser tab">
-          <p class="ask"><span class="ask-who">You</span><span class="typed" data-text="Fix the checkout total on the client site and run the tests."></span><span class="caret" aria-hidden="true"></span></p>
-          <div class="browser">
-            <div class="tabbar">
-              <span class="btab active"><span class="dot" data-state="idle"></span><span class="btab-title">Checkout · localhost:3000</span></span>
-              <span class="btab"><svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg><span class="btab-title">Pull request #48</span></span>
-            </div>
-            <div class="urlbar"><svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg><span>localhost:3000/checkout</span><span class="agent-here"><svg class="icon" aria-hidden="true"><use href="#i-agent"/></svg>Claude Code</span></div>
-            <div class="page">
-              <p class="page-title">Your order</p>
-              <p class="line"><span>Mechanical keyboard</span><span>$64.00</span></p>
-              <p class="line"><span>USB-C cable</span><span>$16.00</span></p>
-              <p class="line discount"><span>Code SAVE10</span><span>−$8.00</span></p>
-              <p class="line total"><span>Total</span><span class="amount"><s class="was">$80.00</s><span class="now">$80.00</span></span></p>
-              <span class="pay">Pay</span>
-              <span class="pointer" aria-hidden="true"></span>
-            </div>
-            <p class="agent-line" aria-live="off"><span class="dot" data-state="idle"></span><span class="agent-text">Waiting for a request</span><span class="agent-diff" hidden><span class="add">+12</span> <span class="del">−3</span></span></p>
-          </div>
-          <figcaption>The agent works in its own tab, and the sidebar shows where. Demo data.</figcaption>
+        <figure class="stage product-recording" id="product-recording">
+          <video controls playsinline preload="none" width="1120" height="402"
+                 poster="/lima-search-demo.webp" aria-label="Lima Search finds a word inside a note and opens the note">
+            <source src="/lima-search-demo.mp4" type="video/mp4">
+            <a href="/lima-search-demo.mp4">Download the Lima recording</a>
+          </video>
+          <figcaption>Recorded in Lima. Search for “thermos” in Notes, see it highlighted in the result, then open “Weekend plans.”</figcaption>
         </figure>
       </section>
 
@@ -254,26 +241,7 @@
           <h2 id="search-title">⌘T searches everything.</h2>
           <p>One box for the web, your open tabs, bookmarks, history, workspaces and notes. Ask Lima a question and the answer streams in place, or press ⌘↩ to hand the task to an agent.</p>
         </header>
-        <figure class="stage search-demo" data-demo="search" aria-label="Demo: Lima's search panel. Type to filter the demo results.">
-          <div class="search-panel">
-            <label class="search-input">
-              <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
-              <span class="visually-hidden">Try Lima search (demo)</span>
-              <input id="search-try" type="text" value="" placeholder="Search or ask" autocomplete="off" spellcheck="false" aria-controls="search-results">
-              <kbd>esc</kbd>
-            </label>
-            <div class="scopes" role="tablist" aria-label="Search scope">
-              <button type="button" role="tab" aria-selected="true" data-scope="all">All</button>
-              <button type="button" role="tab" aria-selected="false" data-scope="tab">Tabs</button>
-              <button type="button" role="tab" aria-selected="false" data-scope="workspace">Workspaces</button>
-              <button type="button" role="tab" aria-selected="false" data-scope="note">Notes</button>
-              <button type="button" role="tab" aria-selected="false" data-scope="web">Web</button>
-            </div>
-            <ul class="results" id="search-results" aria-live="polite"></ul>
-            <p class="search-foot"><span><kbd>↩</kbd> open</span><span><kbd>⌘↩</kbd> hand to an agent</span><span><kbd>tab</kbd> complete</span></p>
-          </div>
-          <figcaption>Type to try it, or pick a scope. Demo data.</figcaption>
-        </figure>
+        <p><a href="#product-recording">Watch Lima search inside a note</a></p>
       </section>
 
       <section class="pane split reverse" id="companion" aria-labelledby="companion-title">

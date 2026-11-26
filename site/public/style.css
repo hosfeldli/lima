@@ -700,3 +700,12 @@ h2 { font-size: clamp(28px, 3.4vw, 42px); line-height: 1.08; letter-spacing: -.0
   .pointer { display: none; }
   .btab:not(.active) { display: none; }
 }
+
+.product-recording video {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: var(--sidebar);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
