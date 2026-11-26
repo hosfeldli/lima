@@ -1,3 +1,4 @@
+import { showSidebarNotice } from "resource://lima/LimaSidebar.sys.mjs";
 /* Lima updates. lima-host checks the signed release feed, downloads and
  * verifies the build (feed signature, digest, code signature, no
  * downgrades) and installs it out of process. This module decides when to
@@ -52,8 +53,33 @@ async function restartToUpdate() {
   Services.startup.quit(Ci.nsIAppStartup.eAttemptQuit);
 }
 
+const WHATS_NEW = "about:lima?view=whats-new";
 function whatsNew(win) {
-  lazy.LimaTabs.openOrFocus(win, state?.notesUrl || RELEASES);
+  lazy.LimaTabs.openOrFocus(win, state?.releaseNotes ? WHATS_NEW : (state?.notesUrl || RELEASES));
+}
+
+function showInstalledChanges(status) {
+  const win = windows()[0];
+  const update = status.lastInstall;
+  if (!win || !update?.ok || update.kind === "rollback" || update.build !== status.currentBuild || !update.at) return;
+  const token = `${update.build}:${update.at}`;
+  if (Services.prefs.getStringPref("lima.updates.shownInstall", "") === token) return;
+  Services.prefs.setStringPref("lima.updates.shownInstall", token);
+  // The What's New tab opens by itself, once, after the restart.
+  if (status.releaseNotes) { lazy.LimaTabs.openOrFocus(win, WHATS_NEW); return; }
+  showSidebarNotice(win, { title: `Updated to Lima ${status.currentVersion}`, tone: "ask",
+    actions: [["What's New", () => lazy.LimaTabs.openOrFocus(win, RELEASES)]] });
+}
+
+function offerApplications(status) {
+  const win = windows()[0];
+  if (!win || !status.moveRecommended || Services.prefs.getBoolPref("lima.installation.offeredMove", false)) return;
+  Services.prefs.setBoolPref("lima.installation.offeredMove", true);
+  showSidebarNotice(win, { title: "Move Lima to Applications", tone: "ask", detail: "Install Lima there so it can update and open from Finder.",
+    actions: [["Move to Applications", async () => {
+      await lazy.LimaBridge.request("update.moveToApplications");
+      showSidebarNotice(win, { title: "Lima is installed", detail: "Quit this window and reopen Lima from Applications." });
+    }]] });
 }
 
 const HTML = "http://www.w3.org/1999/xhtml";
@@ -262,6 +288,8 @@ export const LimaUpdates = {
     lazy.LimaBridge.onEvent(message => { if (message.event === "update.status") onStatus(message.data); });
     onStatus(status);
     if (!status || status.phase === "disabled") return; // development build
+    offerApplications(status);
+    showInstalledChanges(status);
     if (status.lastInstall?.ok === false) dump(`[lima] last update was rolled back: ${status.lastInstall.error}\n`);
     Services.obs.addObserver(quitObserver, "quit-application");
     Services.obs.addObserver(freshness, "wake_notification");

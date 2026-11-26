@@ -86,3 +86,5 @@ A release build (`make release-rehearsal` locally) uses the stable identity.
 `browser/lima.lock.json` together. It also moves the submodule, after verifying the new DMG's team and
 notarization. `zen-bump.yml` runs it every three hours and releases the result automatically. See
 *Automatic security releases* in `docs/RELEASING.md`.
+
+Development builds (`make browser`, `make run`) drop `CFBundleURLTypes` and `CFBundleDocumentTypes`, so macOS never lists them as browsers beside the installed Lima. Set `LIMA_DEV_LINKS=1` to keep them when testing the default-browser flow. Release builds keep both. The updater keeps its downloaded and rollback copies in `.noindex` folders, and once per version Lima has Launch Services forget stray copies of itself (disk images, translocated copies, update files, copies no longer on disk).

@@ -109,14 +109,26 @@ never block a security update. Only a missing Lima `brand.ftl` fails the build.
 2. `lima-host` fetches `latest.json` and `latest.json.sig` and verifies the Ed25519 signature against the key
    compiled into the app's `Info.plist`. It rejects anything that isn't a strictly newer build, isn't https,
    or isn't on the feed's host.
-3. It downloads the zip, checks size and SHA-256 against the signed feed, and extracts it. The new app must
+3. **Rollout.** The feed carries `rolloutHours` (24 by default, 0 for a critical release). Each install keeps a
+   random slot between 0 and 1 in `Updates/rollout-slot`; an automatic check takes the release once that share
+   of the window has passed since `publishedAt`. A check you start in Settings doesn't wait.
+4. **Chunks first.** The release cuts the signed app into content-defined chunks (`lima-host chunk-manifest`,
+   uploaded to `stable/chunks/<sha256>.z`, manifest at `stable/<version>/manifest.json`, its digest in the
+   signed feed). The app chunks its installed copy the same way, downloads only the chunks it lacks, verifies
+   each against its digest and rebuilds the new app byte for byte. If that would save less than 30%, or
+   anything doesn't check out, it uses the zip. Measured: 5.0.10 → a fresh build downloads 65 MB instead of 230 MB.
+5. Otherwise it downloads the zip, checks size and SHA-256 against the signed feed, and extracts it. The new app must
    satisfy the installed app's designated requirement (same identifier, same pinned certificate) with strict
    and nested-code validation.
-4. **Restart to update** passes the active Gecko profile directory to `lima-host apply-update`. The helper waits
+6. **Restart to update** passes the active Gecko profile directory to `lima-host apply-update`. The helper waits
    for the browser to quit, verifies the replacement, and exchanges the app bundles on the same volume. It
    verifies the installed app before reopening the original profile. A failed verification restores the old
-   bundle. The previous app is stored under `~/Library/Application Support/Lima Browser/Updates/previous`.
+   bundle. The previous app is stored under `~/Library/Application Support/Lima Browser/Updates/previous.noindex`.
    The log is `~/Library/Logs/Lima/update.log`.
+7. **What's New.** The release notes are the commit messages since the previous tag (subject as the heading,
+   body underneath; version bumps and trailers left out), bundled as `lima-release-notes.md`. After the
+   restart, a What's New tab opens once with an illustrated card per change, drawn from its words. Write
+   commit messages for the people who'll read them there.
 
 ## Recovering a failed release
 
@@ -134,8 +146,18 @@ gh release view vX.Y.Z --json isDraft,assets --jq '{isDraft, assets: [.assets[].
 | Feed is older, and there's no draft or `latest.json` | Build or staging failed | Fix the cause, then `gh workflow run release.yml -f tag=vX.Y.Z -f publish=true`. A partial stage refuses rebuilt bytes, so if that happens release the next patch version instead |
 | Zen bump on `main`, but no `vX.Y.Z` tag | Tagging or dispatch failed | Wait for the next check (the `resume` job handles it), or run `zen-bump.yml` manually |
 
-There is no un-publish. A bad live release is fixed by releasing a higher build. Close the "failed" issue
-once the live feed shows the intended build.
+**Pulling a bad release.** `gh workflow run pull-release.yml -f tag=vX.Y.Z` (or `release.sh pull --tag vX.Y.Z --yes`)
+points the feed and the download back at the previous release's own signed feed, so no one else takes the bad
+build; with the 24-hour rollout, most installs won't have it yet. Installs that already updated keep it until a
+higher build ships, so follow with a patch release. Close the "failed" issue once the live feed shows the
+intended build.
+
+## Before a release
+
+Run `make ui-test` (JavaScript tests and the headless smoke test, including accessibility checks) and
+`make visual` (screens in light and dark compared with `browser/tests/visual/golden`). If a screen changed on
+purpose, check the images in `build/visual-diff/` and save new ones with `make visual-update`. Every release also
+runs the smoke test in CI and installs the signed build over the current public release before publishing.
 
 ## Infrastructure (configured 2026-11-21)
 

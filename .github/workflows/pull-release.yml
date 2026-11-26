@@ -1,0 +1,48 @@
+name: Pull a release
+run-name: Pull Lima ${{ inputs.tag }}
+
+# Stops a bad release from spreading: the public feed and download go back to
+# the previous release's own signed feed (no signing keys involved). Installs
+# that already took the bad release stay on it until a fixed one ships, so
+# follow this with a patch release.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The bad release tag, e.g. v5.0.11
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  pull:
+    name: Serve the previous release again
+    runs-on: macos-15
+    timeout-minutes: 15
+    environment: release-publish
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      LIMA_UPDATE_BUCKET: ${{ vars.LIMA_UPDATE_BUCKET }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Ignore the credentials file the auth action writes
+        run: echo 'gha-creds-*.json' >> .git/info/exclude
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_PUBLISH_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - name: Pull
+        run: browser/scripts/release/release.sh pull --tag "$TAG" --yes

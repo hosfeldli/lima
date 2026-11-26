@@ -67,6 +67,11 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_RELEASE_SERVICE_ACCOUNT }}
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - name: Headless sidebar, search, Notes and Chat smoke test
+        run: |
+          LIMA_BUILD_DIR="$RUNNER_TEMP/lima-browser-smoke" browser/scripts/repack.sh
+          python3 browser/scripts/source_smoke.py "$RUNNER_TEMP/lima-browser-smoke/Lima.app"
+          rm -rf "$RUNNER_TEMP/lima-browser-smoke"
       - name: Prepare ephemeral signing
         run: browser/scripts/release/ci_signing.sh prepare
       - name: Preflight
@@ -75,6 +80,8 @@ jobs:
         env:
           LIMA_RELEASE_SKIP_PREFLIGHT: "1"
         run: browser/scripts/release/release.sh build --tag "$TAG"
+      - name: Install signed update over the previous stable release
+        run: browser/scripts/release/test_previous_update.sh "$PWD/build/release/Lima.app"
       - name: Remove signing material before upload
         if: always()
         run: browser/scripts/release/ci_signing.sh cleanup

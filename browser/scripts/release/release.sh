@@ -11,6 +11,7 @@
 #   release.sh verify    --tag vX.Y.Z        re-verify dist/<tag>
 #   release.sh stage     --tag vX.Y.Z        GitHub draft + private archive + public versioned files
 #   release.sh publish   --tag vX.Y.Z --yes  point the public feed at the staged build
+#   release.sh pull      --tag vX.Y.Z --yes  stop a bad release: serve the previous release's signed feed again
 #   release.sh rehearse                      signed local build of the working tree with a
 #                                            throwaway feed key; skips git gates, never uploads
 #
@@ -54,6 +55,7 @@ build_number() {
 }
 validate_tag() { [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "invalid tag $1 (expected vX.Y.Z)"; }
 dist_dir() { printf '%s/dist/%s\n' "$ROOT" "$1"; }
+chunk_dir() { printf '%s/dist/%s-chunks\n' "$ROOT" "$1"; }
 feed_base() { printf '%s\n' "${FEED_URL%/latest.json}"; }
 
 # MARK: Source identity
@@ -248,15 +250,19 @@ write_feed() {
   local zip="$dist/Lima-$v.zip"
   python3 - "$dist/latest.json" "$v" "$(build_number "$v")" "$(feed_base)/$v/Lima-$v.zip" "$(sha256 "$zip")" \
     "$(stat -f %z "$zip")" "$(json "$LOCK" "['zen']['tag']")" "$(json "$LOCK" "['zen']['firefoxVersion']")" \
-    "$(git -C "$ROOT" rev-parse HEAD)" "${LIMA_CRITICAL_UPDATE:-false}" <<'PY'
+    "$(git -C "$ROOT" rev-parse HEAD)" "${LIMA_CRITICAL_UPDATE:-false}" "${LIMA_ROLLOUT_HOURS:-24}" \
+    "$(feed_base)/$v/manifest.json" "$(sha256 "$dist/manifest.json")" "$(feed_base)/chunks" <<'PY'
 import datetime, json, sys
-out, version, build, url, digest, size, zen, gecko, commit, critical = sys.argv[1:]
+out, version, build, url, digest, size, zen, gecko, commit, critical, rollout, manifest, manifest_digest, chunks = sys.argv[1:]
 feed = {
     "schemaVersion": 1, "channel": "stable", "version": version, "build": int(build),
     "minimumSystemVersion": "14.0", "url": url, "sha256": digest, "bytes": int(size),
     "engine": f"zen {zen} / gecko {gecko}", "commit": commit,
     "publishedAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "critical": critical == "true",
+    # A critical fix reaches everyone at once; others spread over the window.
+    "rolloutHours": 0 if critical == "true" else float(rollout),
+    "chunks": {"manifest": manifest, "sha256": manifest_digest, "base": chunks},
 }
 open(out, "w").write(json.dumps(feed, indent=2, sort_keys=True) + "\n")
 PY
@@ -301,7 +307,29 @@ build_artifacts() {
   mkdir -p "$dist"
 
   step "Building signed Lima.app"
-  LIMA_RELEASE_POLICY="$POLICY" LIMA_RELEASE=1 LIMA_SIGN_IDENTITY="$IDENTITY" LIMA_BUILD_DIR="$out" "$SCRIPTS/repack.sh"
+  local notes="$dist/release-notes.md"
+  if [[ -f "$ROOT/docs/releases/$tag.md" ]]; then
+    cp "$ROOT/docs/releases/$tag.md" "$notes"
+  else
+    local prior
+    prior="$(git -C "$ROOT" describe --tags --match 'v[0-9]*' --abbrev=0 HEAD^ 2>/dev/null || true)"
+    # One section per commit (subject, then its message body), which the
+    # What's New page turns into illustrated cards. Version bumps and
+    # co-author trailers are left out.
+    git -C "$ROOT" log --no-merges --reverse --format='%x1e%s%x1f%b' ${prior:+"${prior}..HEAD"} | python3 -c '
+import re, sys
+out = []
+for record in sys.stdin.read().split("\x1e")[1:]:
+    subject, _, body = record.partition("\x1f")
+    subject = subject.strip()
+    if not subject or re.match(r"(?i)bump lima version|merge (branch|pull request)", subject):
+        continue
+    lines = [line.rstrip() for line in body.strip().splitlines() if not re.match(r"(?i)^(co-authored-by|signed-off-by):", line.strip())]
+    out.append("## " + subject + ("\n\n" + "\n".join(lines).strip() if any(lines) else ""))
+print("\n\n".join(out))
+' > "$notes"
+  fi
+  LIMA_RELEASE_NOTES_FILE="$notes" LIMA_RELEASE_POLICY="$POLICY" LIMA_RELEASE=1 LIMA_SIGN_IDENTITY="$IDENTITY" LIMA_BUILD_DIR="$out" "$SCRIPTS/repack.sh"
   [[ "$(plutil -extract CFBundleVersion raw "$out/Lima.app/Contents/Info.plist")" == "$(build_number "$v")" ]] || fail "built app has the wrong CFBundleVersion"
   if [[ "$SIGN_MODE" == developer-id ]]; then
     # Notarize the app, then staple the ticket so it opens offline too.
@@ -324,9 +352,16 @@ build_artifacts() {
   fi
   cp "$out/zen-entitlements.json" "$dist/zen-entitlements.json"
 
+  step "Cutting the update into chunks"
+  # Installs download only the chunks their copy of Lima doesn't have.
+  local chunks; chunks="$(chunk_dir "$tag")"
+  rm -rf "$chunks"
+  "$(swift build -c release --package-path "$ROOT/native" --show-bin-path)/lima-host" chunk-manifest "$out/Lima.app" "$chunks"
+  cp "$chunks/manifest.json" "$dist/manifest.json"
+
   step "Signing update feed"
   write_feed "$tag" "$dist"
-  (cd "$dist" && shasum -a 256 "Lima-$v.zip" "Lima-$v.dmg" latest.json latest.json.sig zen-entitlements.json > SHA256SUMS)
+  (cd "$dist" && shasum -a 256 "Lima-$v.zip" "Lima-$v.dmg" latest.json latest.json.sig zen-entitlements.json release-notes.md manifest.json > SHA256SUMS)
   cmd_verify "$tag"
 }
 
@@ -355,6 +390,7 @@ cmd_verify() {
   [[ "$(json "$dist/latest.json" "['build']")" == "$(build_number "$v")" ]] || fail "feed build does not match $tag"
   [[ "$(json "$dist/latest.json" "['sha256']")" == "$(sha256 "$dist/Lima-$v.zip")" ]] || fail "feed digest does not match the zip"
   [[ "$(json "$dist/latest.json" "['url']")" == "$(feed_base)/$v/Lima-$v.zip" ]] || fail "feed URL is not beside the feed"
+  [[ "$(json "$dist/latest.json" "['chunks']['sha256']")" == "$(sha256 "$dist/manifest.json")" ]] || fail "feed chunk manifest digest does not match"
   # Verify what users will actually receive: the app as extracted from the archive.
   work="$(mktemp -d)"
   ditto -x -k "$dist/Lima-$v.zip" "$work"
@@ -406,13 +442,20 @@ cmd_stage() {
   gcs_put_immutable "$dist/Lima-$v.zip" "gs://$LIMA_UPDATE_BUCKET/stable/$v/Lima-$v.zip"
   gcs_put_immutable "$dist/Lima-$v.dmg" "gs://$LIMA_UPDATE_BUCKET/stable/$v/Lima-$v.dmg"
   gcs_put_immutable "$dist/SHA256SUMS" "gs://$LIMA_UPDATE_BUCKET/stable/$v/SHA256SUMS"
+  gcs_put_immutable "$dist/manifest.json" "gs://$LIMA_UPDATE_BUCKET/stable/$v/manifest.json"
+  local chunks; chunks="$(chunk_dir "$tag")"
+  if [[ -d "$chunks/chunks" ]]; then
+    step "Uploading update chunks (only ones the bucket doesn't have)"
+    # Chunks are named by their digest, so an existing name is the same bytes.
+    gcloud storage cp --no-clobber --content-type=application/octet-stream "$chunks/chunks/*" "gs://$LIMA_UPDATE_BUCKET/stable/chunks/"
+  fi
 
   step "Staging GitHub draft $tag"
   if gh release view "$tag" -R "$REPOSITORY" >/dev/null 2>&1; then
     [[ "$(gh release view "$tag" -R "$REPOSITORY" --json isDraft --jq .isDraft)" == true ]] || fail "$tag is already published"
   else
     local notes=(--generate-notes)
-    [[ -f "$ROOT/docs/releases/$tag.md" ]] && notes=(--notes-file "$ROOT/docs/releases/$tag.md")
+    [[ -s "$dist/release-notes.md" ]] && notes=(--notes-file "$dist/release-notes.md")
     gh release create "$tag" -R "$REPOSITORY" --draft --verify-tag --title "Lima $v" "${notes[@]}"
   fi
   gh release upload "$tag" -R "$REPOSITORY" --clobber "$dist"/*
@@ -477,6 +520,37 @@ cmd_publish() {
   echo "Published Lima $v. Installs pick it up within six hours."
 }
 
+# Stops a bad release from spreading: the public feed goes back to the
+# previous release's own signed feed (no keys needed). Installs that already
+# updated stay on it until a fixed release ships.
+cmd_pull() {
+  local tag="$1" confirmed="$2" v="${1#v}" work previous
+  (( confirmed )) || fail "pulling $tag points every Lima install back at the previous release; re-run with --yes"
+  : "${LIMA_UPDATE_BUCKET:?LIMA_UPDATE_BUCKET is required}"
+  require gh gcloud curl swift
+  validate_tag "$tag"
+  # The newest published release older than the bad one.
+  previous="$(gh release list -R "$REPOSITORY" --exclude-drafts --limit 50 --json tagName --jq '.[].tagName' \
+    | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | while read -r candidate; do
+        (( $(build_number "${candidate#v}") < $(build_number "$v") )) && echo "$(build_number "${candidate#v}") $candidate"
+      done | sort -n | tail -1 | cut -d' ' -f2)"
+  [[ -n "$previous" ]] || fail "no earlier published release to fall back to"
+  (( $(build_number "${previous#v}") < $(build_number "$v") )) || fail "$previous is not older than $tag"
+  work="$(mktemp -d)"
+  gh release download "$previous" -R "$REPOSITORY" -D "$work" -p latest.json -p latest.json.sig
+  swift "$ED25519" verify "$UPDATE_PUBLIC_KEY" "$work/latest.json" "$work/latest.json.sig" >/dev/null || fail "$previous feed signature"
+  local cache=(--cache-control="no-cache, max-age=0")
+  step "Pointing the feed back at $previous"
+  gcloud storage cp "${cache[@]}" --content-type=text/plain "$work/latest.json.sig" "gs://$LIMA_UPDATE_BUCKET/stable/latest.json.sig"
+  gcloud storage cp "${cache[@]}" --content-type=application/json "$work/latest.json" "gs://$LIMA_UPDATE_BUCKET/stable/latest.json"
+  gcloud storage cp "${cache[@]}" --content-type=application/x-apple-diskimage \
+    "gs://$LIMA_UPDATE_BUCKET/stable/${previous#v}/Lima-${previous#v}.dmg" "gs://$LIMA_UPDATE_BUCKET/stable/Lima.dmg"
+  gh release edit "$tag" -R "$REPOSITORY" --prerelease --latest=false
+  gh release edit "$previous" -R "$REPOSITORY" --latest
+  rm -rf "$work"
+  echo "Pulled $tag: the feed and download serve $previous again. Ship a fixed release to move everyone forward."
+}
+
 # MARK: Dispatch
 
 command="${1:-help}"; shift || true
@@ -498,6 +572,7 @@ case "$command" in
   verify) need_tag; cmd_verify "$tag" ;;
   stage) need_tag; cmd_stage "$tag" ;;
   publish) need_tag; cmd_publish "$tag" "$yes" ;;
+  pull) [[ -n "$tag" ]] || fail "pull needs --tag of the bad release"; cmd_pull "$tag" "$yes" ;;
   rehearse) cmd_rehearse ;;
   _rehearse-build) cmd_check; build_artifacts "${rest[0]}"; echo "Rehearsal artifacts in $(dist_dir "${rest[0]}") (not for distribution)" ;;
   help|-h|--help) sed -n '2,22p' "$0" ;;

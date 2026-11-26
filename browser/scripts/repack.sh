@@ -160,6 +160,10 @@ else
   cp "$LIMA_SOURCE_MANIFEST" "$R/lima-source.json"
 fi
 cp "$BROWSER/overlay/distribution/policies.json" "$R/distribution/policies.json"
+if [[ "$RELEASE" == 1 && -n "${LIMA_RELEASE_NOTES_FILE:-}" ]]; then
+  cp "$LIMA_RELEASE_NOTES_FILE" "$R/lima-release-notes.md"
+fi
+
 ditto "$BROWSER/overlay/lima" "$R/lima"
 python3 "$BROWSER/scripts/bundle_ui.py" "$BROWSER/overlay/lima/ui" "$R/lima/ui/bundle.js"
 ICON_STAGE="$(mktemp -d)"
@@ -252,6 +256,14 @@ if [[ "$RELEASE" == 1 ]]; then
   if [[ -n "$TEAM" ]]; then plutil -replace LimaTrustedTeam -string "$TEAM" "$PLIST"; else plutil -remove LimaTrustedTeam "$PLIST" 2>/dev/null || true; fi
 else
   plutil -remove LimaTrustedTeam "$PLIST" 2>/dev/null || true
+  # Development builds don't offer to open web links, so they never appear in
+  # macOS's default-browser list beside the installed Lima (each build would
+  # show up as another "Lima (5.0.x)"). LIMA_DEV_LINKS=1 keeps them for
+  # testing the default-browser flow.
+  if [[ "${LIMA_DEV_LINKS:-0}" != 1 ]]; then
+    plutil -remove CFBundleURLTypes "$PLIST" 2>/dev/null || true
+    plutil -remove CFBundleDocumentTypes "$PLIST" 2>/dev/null || true
+  fi
   plutil -remove LimaUpdateFeedURL "$PLIST" 2>/dev/null || true
   plutil -remove LimaUpdatePublicKey "$PLIST" 2>/dev/null || true
 fi

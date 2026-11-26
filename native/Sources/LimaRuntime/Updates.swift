@@ -21,6 +21,36 @@ struct UpdateFeed: Codable, Sendable, Equatable {
     var publishedAt: String
     var critical: Bool?
     var notesUrl: String?
+    /// Hours over which installs pick the release up; nil or 0 = all at once.
+    var rolloutHours: Double?
+    /// The release as chunks, for smaller downloads (see Chunks.swift).
+    var chunks: FeedChunks?
+}
+
+struct FeedChunks: Codable, Sendable, Equatable {
+    var manifest: String
+    var sha256: String
+    var base: String
+}
+
+/// Staged rollout: each install has a fixed random slot in [0, 1) and an
+/// automatic check takes a release once that share of the rollout window has
+/// passed. A check you start yourself, or a critical release, doesn't wait.
+enum Rollout {
+    static func slot(in directory: URL) -> Double {
+        let file = directory.appendingPathComponent("rollout-slot")
+        if let text = try? String(contentsOf: file, encoding: .utf8), let value = Double(text), (0..<1).contains(value) { return value }
+        let value = Double.random(in: 0..<1)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try? String(value).write(to: file, atomically: true, encoding: .utf8)
+        return value
+    }
+
+    static func ready(_ feed: UpdateFeed, slot: Double, manual: Bool, now: Date = Date()) -> Bool {
+        guard !manual, feed.critical != true, let hours = feed.rolloutHours, hours > 0,
+              let published = ISO8601DateFormatter().date(from: feed.publishedAt) else { return true }
+        return now.timeIntervalSince(published) / (hours * 3600) >= slot
+    }
 }
 
 /// Update configuration stamped into `Lima.app/Contents/Info.plist` by a
@@ -165,6 +195,7 @@ final class UpdateService: @unchecked Sendable {
     private var progress: Double?
     let configuration: UpdateConfiguration?
     let directory: URL
+    private let releaseNotes: String?
     var emit: (@Sendable (JSONValue) -> Void)?
 
     init(configuration: UpdateConfiguration? = .load(),
@@ -174,6 +205,10 @@ final class UpdateService: @unchecked Sendable {
         self.configuration = configuration
         self.directory = directory
         self.phase = configuration == nil ? .disabled : .idle
+        self.releaseNotes = configuration.flatMap { configuration in
+            let file = configuration.app.appendingPathComponent("Contents/Resources/lima-release-notes.md")
+            return (try? String(contentsOf: file, encoding: .utf8)).map { String($0.prefix(30_000)) }
+        }
     }
 
     var status: JSONValue {
@@ -194,10 +229,69 @@ final class UpdateService: @unchecked Sendable {
             object["notesUrl"] = feed.notesUrl.map(JSONValue.string) ?? .null
         }
         if let result = lastInstallResult { object["lastInstall"] = result }
+        if let configuration { object["moveRecommended"] = .bool(Self.shouldOfferMove(configuration.app)) }
+        if let releaseNotes { object["releaseNotes"] = .string(releaseNotes) }
         return .object(object)
     }
 
-    var previousApp: URL { directory.appendingPathComponent("previous/Lima.app") }
+    static func shouldOfferMove(_ app: URL) -> Bool {
+        let path = app.standardizedFileURL.path
+        let downloads = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads").path
+        return path.hasPrefix(downloads + "/") || path.hasPrefix("/Volumes/") || path.contains("/AppTranslocation/")
+    }
+
+    func moveToApplications() throws -> URL {
+        guard let configuration, Self.shouldOfferMove(configuration.app) else {
+            throw BridgeError(.badRequest, "Lima is already in an installed location.")
+        }
+        let applications = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        let target = applications.appendingPathComponent("Lima.app")
+        let fm = FileManager.default
+        guard !fm.fileExists(atPath: target.path) else {
+            throw BridgeError(.badRequest, "Applications already contains Lima. Open that copy from Finder.")
+        }
+        guard fm.isWritableFile(atPath: applications.path) else {
+            throw BridgeError(.notAuthorized, "Move Lima.app to Applications in Finder and reopen it there.")
+        }
+        let stagingDirectory = applications.appendingPathComponent(".lima-install-\(UUID().uuidString)")
+        try fm.createDirectory(at: stagingDirectory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? fm.removeItem(at: stagingDirectory) }
+        let staging = stagingDirectory.appendingPathComponent("Lima.app")
+        try fm.copyItem(at: configuration.app, to: staging)
+        try UpdateVerifier.appSatisfiesInstalledRequirement(staging, installed: configuration.app)
+        guard renamex_np(staging.path, target.path, UInt32(RENAME_EXCL)) == 0 else {
+            throw BridgeError(.badRequest, "Could not put Lima in Applications. An existing app was preserved.")
+        }
+        LaunchServices.register(target)
+        return target
+    }
+
+    var previousApp: URL { directory.appendingPathComponent(UpdateApplier.backupFolder + "/Lima.app") }
+
+    /// Once per version, in the background: moves an older rollback copy into
+    /// its .noindex folder and has macOS forget stray copies of Lima (disk
+    /// images, translocated copies, update files, copies no longer on disk), so
+    /// the default-browser list shows the one installed Lima. Copies the user
+    /// keeps elsewhere are left alone.
+    func tidyCopies() {
+        guard let configuration else { return }
+        let fm = FileManager.default
+        let marker = directory.appendingPathComponent(".tidied-\(configuration.build)")
+        guard !fm.fileExists(atPath: marker.path) else { return }
+        let legacy = directory.appendingPathComponent("previous")
+        let current = directory.appendingPathComponent(UpdateApplier.backupFolder)
+        if fm.fileExists(atPath: legacy.path), !fm.fileExists(atPath: current.path) { try? fm.moveItem(at: legacy, to: current) }
+        if let items = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
+            for item in items where item.lastPathComponent.hasPrefix("staged-") && item.pathExtension != "noindex" { try? fm.removeItem(at: item) }
+        }
+        let installed = configuration.app.resolvingSymlinksInPath().path
+        let strays = LaunchServices.strays(LaunchServices.registered(configuration.bundleIdentifier), installed: installed,
+                                           updates: directory.resolvingSymlinksInPath().path)
+        LaunchServices.forget(strays.map { URL(fileURLWithPath: $0) })
+        LaunchServices.register(configuration.app)
+        try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        fm.createFile(atPath: marker.path, contents: Data())
+    }
     var resultFile: URL { directory.appendingPathComponent("last-install.json") }
     private var lastInstallResult: JSONValue? {
         (try? Data(contentsOf: resultFile)).flatMap { try? JSONDecoder().decode(JSONValue.self, from: $0) }
@@ -212,7 +306,7 @@ final class UpdateService: @unchecked Sendable {
     }
 
     /// Fetches the signed feed; downloads and stages a newer build.
-    func check() async throws -> JSONValue {
+    func check(manual: Bool = true) async throws -> JSONValue {
         guard let configuration else { return status }
         // A staged update keeps checking, so a newer security release
         // replaces it before the user restarts.
@@ -236,6 +330,11 @@ final class UpdateService: @unchecked Sendable {
             lock.withLock { if feed != nil || stagedBuild == nil { self.feed = feed }; checkedAt = Date() }
             guard let feed else { set(stagedBuild == nil ? .idle : .ready); return status }
             if feed.build == stagedBuild { set(.ready); return status }
+            guard Rollout.ready(feed, slot: Rollout.slot(in: directory), manual: manual) else {
+                // Not this install's turn yet; a later check (or yours) picks it up.
+                set(stagedBuild == nil ? .idle : .ready)
+                return status
+            }
             set(.available)
             try await download(feed, configuration: configuration, session: session)
             return status
@@ -249,10 +348,13 @@ final class UpdateService: @unchecked Sendable {
         set(.downloading)
         let fm = FileManager.default
         try fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let staging = directory.appendingPathComponent("staged-\(feed.build)")
+        let staging = directory.appendingPathComponent("staged-\(feed.build).noindex")
         try? fm.removeItem(at: staging)
         try fm.createDirectory(at: staging, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         guard let url = URL(string: feed.url) else { throw BridgeError(.badRequest, "The update feed is malformed.") }
+        if let chunks = feed.chunks, await downloadChunks(chunks, feed: feed, configuration: configuration, staging: staging, session: session) {
+            return
+        }
         let archive = staging.appendingPathComponent("Lima.zip")
         let response = try await downloadWithProgress(url, to: archive, expectedBytes: feed.bytes, session: session)
         set(.verifying)
@@ -269,6 +371,8 @@ final class UpdateService: @unchecked Sendable {
         try? fm.removeItem(at: archive)
         let app = staging.appendingPathComponent("Lima.app")
         UpdateApplier.releaseFromQuarantine(app)
+        // A downloaded copy is never another browser on this Mac.
+        LaunchServices.forget([app])
         guard unzip.terminationStatus == 0,
               (try? fm.destinationOfSymbolicLink(atPath: app.path)) == nil,
               let identity = UpdateVerifier.bundleBuild(app),
@@ -277,6 +381,50 @@ final class UpdateService: @unchecked Sendable {
         try UpdateVerifier.appSatisfiesInstalledRequirement(app, installed: configuration.app)
         lock.withLock { staged = app }
         set(.ready)
+    }
+
+    /// The smaller download: builds the new app from the chunks it already has
+    /// plus the ones it fetches. False (after cleaning up) means use the zip:
+    /// the manifest or a chunk didn't check out, or it would save little.
+    private func downloadChunks(_ chunks: FeedChunks, feed: UpdateFeed, configuration: UpdateConfiguration,
+                                staging: URL, session: URLSession) async -> Bool {
+        let app = staging.appendingPathComponent("Lima.app")
+        do {
+            guard let manifestURL = URL(string: chunks.manifest), let base = URL(string: chunks.base),
+                  manifestURL.scheme == "https", base.scheme == "https" else { return false }
+            let (data, response) = try await session.data(from: manifestURL)
+            guard (response as? HTTPURLResponse)?.statusCode == 200,
+                  data.withUnsafeBytes(Chunks.digest) == chunks.sha256 else { return false }
+            let manifest = try JSONDecoder().decode(ChunkManifest.self, from: data)
+            let installed = ChunkUpdate.index(configuration.app)
+            let plan = manifest.download(from: installed)
+            // Mostly new (an engine update): one zip is simpler than hundreds of requests.
+            guard Double(plan.bytes) < Double(feed.bytes) * 0.7 else { return false }
+            try await ChunkUpdate.assemble(manifest, into: app, installed: installed, fetch: { digest in
+                let (bytes, reply) = try await session.data(from: base.appendingPathComponent("\(digest).z"))
+                guard (reply as? HTTPURLResponse)?.statusCode == 200 else { throw BridgeError(.internalError, "An update chunk is missing.") }
+                return bytes
+            }, progress: { [weak self] fraction in
+                guard let self else { return }
+                self.lock.withLock { self.progress = fraction }
+                self.emit?(self.status)
+            })
+            set(.verifying)
+            UpdateApplier.releaseFromQuarantine(app)
+            LaunchServices.forget([app])
+            guard let identity = UpdateVerifier.bundleBuild(app), identity.identifier == configuration.bundleIdentifier,
+                  identity.build == feed.build else { throw BridgeError(.badRequest, "The assembled update isn't Lima \(feed.version).") }
+            try UpdateVerifier.appSatisfiesInstalledRequirement(app, installed: configuration.app)
+            lock.withLock { staged = app }
+            Support.record("update: assembled \(feed.version) from chunks, downloading \(plan.bytes / 1_048_576) MB of \(feed.bytes / 1_048_576) MB")
+            set(.ready)
+            return true
+        } catch {
+            try? FileManager.default.removeItem(at: app)
+            Support.record("update: chunked download of \(feed.version) failed (\(error)); using the full download")
+            set(.downloading)
+            return false
+        }
     }
 
     /// Downloads to `destination`, reporting progress about twice a second.
@@ -344,7 +492,7 @@ final class UpdateService: @unchecked Sendable {
         guard browserPID > 1 else { throw BridgeError(.badRequest, "browserPid is required.") }
         guard FileManager.default.fileExists(atPath: previousApp.path) else { throw BridgeError(.badRequest, "There's no previous version to restore.") }
         let profile = try UpdateApplier.profile(path: profilePath, outside: [configuration.app, directory])
-        let restore = directory.appendingPathComponent("restore/Lima.app")
+        let restore = directory.appendingPathComponent(UpdateApplier.restoreFolder + "/Lima.app")
         try? FileManager.default.removeItem(at: restore.deletingLastPathComponent())
         try FileManager.default.createDirectory(at: restore.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try FileManager.default.copyItem(at: previousApp, to: restore)
@@ -433,6 +581,7 @@ public enum UpdateApplier {
         let result = apply(source: source, target: target, state: state, waitFor: pid, keepBackup: keepBackup)
         func record(_ error: String?) {
             let result: [String: Any] = ["ok": error == nil, "error": error ?? NSNull(), "at": Date().timeIntervalSince1970 * 1000,
+                                         "kind": keepBackup ? "update" : "rollback",
                                          "build": UpdateVerifier.bundleBuild(target)?.build ?? 0]
             if let data = try? JSONSerialization.data(withJSONObject: result) {
                 try? data.write(to: state.appendingPathComponent("last-install.json"), options: .atomic)
@@ -491,24 +640,19 @@ public enum UpdateApplier {
         }
     }
 
+    /// Where the rollback copy and a restore in progress live. ".noindex"
+    /// keeps Spotlight, and so Launch Services, from finding them.
+    static let backupFolder = "previous.noindex"
+    static let restoreFolder = "restore.noindex"
+
     /// Launch Services forgets the downloaded and rollback copies, so a
-    /// later launch can't pick (or ask about) an older Lima.
+    /// later launch can't pick (or ask about) an older Lima, and macOS's
+    /// default-browser list shows only the installed one.
     static func forgetStaleCopies(source: URL, state: URL, target: URL) {
-        let tool = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
-        guard FileManager.default.isExecutableFile(atPath: tool) else { return }
-        func run(_ arguments: [String]) {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: tool)
-            process.arguments = arguments
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-            try? process.run()
-            process.waitUntilExit()
-        }
-        for stale in [source, state.appendingPathComponent("previous/Lima.app"), state.appendingPathComponent("restore/Lima.app")] {
-            run(["-u", stale.path])
-        }
-        run(["-f", target.path])
+        LaunchServices.forget([source] + [backupFolder, restoreFolder, "previous", "restore"].map {
+            state.appendingPathComponent($0 + "/Lima.app")
+        })
+        LaunchServices.register(target)
     }
 
     /// Clears macOS's download quarantine from a verified bundle. A copy that
@@ -539,7 +683,7 @@ public enum UpdateApplier {
         do { try UpdateVerifier.appSatisfiesInstalledRequirement(source, installed: target) } catch {
             return (error as? BridgeError)?.message ?? "\(error)"
         }
-        let backup = state.appendingPathComponent("previous/Lima.app")
+        let backup = state.appendingPathComponent(backupFolder + "/Lima.app")
         let swapDirectory = target.deletingLastPathComponent().appendingPathComponent(".lima-replace-\(UUID().uuidString)")
         let pending = swapDirectory.appendingPathComponent("Lima.app")
         var preserveSwap = false
@@ -565,7 +709,7 @@ public enum UpdateApplier {
         }
 
         if keepBackup {
-            let next = state.appendingPathComponent("previous-\(UUID().uuidString)")
+            let next = state.appendingPathComponent("previous-\(UUID().uuidString).noindex")
             do {
                 try fm.createDirectory(at: next, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
                 try fm.copyItem(at: pending, to: next.appendingPathComponent("Lima.app"))
@@ -592,14 +736,17 @@ public enum UpdateApplier {
 extension Runtime {
     func registerUpdates() {
         updates.emit = { [weak self] status in self?.broadcast("update.status", status) }
+        let service = updates
+        Task.detached(priority: .background) { service.tidyCopies() }
         register("update.status") { [unowned self] _, context in
             try Self.requireLocalSettings(context)
             return self.updates.status
         }
-        register("update.check") { [unowned self] _, context in
+        register("update.check") { [unowned self] params, context in
             try Self.requireLocalSettings(context)
             let service = self.updates
-            Task { _ = try? await service.check() }
+            let manual = params?["manual"]?.boolValue == true
+            Task { _ = try? await service.check(manual: manual) }
             return service.status
         }
         register("update.install") { [unowned self] params, context in
@@ -613,10 +760,62 @@ extension Runtime {
                                      relaunch: params?["relaunch"]?.boolValue ?? true)
             return self.updates.status
         }
+        register("update.moveToApplications") { [unowned self] _, context in
+            try Self.requireLocalSettings(context)
+            let target = try self.updates.moveToApplications()
+            return .object(["path": .string(target.path)])
+        }
         register("update.rollback") { [unowned self] params, context in
             try Self.requireLocalSettings(context)
             try self.updates.rollback(browserPID: pid_t(params?["browserPid"]?.doubleValue ?? 0), profilePath: try params.string("profilePath"))
             return self.updates.status
+        }
+    }
+}
+
+/// macOS's app registry (Launch Services). Every copy of Lima it knows about
+/// can appear in the default-browser list as another "Lima (5.0.x)".
+enum LaunchServices {
+    static let tool = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+
+    private static func run(_ arguments: [String]) -> Data {
+        guard FileManager.default.isExecutableFile(atPath: tool) else { return Data() }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: tool)
+        process.arguments = arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return Data() }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return data
+    }
+
+    static func forget(_ apps: [URL]) { for app in apps { _ = run(["-u", app.path]) } }
+    static func register(_ app: URL) { _ = run(["-f", app.path]) }
+
+    /// Registered copies of `identifier`, from the registry's dump.
+    static func registered(_ identifier: String) -> [String] {
+        var paths: [String] = []
+        var path: String?
+        for line in String(decoding: run(["-dump"]), as: UTF8.self).split(separator: "\n") {
+            if line.hasPrefix("path:") {
+                path = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                    .replacingOccurrences(of: #" \(0x[0-9a-f]+\)$"#, with: "", options: .regularExpression)
+            } else if line.hasPrefix("identifier:"), line.dropFirst(11).trimmingCharacters(in: .whitespaces) == identifier, let path {
+                paths.append(path)
+            }
+        }
+        return Array(Set(paths)).sorted()
+    }
+
+    /// Copies Lima can forget without touching one the user keeps: gone from
+    /// disk, on a disk image, a translocated copy, or Lima's own update files.
+    static func strays(_ paths: [String], installed: String, updates: String) -> [String] {
+        paths.filter { path in
+            path != installed && (path.hasPrefix("/Volumes/") || path.contains("/AppTranslocation/") || path.hasPrefix(updates + "/")
+                || !FileManager.default.fileExists(atPath: path))
         }
     }
 }
