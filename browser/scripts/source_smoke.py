@@ -23,21 +23,35 @@ def read_packet(stream):
     raise EOFError("Marionette closed its connection")
 
 
-def chrome(socket_handle, script):
+def marionette(socket_handle):
     stream = socket_handle.makefile("rb")
     read_packet(stream)
-    methods = [
-        ("WebDriver:NewSession", {"capabilities": {"alwaysMatch": {}}}),
-        ("Marionette:SetContext", {"value": "chrome"}),
-        ("WebDriver:ExecuteAsyncScript", {"script": script, "args": [], "newSandbox": True, "sandbox": "system"}),
-    ]
-    for request, (method, params) in enumerate(methods, 1):
+    request = 0
+
+    def send(method, params):
+        nonlocal request
+        request += 1
         data = json.dumps([0, request, method, params]).encode()
         socket_handle.sendall(str(len(data)).encode() + b":" + data)
         _, _, error, response = read_packet(stream)
         if error:
             raise RuntimeError(error["message"])
-    return response["value"]
+        return response
+
+    send("WebDriver:NewSession", {"capabilities": {"alwaysMatch": {}}})
+    return send
+
+
+def run_script(send, context, script, arguments=()):
+    send("Marionette:SetContext", {"value": context})
+    return send("WebDriver:ExecuteAsyncScript", {
+        "script": script, "args": arguments, "newSandbox": True,
+        "sandbox": "system" if context == "chrome" else "default",
+    })["value"]
+
+
+def chrome(socket_handle, script):
+    return run_script(marionette(socket_handle), "chrome", script)
 
 
 CHECK = """
@@ -266,10 +280,119 @@ const compiled = COMPILED;
     runtime: typeof hello.hostVersion === "string" && hello.pid > 1,
     note: persisted.markdown === "Verified"
   };
-  await LimaBridge.request("host.shutdown");
   return checks;
 })().then(done, error => done({error: String(error)}));
 """
+
+
+UI_SETUP = """
+const done = arguments[arguments.length - 1];
+(async () => {
+  const { LimaBridge } = ChromeUtils.importESModule("resource://lima/LimaBridge.sys.mjs");
+  const { LimaSearchPanel } = ChromeUtils.importESModule("resource://lima/LimaSearchPanel.sys.mjs");
+  const { LimaTabs } = ChromeUtils.importESModule("resource://lima/LimaTabs.sys.mjs");
+  const wait = ms => new Promise(resolve => window.setTimeout(resolve, ms));
+  const workspace = await LimaBridge.request("workspace.create", { name: "Smoke workspace", provider: "claude" });
+  const chat = await LimaBridge.request("chat.create", { provider: "claude", companion: true });
+  await LimaBridge.request("chat.record", {
+    id: chat.id, role: "assistant",
+    text: "```lima-report\\n" + JSON.stringify({ status: "completed", summary: "Smoke report", verification: ["Local fixture"] }) + "\\n```",
+  });
+  const note = await LimaBridge.request("notes.create", { title: "Smoke notebook", markdown:
+    "A zebra thermos\\n\\n```calculator\\n" + JSON.stringify({
+      title: "Quantities", inputs: [{ id: "n", label: "Amount", value: 4 }], rows: [{ label: "Total", value: "n * 2" }],
+    }) + "\\n```",
+  });
+  window.gZenCompactModeManager.preference = false;
+  const folderFor = () => document.querySelector(`zen-folder[lima-workspace="${workspace.id}"]`);
+  for (let tries = 0; tries < 50 && !folderFor(); tries++) await wait(100);
+  const folder = folderFor();
+  const label = folder?.querySelector(":scope > .tab-group-label-container");
+  for (let tries = 0; tries < 20 && !label?.querySelector(".lima-sidebar-pip"); tries++) await wait(100);
+  const before = folder?.collapsed;
+  label?.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+  await wait(250);
+  const sidebar = !!label?.querySelector(".lima-sidebar-pip") && label.getAttribute("aria-keyshortcuts")?.includes("F2") &&
+    before !== folder.collapsed && label.title.includes("Smoke workspace");
+  LimaSearchPanel.open(window, "@notes zebra");
+  for (let tries = 0; tries < 20 && !document.querySelector("#lima-search-results mark"); tries++) await wait(100);
+  const highlight = [...document.querySelectorAll("#lima-search-results mark")].some(mark => mark.textContent === "zebra");
+  const input = document.getElementById("lima-search-input");
+  input.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+  const scope = input.value.startsWith("@files ");
+  input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  done({ sidebar, highlight, scope, note: note.id, chat: chat.id });
+})().catch(error => done({ error: String(error) }));
+"""
+
+
+UI_PAGE = """
+const [selector, expected, buttonText] = arguments;
+const node = document.querySelector(selector);
+if (!node || !(node.textContent.includes(expected) || node.value === expected)) return false;
+if (!buttonText) return true;
+const button = [...document.querySelectorAll("button")].find(item => item.textContent === buttonText);
+button?.click();
+return Boolean(document.querySelector(".calc-editor")?.textContent.includes("Formula"));
+"""
+
+
+A11Y = """
+const problems = [];
+const visible = node => node.getClientRects().length > 0 && getComputedStyle(node).visibility !== "hidden";
+const name = node => (node.getAttribute("aria-label") || node.getAttribute("aria-labelledby") || node.title || node.textContent || "").trim();
+for (const node of document.querySelectorAll("button, [role=button], a[href]")) {
+  if (visible(node) && !name(node) && !node.querySelector("img[alt]:not([alt=''])")) problems.push(`unnamed ${node.localName}.${node.className}`);
+}
+for (const node of document.querySelectorAll("input:not([type=hidden]), select, textarea")) {
+  if (visible(node) && !(node.getAttribute("aria-label") || node.labels?.length || node.getAttribute("aria-labelledby") || node.title || node.placeholder)) {
+    problems.push(`unlabelled ${node.localName}.${node.className}`);
+  }
+}
+for (const node of document.querySelectorAll("img")) if (visible(node) && !node.hasAttribute("alt")) problems.push("image without alt");
+return problems.slice(0, 12);
+"""
+
+
+def verify_browser(connection, compiled):
+    send = marionette(connection)
+    checks = run_script(send, "chrome", CHECK.replace("COMPILED", "true" if compiled else "false"))
+    if not checks or not all(value is True for value in checks.values()):
+        return checks
+    setup = run_script(send, "chrome", UI_SETUP)
+    if "error" in setup:
+        return {**checks, "uiSetup": setup}
+    checks.update({name: setup[name] for name in ("sidebar", "highlight", "scope")})
+    # Work in each about page's content process, as a keyboard user would.
+    for kind, selector, expected, button in [
+        ("note", ".page-title", "Smoke notebook", "Edit"),
+        ("chat", ".task-report", "Smoke report", None),
+        ("notesHelp", ".notes-help h1", "Values & formulas in notes", None),
+        ("whatsNew", ".whats-new h1", "What’s new", None),
+    ]:
+        url = {"notesHelp": "about:lima?view=notes-help", "whatsNew": "about:lima?view=whats-new"}.get(kind) or f"about:lima?{kind}={setup[kind]}"
+        send("Marionette:SetContext", {"value": "content"})
+        send("WebDriver:Navigate", {"url": url})
+        ready = False
+        for _ in range(20):
+            ready = send("WebDriver:ExecuteScript", {
+                "script": UI_PAGE, "args": [selector, expected, button], "newSandbox": True,
+            })["value"]
+            if ready:
+                break
+            time.sleep(0.2)
+        checks[f"{kind}UI"] = ready
+        # Every visible control has a name a screen reader can say.
+        problems = send("WebDriver:ExecuteScript", {"script": A11Y, "args": [], "newSandbox": True})["value"] if ready else ["page not ready"]
+        checks[f"{kind}A11y"] = not problems
+        if problems:
+            print(f"{kind} accessibility: {problems}", file=sys.stderr)
+    run_script(send, "chrome", """
+      const done = arguments[arguments.length - 1];
+      const { LimaBridge } = ChromeUtils.importESModule("resource://lima/LimaBridge.sys.mjs");
+      LimaBridge.request("host.shutdown").then(() => done(true), () => done(false));
+    """)
+    return checks
 
 
 def check_bundle(app):
@@ -290,7 +413,7 @@ def check_bundle(app):
         raise RuntimeError("Info.plist still quarantines every file Lima and its agents write (LSFileQuarantineEnabled)")
 
 
-def main(app):
+def main(app, verify=verify_browser):
     compiled = not (app / "Contents/MacOS/zen").exists()
     if compiled:
         check_bundle(app)
@@ -324,7 +447,7 @@ def main(app):
                     raise RuntimeError("Marionette did not start")
                 with connection:
                     connection.settimeout(45)
-                    result = chrome(connection, CHECK.replace("COMPILED", "true" if compiled else "false"))
+                    result = verify(connection, compiled)
                 print(json.dumps(result, indent=2))
                 if not result or not all(value is True for value in result.values()):
                     raise RuntimeError("Compiled browser smoke check failed")

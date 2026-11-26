@@ -62,7 +62,7 @@ jobs:
           done
           for f in browser/overlay/lima/ui/*.js site/public/*.js; do node --check "$f"; done
       - name: Check Lima visual activity and Search ranking
-        run: node --test browser/tests/visual-state.test.mjs browser/tests/search-ranking.test.mjs
+        run: node --test browser/tests/visual-state.test.mjs browser/tests/search-ranking.test.mjs browser/tests/notes-scripting.test.mjs browser/tests/whatsnew-art.test.mjs browser/tests/agent-story.test.mjs
       - name: Benchmark Search ranking
         run: node browser/tests/search-bench.mjs
 

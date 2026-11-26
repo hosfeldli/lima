@@ -19,7 +19,24 @@ const arg = (name, fallback) => {
 const TABS = arg("tabs", 1000);
 const HISTORY = arg("history", 50_000);
 const STREAMS = arg("streams", 20);
-const BUDGET_MS = 75;
+// The budget is for a typical Mac. Shared CI runners are slower, so the
+// budget scales with a fixed calibration workload timed on the same machine:
+// a real regression still fails, a slow runner alone doesn't.
+const BASE_BUDGET_MS = 75;
+const REFERENCE_CALIBRATION_MS = 17; // measured on an Apple silicon Mac (M-series), where the 75 ms budget was set
+function calibrate() {
+  const start = performance.now();
+  let sink = 0;
+  for (let round = 0; round < 3; round++) {
+    const words = Array.from({ length: 60000 }, (_, i) => `item-${(i * 2654435761) % 100003}`);
+    words.sort();
+    for (const word of words) sink += word.charCodeAt(word.length - 1);
+  }
+  return { ms: (performance.now() - start) / 3, sink };
+}
+calibrate();
+const calibration = Math.min(...[0, 1, 2].map(() => calibrate().ms));
+const BUDGET_MS = Math.round(BASE_BUDGET_MS * Math.max(1, calibration / REFERENCE_CALIBRATION_MS));
 const NOW = Date.now();
 
 let seed = 7;
@@ -85,7 +102,7 @@ timings.sort((a, b) => a - b);
 const percentile = p => timings[Math.min(timings.length - 1, Math.floor((p / 100) * timings.length))];
 const report = {
   candidates: TABS + HISTORY + lima.length, keystrokes: timings.length, concurrentStreams: STREAMS, streamedBytes: delivered,
-  p50Ms: +percentile(50).toFixed(2), p95Ms: +percentile(95).toFixed(2), maxMs: +timings.at(-1).toFixed(2), budgetMs: BUDGET_MS,
+  p50Ms: +percentile(50).toFixed(2), p95Ms: +percentile(95).toFixed(2), maxMs: +timings.at(-1).toFixed(2), budgetMs: BUDGET_MS, calibrationMs: +calibration.toFixed(2),
 };
 console.log(JSON.stringify(report, null, 2));
 if (report.p95Ms > BUDGET_MS) {

@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help bootstrap native test browser browser-source source-prepare run lint release-check release-rehearsal clean
+.PHONY: help bootstrap native test browser browser-source source-prepare run lint release-check release-rehearsal visual visual-update ui-test clean
 
 help:
 	@echo "make bootstrap  init submodules (Zen pinned in browser/lima.lock.json)"
@@ -10,6 +10,8 @@ help:
 	@echo "make source-prepare  verify and prepare the pinned engine source"
 	@echo "make run        build and launch Lima with a disposable dev profile"
 	@echo "make lint       lint workflows and release scripts"
+	@echo "make ui-test    JavaScript unit tests and the headless smoke test (sidebar, search, notes, chat, accessibility)"
+	@echo "make visual     compare Lima's screens (light and dark) with the saved images; visual-update saves new ones"
 	@echo "make release-rehearsal  signed local release build + updater integration tests (no upload)"
 	@echo "Releases: browser/scripts/release/release.sh help, docs/RELEASING.md"
 
@@ -40,6 +42,16 @@ lint:
 	shellcheck --severity=warning browser/scripts/*.sh browser/scripts/release/*.sh
 	python3 -m py_compile browser/scripts/*.py
 	browser/scripts/release/release.sh check
+
+ui-test: browser
+	node --test browser/tests/*.test.mjs
+	python3 browser/scripts/source_smoke.py build/Lima.app
+
+visual: browser
+	python3 browser/tests/visual/visual.py build/Lima.app
+
+visual-update: browser
+	python3 browser/tests/visual/visual.py build/Lima.app --update
 
 release-check:
 	browser/scripts/release/release.sh check

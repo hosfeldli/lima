@@ -1,20 +1,23 @@
+import { SETTLE } from "./motion.sys.mjs";
 /* about:lima router. Each URL is one tab with one job; everything that
  * organizes them lives in Zen's sidebar (docs/architecture/sidebar-workspaces.md).
  * Sources are ES modules; the build bundles them into one classic script
  * because module scripts cannot load cross-origin into about:lima. */
 import { bridge, el, setPage } from "./lib.js";
 import { renderActivity, renderRun } from "./home.js";
-import { renderIndex, renderNote } from "./notes.js";
+import { renderIndex, renderNote, renderNotesHelp } from "./notes.js";
 import { renderAssistant } from "./assistant.js";
 import { renderWorkspace } from "./workspace.js";
 import { renderChat, renderMedia } from "./chat.js";
 import { renderStudio } from "./studio.js";
 import { renderWelcome } from "./welcome.js";
+import { renderWhatsNew } from "./whatsnew.js";
 import { renderAsk, renderAudio, renderIntegrations } from "./views.js";
 import { renderImageStudio } from "./image-studio.js";
 import { renderSchedules } from "./schedules.js";
 import { renderStudioAnimation, renderStudioVector } from "./studio-production.js";
 
+document.documentElement.style.setProperty("--lima-motion-settle", SETTLE);
 const params = new URLSearchParams(location.search);
 const app = document.getElementById("app");
 
@@ -25,6 +28,8 @@ function renderStart(root) {
 
 const routes = [
   [() => params.get("view") === "welcome", () => renderWelcome(app)],
+  [() => params.get("view") === "whats-new", () => renderWhatsNew(app)],
+  [() => params.get("view") === "notes-help", () => renderNotesHelp(app)],
   [() => params.get("view") === "image", () => {
     const workspace = params.get("imageWorkspace");
     if (workspace && params.has("vectorDocument")) return renderStudioVector(app, workspace, params.get("vectorDocument"));
