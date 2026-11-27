@@ -21,6 +21,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
   LimaTabs: "resource://lima/LimaTabs.sys.mjs",
   LimaWorkspaces: "resource://lima/LimaWorkspaces.sys.mjs",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
+  SessionStore: "moz-src:///browser/components/sessionstore/SessionStore.sys.mjs",
   tabURL: "resource://lima/LimaWorkspaces.sys.mjs",
 });
 
@@ -179,15 +180,42 @@ function installMenus(win) {
       separator("lima-create-sep"));
   }
 
-  // Right-click on the sidebar's empty area.
-  const toolbar = doc.getElementById("toolbar-context-menu");
-  if (toolbar && !doc.getElementById("lima-ctx-note")) {
-    const anchor = doc.getElementById("toolbar-context-openANewTab");
-    const items = [
-      item("lima-ctx-workspace", "New AI Workspace", "star", () => LimaCreate.workspace(win)),
-      item("lima-ctx-note", "New Note", "note", () => LimaCreate.note(win)),
-    ];
-    if (anchor) anchor.after(...items); else toolbar.prepend(...items, separator("lima-ctx-sep"));
+  // Right-click on the sidebar's empty area: one short menu of Lima's own,
+  // in place of the toolbar menu and Zen's spaces menu (Lima has one space,
+  // so "New Space" and the rest don't apply).
+  if (!doc.getElementById("lima-sidebar-menu")) {
+    const menu = doc.createXULElement("menupopup");
+    menu.id = "lima-sidebar-menu";
+    const settingsURL = "about:lima?view=integrations&section=sidebar";
+    menu.append(
+      item("lima-sidebar-new-tab", "New Tab", "plus", () => LimaCreate.tab(win)),
+      item("lima-sidebar-new-folder", "New Folder", "folder", () => win.gZenFolders.createFolder([], { renameFolder: true })),
+      item("lima-sidebar-new-note", "New Note", "note", () => LimaCreate.note(win)),
+      item("lima-sidebar-new-workspace", "New AI Workspace", "star", () => LimaCreate.workspace(win)),
+      separator("lima-sidebar-menu-sep"),
+      item("lima-sidebar-reopen", "Reopen Closed Tab", "undo", () => win.undoCloseTab()),
+      separator("lima-sidebar-menu-sep2"),
+      item("lima-sidebar-settings", "Sidebar Settings…", "sliders", () => win.switchToTabHavingURI(settingsURL, true, { triggeringPrincipal: system() })));
+    menu.addEventListener("popupshowing", event => {
+      if (event.target !== menu) return;
+      doc.getElementById("lima-sidebar-reopen").disabled = !lazy.SessionStore.getClosedTabCountForWindow?.(win);
+    });
+    (doc.getElementById("mainPopupSet") ?? doc.documentElement).append(menu);
+    let point = null;
+    win.addEventListener("contextmenu", event => { point = { x: event.screenX, y: event.screenY }; }, true);
+    // On a tab or folder their own menus open; on empty sidebar space, this one.
+    const inSidebar = node => !!node?.closest?.("#navigator-toolbox")
+      && !!node.closest("#tabbrowser-tabs, zen-workspace, .zen-workspace-tabs-section, #tabbrowser-arrowscrollbox")
+      && !node.closest(".tabbrowser-tab, zen-folder, #lima-dock, #lima-music, toolbarbutton:not(.zen-workspaces-actions), #urlbar");
+    for (const id of ["toolbar-context-menu", "zenWorkspaceMoreActions"]) {
+      const original = doc.getElementById(id);
+      original?.addEventListener("popupshowing", event => {
+        if (event.target !== original || (id === "toolbar-context-menu" && !inSidebar(original.triggerNode))) return;
+        event.preventDefault();
+        if (point) menu.openPopupAtScreen(point.x, point.y, true);
+        else menu.openPopup(original.triggerNode, "after_pointer");
+      });
+    }
   }
 
   // Right-click on a folder: create inside it; workspace and agent actions.
@@ -220,6 +248,9 @@ function installMenus(win) {
       doc.getElementById("lima-folder-remove").hidden = !workspace || agent;
       doc.getElementById("lima-folder-rename").hidden = !workspace || agent;
       doc.getElementById("lima-folder-reveal").hidden = !workspace || agent;
+      // Lima has one space: moving or sharing a folder between spaces doesn't apply.
+      for (const id of ["context_zenChangeFolderSpace", "context_zenShareFolder"]) { const node = doc.getElementById(id); if (node) node.hidden = true; }
+      Promise.resolve().then(() => tidySeparators(folderMenu));
       const deleteItem = doc.getElementById("context_zenFolderDelete");
       if (deleteItem) deleteItem.hidden = !!workspace;
       // Rename Workspace replaces Zen's own Rename on workspace folders.
@@ -252,6 +283,7 @@ function installMenus(win) {
       for (const id of ["lima-tabctx-add", "lima-tabctx-ask", "lima-tabctx-send", "lima-tabctx-page-sep"]) doc.getElementById(id).hidden = !web;
       addTo.disabled = !lazy.LimaWorkspaces.roots(win).length;
     });
+    organizeTabMenu(win, tabMenu);
   }
 
   // Right-click on a page or a selection.
@@ -280,6 +312,75 @@ function installMenus(win) {
       doc.getElementById("lima-page-save").hidden = !selected;
     });
   }
+}
+
+/* The tab menu, regrouped so the everyday actions are easy to find:
+ *   Ask Lima About Page · Lima ▸
+ *   New Tab Below · Reload · Duplicate · Mute
+ *   Rename · Change Icon · Move to Folder ▸ · Split View
+ *   More ▸ (everything else Firefox and Zen offer)
+ *   Close Tab · Reopen Closed Tab
+ * Items keep their ids, so Firefox and Zen still update and run them. */
+function organizeTabMenu(win, tabMenu) {
+  const doc = win.document;
+  if (doc.getElementById("lima-tabctx-more")) return;
+  const submenu = (id, label, iconName) => {
+    const node = doc.createXULElement("menu");
+    node.id = id;
+    node.setAttribute("label", label);
+    node.classList.add("menu-iconic", "lima-menuitem");
+    if (iconName) node.setAttribute("image", ICON(iconName));
+    const popup = doc.createXULElement("menupopup");
+    node.append(popup);
+    return [node, popup];
+  };
+  const sep = id => Object.assign(doc.createXULElement("menuseparator"), { id });
+  const take = id => doc.getElementById(id);
+  const [lima, limaPopup] = submenu("lima-tabctx-lima", "Lima", "lima");
+  const [more, morePopup] = submenu("lima-tabctx-more", "More", "more");
+  // Firefox's own separators would stack up inside More; they're kept (code
+  // looks some up by id) in a menu that never shows.
+  const [holder, holderPopup] = submenu("lima-tabctx-holder", "", null);
+  holder.hidden = true;
+
+  limaPopup.append(...["lima-tabctx-add", "lima-tabctx-send", "lima-tabctx-page-sep", "lima-tabctx-note", "lima-tabctx-workspace"].map(take).filter(Boolean));
+  const placed = new Set();
+  const group = ids => ids.map(take).filter(node => node && !placed.has(node) && placed.add(node));
+  const top = [
+    ...group(["lima-tabctx-ask"]), lima, sep("lima-tabctx-g1"),
+    ...group(["context_openANewTab", "context_reloadTab", "context_duplicateTab", "context_toggleMuteTab", "context_toggleMuteSelectedTabs"]), sep("lima-tabctx-g2"),
+    ...group(["context_zen-edit-tab-title", "context_zen-edit-tab-icon", "context_zenMoveToFolder", "context_zenSplitTabs"]), sep("lima-tabctx-g3"),
+    more, sep("lima-tabctx-g4"),
+    ...group(["context_closeTab", "context_undoCloseTab"]),
+  ];
+  for (const node of [...tabMenu.children]) {
+    if (node === lima || placed.has(node) || node.id?.startsWith("lima-tabctx-")) {
+      if (node.localName === "menuseparator" && node.id?.startsWith("lima-tabctx-") && !node.id.startsWith("lima-tabctx-g")) holderPopup.append(node);
+      continue;
+    }
+    (node.localName === "menuseparator" ? holderPopup : morePopup).append(node);
+  }
+  tabMenu.replaceChildren(...top, holder);
+  // Hide a submenu with nothing to show, once Firefox has updated its items.
+  tabMenu.addEventListener("popupshown", event => {
+    if (event.target !== tabMenu) return;
+    const visible = popup => [...popup.children].some(node => !node.hidden && !node.collapsed && node.localName !== "menuseparator");
+    more.hidden = !visible(morePopup);
+    lima.hidden = !visible(limaPopup);
+    for (const popup of [tabMenu, morePopup, limaPopup]) tidySeparators(popup);
+  });
+}
+
+/** No leading, trailing or doubled separators once items are hidden. */
+function tidySeparators(popup) {
+  let previous = null;
+  for (const node of popup.children) {
+    const shown = !node.hidden && !node.collapsed;
+    if (node.localName !== "menuseparator") { if (shown) previous = node; continue; }
+    node.hidden = !previous || previous.localName === "menuseparator";
+    if (!node.hidden) previous = node;
+  }
+  if (previous?.localName === "menuseparator") previous.hidden = true;
 }
 
 /** The page a browser shows: title and URL only. */
@@ -392,11 +493,14 @@ function attachDock(win) {
       el(doc, "button", { class: "lima-music-btn", title: "Next", "aria-label": "Next", onclick: control("next") }, glyph(doc, "next"))),
     dj, mute);
   // The volume slider row, above the bar while it's open.
-  const tabMute = el(doc, "button", { class: "lima-music-btn", title: "Mute tab", "aria-label": "Mute tab", hidden: true,
-    onclick: event => { event.stopPropagation(); if (browserTab?.isConnected) { browserTab.toggleMuteAudio(); paintTrack(); } } }, glyph(doc, "mute"));
+  // The speaker beside the slider mutes: the tab when a tab plays, else the
+  // Mac's volume (and a second click brings back the level it had).
+  let unmutedVolume = null;
+  const speaker = el(doc, "button", { class: "lima-music-btn lima-volume-speaker", title: "Mute", "aria-label": "Mute", "aria-pressed": "false",
+    onclick: event => { event.stopPropagation(); toggleSilence(); } }, glyph(doc, "volume"));
   const volumeLabel = el(doc, "span", { class: "lima-volume-value", "aria-hidden": "true" });
   const volumePop = el(doc, "div", { class: "lima-volume-pop", hidden: true, role: "group", "aria-label": "Volume" },
-    glyph(doc, "volume"), volume, volumeLabel, tabMute);
+    speaker, volume, volumeLabel);
   const playerHeader = el(doc, "div", { class: "lima-music-row" },
     djScene, el(doc, "span", { class: "lima-music-text" }, title, artist),
     el(doc, "span", { class: "lima-music-notes", "aria-hidden": "true" }, el(doc, "i", {}, "♪"), el(doc, "i", {}, "♫")));
@@ -406,7 +510,7 @@ function attachDock(win) {
   expanded.inert = true;
   const music = el(doc, "div", { id: "lima-music", hidden: true, "aria-label": "Now playing" },
     stack, volumePop, bar);
-  const spotify = el(doc, "button", { id: "lima-spotify", title: "Music", "aria-label": "Music", "aria-expanded": "false", onclick: () => toggleMute() },
+  const spotify = el(doc, "button", { id: "lima-spotify", title: "Sound", "aria-label": "Sound", "aria-expanded": "false", onclick: () => toggleMute() },
     el(doc, "span", { class: "lima-spotify-icon" }));
 
   const level = el(doc, "div", { class: "lima-dict-level" }, ...Array.from({ length: 5 }, () => el(doc, "i")));
@@ -564,14 +668,39 @@ function attachDock(win) {
     const open = volumePop.hidden || volumePop.limaLeaving;
     mute.setAttribute("aria-expanded", String(open));
     if (!open) { sinkAway(volumePop, { flow: true, gap: 0 }); return; }
-    tabMute.hidden = source !== "browser";
     popIn(volumePop, { flow: true, gap: 0 });
     lazy.LimaBridge.request("audio.volume").then(value => {
       volume.value = Math.round((value ?? 0) * 100);
       volumeLabel.textContent = `${volume.value}%`;
+      paintSpeaker();
     }).catch(() => {});
     volume.focus();
     keepVolumeOpen();
+  }
+  const silenced = () => source === "browser" ? !!browserTab?.hasAttribute("muted") : Number(volume.value) === 0;
+  function paintSpeaker() {
+    const muted = silenced();
+    speaker.firstChild.style.maskImage = `url("${ICON(muted ? "mute" : "volume")}")`;
+    const label = source === "browser" ? (muted ? "Unmute tab" : "Mute tab") : (muted ? "Unmute" : "Mute");
+    speaker.title = label;
+    speaker.setAttribute("aria-label", label);
+    speaker.setAttribute("aria-pressed", String(muted));
+  }
+  async function toggleSilence() {
+    keepVolumeOpen();
+    if (source === "browser") {
+      if (browserTab?.isConnected) browserTab.toggleMuteAudio();
+      paintTrack();
+      paintSpeaker();
+      return;
+    }
+    const current = Number(volume.value);
+    const next = current === 0 ? (unmutedVolume || 50) : 0;
+    if (current) unmutedVolume = current;
+    volume.value = next;
+    volumeLabel.textContent = `${next}%`;
+    paintSpeaker();
+    try { await lazy.LimaBridge.request("audio.volume", { value: next / 100 }); } catch (error) { flash(error.message); }
   }
   let volumeTimer;
   function keepVolumeOpen() {
@@ -620,8 +749,8 @@ function attachDock(win) {
     artist.textContent = track?.title ? track.artist : `${NAMES[source]} is idle`;
     const icon = track?.state === "Playing" ? "pause" : "play";
     for (const node of music.querySelectorAll('.lima-glyph[data-role="pp"], .lima-music-btn[title="Play / pause"] .lima-glyph')) node.style.maskImage = `url("${ICON(icon)}")`;
-    // The sidebar's Music shortcut lets out little notes while anything plays.
-    spotify.toggleAttribute("data-playing", track?.state === "Playing" || playingTabs().length > 0);
+    // The source's own icon lets out little notes while it plays.
+    if (!volumePop.hidden) paintSpeaker();
     music.toggleAttribute("data-playing", track?.state === "Playing");
     if (track?.positionMs != null && music.dataset.personality === "full") {
       const elapsed = track.state === "Playing" ? Math.max(0, Date.now() - track.updatedAt) : 0;
@@ -780,7 +909,7 @@ function attachDock(win) {
     control("seek", () => ({ seconds }))(event).finally(() => { scrubbing = false; tick(); });
   });
   progress.addEventListener("blur", () => { scrubbing = false; });
-  volume.addEventListener("input", () => { volumeLabel.textContent = `${volume.value}%`; keepVolumeOpen(); });
+  volume.addEventListener("input", () => { volumeLabel.textContent = `${volume.value}%`; paintSpeaker(); keepVolumeOpen(); });
   volume.addEventListener("change", () => lazy.LimaBridge.request("audio.volume", { value: Number(volume.value) / 100 }).catch(error => flash(error.message)));
   // One volume control: scroll on the pill.
   let volumeBusy = false;
@@ -1154,6 +1283,37 @@ function attachFolderBehaviour(win) {
     if (folder.hasAttribute?.("lima-workspace")) lazy.LimaWorkspaces.onFolderRenamed(folder);
   });
 
+  // Folder icons: Zen's Change Icon picker, with emoji too, drawn in Lima's
+  // style. Zen stores the choice with the folder; it's painted on restore.
+  const paintAll = () => { for (const folder of doc.querySelectorAll("zen-folder")) lazy.LimaWorkspaces.paintFolderIcon(folder); };
+  win.addEventListener("TabGroupUpdate", event => lazy.LimaWorkspaces.paintFolderIcon(event.target));
+  win.addEventListener("TabGroupCreate", event => lazy.LimaWorkspaces.paintFolderIcon(event.target));
+  win.gZenStartup?.promiseInitialized?.then(() => { paintAll(); win.setTimeout(paintAll, 1500); win.setTimeout(paintAll, 5000); }, () => {});
+  const folderMenu = doc.getElementById("zenFolderActions");
+  folderMenu?.addEventListener("command", event => {
+    if (event.target.id !== "context_zenFolderChangeIcon") return;
+    const folder = contextFolder(win, folderMenu);
+    if (!folder || !win.gZenEmojiPicker) return;
+    event.stopImmediatePropagation();
+    let current = "";
+    try { current = folder.iconURL; } catch {}
+    win.gZenEmojiPicker.open(folder.icon, {
+      onlySvgIcons: false,
+      allowNone: Boolean(current),
+      closeOnSelect: true,
+      onSelect: icon => {
+        // An emoji arrives as the character itself; draw it as an image.
+        const url = !icon ? null : /^(chrome|resource|data|moz-extension):/.test(icon) ? icon : lazy.LimaWorkspaces.iconURL(icon);
+        lazy.LimaWorkspaces.setFolderIcon(win, folder, url);
+      },
+    });
+  }, true);
+  folderMenu?.addEventListener("popupshowing", event => {
+    if (event.target !== folderMenu) return;
+    const item = doc.getElementById("context_zenFolderChangeIcon");
+    if (item) item.hidden = !!contextFolder(win, folderMenu)?.hasAttribute("lima-workspace");
+  });
+
   // The tab list only scrolls up and down. Revealing a deeply nested tab
   // could scroll it sideways too, cutting off the start of every row.
   const pinned = new WeakSet();
@@ -1168,6 +1328,77 @@ function attachFolderBehaviour(win) {
   };
   win.gZenStartup?.promiseInitialized?.then(pinHorizontalScroll, () => {});
   win.addEventListener("ZenWorkspacesUIUpdate", pinHorizontalScroll);
+}
+
+// MARK: Selecting several folders and tabs
+
+/* ⌘-click folders (as with tabs) to select several, then right-click → Delete
+ * Selected or press Delete. Workspaces and Lima's own folders aren't
+ * selectable: a workspace is archived, not deleted. */
+function attachMultiSelect(win) {
+  const doc = win.document;
+  const selectable = folder => folder?.isZenFolder && !["lima-workspace", "lima-tabs", "lima-images", "lima-agents", "lima-agent", "lima-notebook", "lima-section"]
+    .some(name => folder.hasAttribute(name)) && !folder.querySelector("zen-folder[lima-workspace]");
+  const folders = () => [...doc.querySelectorAll("zen-folder[lima-selected]")].filter(folder => folder.isConnected);
+  const tabs = () => win.gBrowser.multiSelectedTabsCount > 1 || folders().length ? win.gBrowser.selectedTabs.filter(tab => !tab.hasAttribute("zen-empty-tab")) : [];
+  const clear = () => { for (const folder of folders()) folder.removeAttribute("lima-selected"); };
+
+  doc.addEventListener("click", event => {
+    if (event.button !== 0) return;
+    const label = event.target.closest?.("#navigator-toolbox zen-folder > .tab-group-label-container");
+    const folder = label?.parentElement;
+    const toggle = (event.metaKey || event.ctrlKey) && !event.altKey && label && !event.target.closest("input");
+    if (toggle && selectable(folder)) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      folder.toggleAttribute("lima-selected");
+      // The page you're on joins the selection, as when ⌘-clicking tabs.
+      if (folders().length && !win.gBrowser.selectedTab.multiselected) win.gBrowser.addToMultiSelectedTabs(win.gBrowser.selectedTab);
+      return;
+    }
+    if (!event.metaKey && !event.ctrlKey && !event.shiftKey && event.target.closest?.("#navigator-toolbox")) clear();
+  }, true);
+
+  async function deleteSelected() {
+    const chosenFolders = folders().filter(selectable);
+    // Tabs inside a chosen folder go with it.
+    const chosenTabs = tabs().filter(tab => !chosenFolders.some(folder => folder.contains(tab)));
+    const inside = chosenFolders.reduce((sum, folder) => sum + folder.allItemsRecursive.filter(item => item.localName === "tab" && !item.hasAttribute("zen-empty-tab")).length, 0);
+    const parts = [chosenFolders.length && `${chosenFolders.length} folder${chosenFolders.length === 1 ? "" : "s"}${inside ? ` (with ${inside} tab${inside === 1 ? "" : "s"} inside)` : ""}`,
+      chosenTabs.length && `${chosenTabs.length} tab${chosenTabs.length === 1 ? "" : "s"}`].filter(Boolean);
+    if (!parts.length) return;
+    if (!Services.prompt.confirm(win, "Delete selected", `Delete ${parts.join(" and ")}? Closed tabs can be reopened from History.`)) return;
+    clear();
+    if (chosenTabs.length) win.gBrowser.removeTabs(chosenTabs);
+    for (const folder of chosenFolders) { try { await folder.delete(); } catch (error) { log(`delete folder: ${error}`); } }
+  }
+
+  const count = () => folders().length + tabs().length;
+  const addItem = (popup, id) => {
+    if (!popup || doc.getElementById(id)) return;
+    const menuitem = doc.createXULElement("menuitem");
+    menuitem.id = id;
+    menuitem.className = "lima-menuitem menuitem-iconic";
+    menuitem.setAttribute("image", ICON("trash"));
+    menuitem.addEventListener("command", () => deleteSelected());
+    popup.prepend(menuitem);
+    popup.addEventListener("popupshowing", event => {
+      if (event.target !== popup) return;
+      const n = count();
+      menuitem.hidden = n < 2;
+      menuitem.setAttribute("label", `Delete ${n} Selected…`);
+    });
+  };
+  addItem(doc.getElementById("zenFolderActions"), "lima-delete-selected-folder");
+  addItem(doc.getElementById("tabContextMenu"), "lima-delete-selected-tab");
+
+  win.addEventListener("keydown", event => {
+    if (!["Delete", "Backspace"].includes(event.key) || event.metaKey || event.altKey || event.ctrlKey || !folders().length) return;
+    const focused = doc.activeElement;
+    if (focused?.closest?.("input, textarea, [contenteditable], browser") || focused?.localName === "browser") return;
+    event.preventDefault();
+    deleteSelected();
+  }, true);
 }
 
 // MARK: Keys
@@ -1189,6 +1420,7 @@ export const LimaSidebar = {
     try { attachDock(win); } catch (error) { log(`dock: ${error}\n${error.stack}`); }
     try { attachFolderBehaviour(win); } catch (error) { log(`folders: ${error}\n${error.stack}`); }
     try { attachKeys(win); } catch (error) { log(`keys: ${error}`); }
+    try { attachMultiSelect(win); } catch (error) { log(`multiselect: ${error}`); }
     try { lazy.LimaSearchPanel.install(win); } catch (error) { log(`search: ${error}`); }
   },
 };

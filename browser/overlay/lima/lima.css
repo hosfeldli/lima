@@ -151,6 +151,11 @@ zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon
 }
 /* End of sidebar rows. */
 
+/* Folders selected with ⌘-click look like selected tabs. */
+#navigator-toolbox zen-folder[lima-selected] > .tab-group-label-container {
+  background: color-mix(in srgb, var(--lima-accent, currentColor) 16%, transparent);
+  border-radius: var(--border-radius-medium, 8px);
+}
 /* Native tab and folder elements share a row footprint and focus treatment.
    Not for rows Zen has shrunk away: a folder collapsed around its open tab
    hides the others at height 0, and a minimum here left a gap per row. */
@@ -168,9 +173,12 @@ zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon
 }
 #navigator-toolbox .tab-group-label-container[lima-drop-target] > .tab-group-label { opacity: .65; }
 .lima-s-sub mark { background: transparent; color: inherit; font-weight: 750; text-decoration: underline; }
+/* A workspace's Pip is a quarter larger than a row icon, and nudged down so
+   it stands centred on the row from the top of its head to its feet. */
 #navigator-toolbox zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon::after {
-  width: var(--lima-row-icon-size);
-  height: var(--lima-row-icon-size);
+  width: calc(var(--lima-row-icon-size) * 1.25);
+  height: calc(var(--lima-row-icon-size) * 1.25);
+  translate: 0 var(--lima-pip-drop, 2px);
 }
 #navigator-toolbox .bookmark-item { padding-block: 2px; }
 /* The shared icon set is drawn in graphite (#383838) for use as favicons,
@@ -384,13 +392,12 @@ zen-folder[lima-archiving] > .tab-group-label-container { opacity: .7; }
   align-self: center; background: transparent; color: inherit; border: 0; border-radius: 7px;
 }
 #lima-spotify:is(:hover, [aria-expanded="true"]) { background: var(--lima-hover); }
+/* The dock's sound button: a speaker, whatever is playing. */
 .lima-spotify-icon {
-  width: 16px; height: 16px; border-radius: 50%; display: block;
+  width: 16px; height: 16px; display: block;
   background: currentColor;
-  mask: url("resource://lima-ui/marks/spotify.svg") center / contain no-repeat;
+  mask: url("resource://lima-ui/icons/volume.svg") center / contain no-repeat;
 }
-#lima-spotify[data-source="Music"] .lima-spotify-icon { border-radius: 0; mask-image: url("resource://lima-ui/marks/music.svg"); }
-#lima-spotify[data-source="browser"] .lima-spotify-icon { border-radius: 0; mask-image: url("resource://lima-ui/icons/audio.svg"); }
 /* Lima's player replaces Zen's media card: same compact shape, every source. */
 :root[lima-window] #zen-media-controls-toolbar { display: none !important; }
 /* The bar: one row, 32px tall (it was 44). */
@@ -425,11 +432,16 @@ zen-folder[lima-archiving] > .tab-group-label-container { opacity: .7; }
 .lima-music-source img { inline-size: 19px; block-size: 19px; border-radius: 5px; object-fit: contain; }
 #lima-dock .lima-music-source .lima-glyph { inline-size: 15px; block-size: 15px; }
 .lima-music-source .lima-music-mark { mask-image: url("resource://lima-ui/marks/music.svg"); }
-/* A small note marks each source that's making sound. */
-.lima-music-source[data-playing]::after {
-  content: "♪"; position: absolute; inset-block-start: -1px; inset-inline-end: 0;
-  font-size: 9px; line-height: 1; color: var(--lima-ink-2);
+/* The source that's making sound lets out notes that drift up and fade. */
+.lima-music-source[data-playing]::before, .lima-music-source[data-playing]::after {
+  position: absolute; left: 50%; top: 2px; font: 600 9px/1 system-ui; color: var(--lima-ink-2); pointer-events: none; opacity: 0;
+  animation: lima-note-drift 2.4s ease-out infinite;
 }
+.lima-music-source[data-playing]::before { content: "♪"; }
+.lima-music-source[data-playing]::after { content: "♫"; animation-name: lima-note-drift-left; animation-delay: 1.2s; }
+:root[data-lima-personality]:not([data-lima-personality="full"]) .lima-music-source::before,
+:root[data-lima-personality]:not([data-lima-personality="full"]) .lima-music-source::after { display: none; }
+@media (prefers-reduced-motion: reduce) { .lima-music-source[data-playing]::before { opacity: 1; animation: none; transform: translate(4px, -4px); } .lima-music-source[data-playing]::after { display: none; } }
 #lima-dock .lima-music-row {
   display: flex; align-items: center; gap: 7px; padding: 2px 0 4px; width: 100%; text-align: start;
 }
@@ -1124,7 +1136,7 @@ zen-folder:is([lima-agents], [lima-tabs], [lima-images])[collapsed] > .tab-group
 #lima-music input[type="range"]::-moz-range-progress { height: 4px; background: var(--lima-ink-3); border-radius: 4px; }
 
 :root[lima-window] :is(#zen-workspaces-button, #zen-spaces-menubar, #context_zenWorkspaces,
-  #context_zenFolderChangeWorkspace, #context_zenFolderToSpace, #context_zen-add-domain-to-routing,
+  #context_zenFolderChangeWorkspace, #context_zenFolderToSpace, #context_zen-add-domain-to-routing, #context_askChat,
   [command="cmd_zenOpenWorkspaceCreation"], [command="cmd_zenOpenSpaceRoutingSettings"],
   [data-l10n-id="zen-menubar-toggle-pinned-tabs"],
   .zen-current-workspace-indicator) { display: none !important; }
@@ -1269,7 +1281,8 @@ zen-folder:is([lima-agents], [lima-tabs], [lima-images])[collapsed] > .tab-group
   border-block-end: 1px solid color-mix(in srgb, currentColor 10%, transparent);
 }
 .lima-volume-pop[hidden] { display: none; }
-#lima-dock .lima-volume-pop > .lima-glyph { width: 12px; height: 12px; opacity: .7; }
+#lima-dock .lima-volume-pop > .lima-volume-speaker { flex: none; }
+#lima-dock .lima-volume-pop > .lima-volume-speaker .lima-glyph { width: 13px; height: 13px; }
 #lima-dock .lima-volume-pop input[type="range"] { flex: 1; min-inline-size: 0; margin: 0; }
 .lima-volume-value { min-inline-size: 30px; text-align: end; font-size: 10.5px; color: var(--lima-ink-2); font-variant-numeric: tabular-nums; }
 #lima-dock .lima-volume-pop .lima-music-btn { width: 22px; height: 22px; }
@@ -1293,29 +1306,24 @@ zen-folder:is([lima-agents], [lima-tabs], [lima-images])[collapsed] > .tab-group
 #lima-dock .lima-music-source .lima-spotify-mark, #lima-dock .lima-music-alt-icon .lima-spotify-mark {
   inline-size: 17px; block-size: 17px; background: #1ed760; mask-image: url("resource://lima-ui/marks/spotify.svg");
 }
-/* While audio plays, the Music shortcut lets out notes that drift up and fade. */
-#lima-spotify { position: relative; overflow: visible; }
-#lima-spotify[data-playing]::before, #lima-spotify[data-playing]::after {
-  position: absolute; left: 50%; top: 2px; font: 600 9px/1 system-ui; color: currentColor; pointer-events: none; opacity: 0;
-  animation: lima-note-drift 2.4s ease-out infinite;
-}
-#lima-spotify[data-playing]::before { content: "♪"; }
-#lima-spotify[data-playing]::after { content: "♫"; animation-delay: 1.2s; }
+/* Notes drifting up from a playing source (see .lima-music-source). */
 @keyframes lima-note-drift {
   0% { opacity: 0; transform: translate(-2px, 6px) scale(.7); }
   20% { opacity: .9; }
   100% { opacity: 0; transform: translate(9px, -14px) rotate(14deg) scale(1); }
 }
-#lima-spotify[data-playing]::after { animation-name: lima-note-drift-left; }
 @keyframes lima-note-drift-left {
   0% { opacity: 0; transform: translate(-6px, 6px) scale(.7); }
   20% { opacity: .9; }
   100% { opacity: 0; transform: translate(-16px, -13px) rotate(-12deg) scale(1); }
 }
-:root[data-lima-personality]:not([data-lima-personality="full"]) #lima-spotify::before,
-:root[data-lima-personality]:not([data-lima-personality="full"]) #lima-spotify::after { display: none; }
-@media (prefers-reduced-motion: reduce) { #lima-spotify::before, #lima-spotify::after { display: none; } }
 
+/* No site-controls button at the end of the address bar. It stays in the
+   layout at zero width because permission prompts are anchored to it. */
+:root[lima-window] #urlbar #zen-site-data-icon-button {
+  min-width: 0 !important; width: 0 !important; padding: 0 !important; margin: 0 !important;
+  opacity: 0 !important; pointer-events: none !important; overflow: hidden !important;
+}
 /* Copy link stays visible in the address bar, not only on hover. */
 :root[lima-window] #urlbar #zen-copy-url-button:not([disabled]) {
   opacity: 1 !important;

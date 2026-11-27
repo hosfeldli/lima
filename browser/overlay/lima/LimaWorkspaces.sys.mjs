@@ -27,6 +27,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
 
 import { LimaVisualActivity } from "resource://lima/LimaVisualActivity.sys.mjs";
 import { preserveFolderDisclosure } from "resource://lima/LimaFolderDisclosure.sys.mjs";
+import { setTimeout } from "resource://gre/modules/Timer.sys.mjs";
 
 const MAP_PREF = "lima.workspaces.sidebar";
 const BOOKMARK_ROOT_PREF = "lima.workspaces.bookmarkRoot";
@@ -90,6 +91,7 @@ class Workspaces {
   #started = false;
   #queue = Promise.resolve();
   #mapValue = null;
+  #renaming = new Set();
   #mapRaw = null;
   #workspaces = new Map();
   #visuals = {};
@@ -364,7 +366,12 @@ class Workspaces {
       win.gBrowser.tabContainer._invalidateCachedTabs();
     }
     if (helper) folder.setAttribute("lima-agent", "true");
-    if (folder.label !== workspace.name) folder.label = workspace.name;
+    // A rename the runtime hasn't saved yet wins over its old name.
+    const renamedTo = entry.renamedTo;
+    if (renamedTo && renamedTo !== workspace.name) {
+      if (folder.label !== renamedTo) folder.label = renamedTo;
+      if (!this.#renaming.has(workspace.id)) { this.#renaming.add(workspace.id); this.#sendRename(workspace.id, renamedTo).finally(() => this.#renaming.delete(workspace.id)); }
+    } else if (folder.label !== workspace.name) folder.label = workspace.name;
 
     const chatURL = workspace.conversationID && `about:lima?chat=${workspace.conversationID}`;
     const detached = helper && [...parentFolder.tabs].find(tab => tab.group === parentFolder && tabURL(tab) === chatURL);
@@ -523,21 +530,44 @@ class Workspaces {
   // MARK: Tab folders (agents group a workspace's pages)
 
   /** The folder at `path` inside a workspace's Tabs folder, made as needed. */
+  /* Zen restores folders after a restart but not Lima's attributes on them,
+   * so each agent folder's Zen id is remembered (map[id].tabFolders[path]).
+   * A folder is found by that id, then by its attributes, then by name among
+   * its parent's folders; only when none matches is a new one made. Finding
+   * by name keeps a restart from filing every tab into fresh duplicates. */
   #tabSubfolder(win, tabsFolder, workspaceId, path) {
     let parent = tabsFolder;
     let sofar = "";
+    const map = this.#map();
+    const known = { ...(map[workspaceId]?.tabFolders ?? {}) };
+    let remembered = false;
     for (const part of path.split("/")) {
       sofar = sofar ? `${sofar}/${part}` : part;
-      let next = [...win.document.querySelectorAll("zen-folder[lima-tab-folder]")].find(folder =>
-        folder.group === parent && folder.getAttribute("lima-tab-folder") === sofar && folder.getAttribute("lima-tabs-of") === workspaceId);
-      if (!next) {
-        next = this.#createFolder(win, [], part, parent, false);
-        next.setAttribute("lima-tab-folder", sofar);
-        next.setAttribute("lima-tabs-of", workspaceId);
-      }
+      const children = [...(parent.groupContainer?.children ?? [])].filter(node => node.isZenFolder);
+      const byId = known[sofar] ? win.document.getElementById(known[sofar]) : null;
+      let next = (byId?.isZenFolder && byId.group === parent ? byId : null)
+        ?? children.find(folder => folder.getAttribute("lima-tab-folder") === sofar && folder.getAttribute("lima-tabs-of") === workspaceId)
+        // Of same-named copies, the one holding tabs.
+        ?? children.filter(folder => !folder.hasAttribute("lima-tab-folder") && !isLimaFolder(folder) && String(folder.label) === part)
+          .sort((a, b) => this.#allTabs(b).length - this.#allTabs(a).length)[0];
+      if (!next) next = this.#createFolder(win, [], part, parent, false);
+      next.setAttribute("lima-tab-folder", sofar);
+      next.setAttribute("lima-tabs-of", workspaceId);
+      if (known[sofar] !== next.id) { known[sofar] = next.id; remembered = true; }
       parent = next;
     }
+    if (remembered) this.#saveMap({ ...map, [workspaceId]: { ...(map[workspaceId] ?? {}), tabFolders: known } });
     return parent;
+  }
+
+  /** Marks the agent folders a restart left without Lima's attributes. */
+  #reclaimTabFolders(win, workspaceId) {
+    for (const [path, zenId] of Object.entries(this.#map()[workspaceId]?.tabFolders ?? {})) {
+      const folder = win.document.getElementById(zenId);
+      if (!folder?.isZenFolder || folder.hasAttribute("lima-tab-folder")) continue;
+      folder.setAttribute("lima-tab-folder", path);
+      folder.setAttribute("lima-tabs-of", workspaceId);
+    }
   }
 
   /** Each web tab sits in the folder its entry names (or in Tabs itself). */
@@ -547,15 +577,20 @@ class Workspaces {
   #arrangeTabFolders(win, workspace, tabs) {
     const folder = this.folderFor(workspace.id, "folder", win);
     if (!folder) return;
+    this.#reclaimTabFolders(win, workspace.id);
     for (const entry of workspace.tabs) {
       const web = /^https?:/.test(entry.url);
       if (!web && !entry.url.startsWith("about:lima?note=")) continue;
       const tab = tabs.find(item => web ? sameURL(tabURL(item), entry.url) : tabURL(item) === entry.url);
       if (!tab) continue;
       // Only when the agent (re)files it: a tab you dragged elsewhere stays put.
+      // The filing is kept on the tab across restarts, so a restart doesn't
+      // count as the agent filing everything again.
       const wanted = entry.folder ?? "";
+      tab.limaFiledAs ??= readFiled(tab);
       if (tab.limaFiledAs === wanted) continue;
       tab.limaFiledAs = wanted;
+      try { lazy.SessionStore.setCustomTabValue(tab, "lima-filed-as", wanted); } catch {}
       const home = web ? this.folderFor(workspace.id, "tabs", win) ?? folder : folder;
       const target = entry.folder ? this.#tabSubfolder(win, folder, workspace.id, entry.folder) : home;
       if (tab.group !== target && (entry.folder || tab.group?.hasAttribute("lima-tab-folder"))) {
@@ -568,11 +603,51 @@ class Workspaces {
     // Folders agents made that hold nothing any more go away (unless the
     // agent keeps one, empty, for work to come).
     const styled = new Set((workspace.tabFolderStyles ?? []).map(style => style.path));
-    for (const folder of win.document.querySelectorAll(`zen-folder[lima-tabs-of="${win.CSS.escape(workspace.id)}"]`)) {
-      const path = folder.getAttribute("lima-tab-folder");
+    const empty = node => !this.#allTabs(node).some(tab => !tab.hasAttribute("zen-empty-tab"));
+    const map = this.#map();
+    const known = { ...(map[workspace.id]?.tabFolders ?? {}) };
+    let forgot = false;
+    for (const node of win.document.querySelectorAll(`zen-folder[lima-tabs-of="${win.CSS.escape(workspace.id)}"]`)) {
+      const path = node.getAttribute("lima-tab-folder");
       const inside = value => value === path || value?.startsWith(`${path}/`);
       const used = workspace.tabs.some(entry => inside(entry.folder)) || [...styled].some(inside);
-      if (!used && !this.#allTabs(folder).length) Promise.resolve().then(() => folder.delete?.()).catch(() => {});
+      if (!used && empty(node)) {
+        if (known[path] === node.id) { delete known[path]; forgot = true; }
+        Promise.resolve().then(() => node.delete?.()).catch(() => {});
+      }
+    }
+    if (forgot) this.#saveMap({ ...map, [workspace.id]: { ...(map[workspace.id] ?? {}), tabFolders: known } });
+    // Empty copies of the agent's folders, left by earlier restarts: a plain
+    // folder in the workspace, holding no tabs, named like one of its folders.
+    const names = new Set([...styled, ...workspace.tabs.map(entry => entry.folder).filter(Boolean)].flatMap(path => path.split("/")));
+    for (const node of folder.querySelectorAll("zen-folder")) {
+      if (node.hasAttribute("lima-tab-folder") || isLimaFolder(node) || !names.has(String(node.label)) || !empty(node)) continue;
+      if (node.querySelector("zen-folder[lima-tab-folder]")) continue;
+      Promise.resolve().then(() => node.delete?.()).catch(() => {});
+    }
+  }
+
+  /** Shows `url` (a Lima or Zen icon, or an emoji drawn as an image) as the
+   * folder's icon, or its plain folder for null. Zen keeps it with the
+   * folder, so it's still there after a restart. */
+  setFolderIcon(win, folder, url) {
+    try { win.gZenFolders?.setFolderUserIcon(folder, url ?? ""); } catch {}
+    this.paintFolderIcon(folder);
+    folder.dispatchEvent(new win.CustomEvent("TabGroupUpdate", { bubbles: true }));
+  }
+
+  /** Draws the icon Zen stores for a folder in Lima's style. */
+  paintFolderIcon(folder) {
+    if (!folder?.isZenFolder || folder.hasAttribute("lima-workspace")) return;
+    let url = "";
+    try { url = folder.iconURL; } catch {}
+    if (url) {
+      // Icon sets are drawn in the text colour; an emoji keeps its own.
+      folder.setAttribute("lima-folder-icon", url.startsWith("data:") ? "image" : "mask");
+      folder.style.setProperty("--lima-folder-icon", `url("${url.replace(/"/g, "%22")}")`);
+    } else {
+      folder.removeAttribute("lima-folder-icon");
+      folder.style.removeProperty("--lima-folder-icon");
     }
   }
 
@@ -634,14 +709,7 @@ class Workspaces {
       const icon = style.icon ?? null;
       if (target.limaIconAs !== icon) {
         target.limaIconAs = icon;
-        const url = this.iconURL(icon);
-        if (url) {
-          target.setAttribute("lima-folder-icon", /^[a-z]/.test(icon) ? "mask" : "image");
-          target.style.setProperty("--lima-folder-icon", `url("${url}")`);
-        } else {
-          target.removeAttribute("lima-folder-icon");
-          target.style.removeProperty("--lima-folder-icon");
-        }
+        this.setFolderIcon(win, target, this.iconURL(icon));
       }
       const collapsed = style.collapsed ?? null;
       if (target.limaCollapsedAs !== collapsed) {
@@ -1007,10 +1075,31 @@ class Workspaces {
   }
 
   /** Called when the user renames a workspace folder inline. */
+  /* The new name is kept (map[id].renamedTo) until Lima's runtime has saved
+   * it, so a rename made while the runtime was busy or restarting is sent
+   * again rather than lost, and never overwritten by the old name. */
   onFolderRenamed(folder) {
     const id = folder.getAttribute("lima-workspace");
-    if (!id || folder.label === this.#workspaces.get(id)?.name) return;
-    lazy.LimaBridge.request("workspace.rename", { id, name: folder.label }).catch(error => log(`rename: ${error.message}`));
+    const name = String(folder.label ?? "").trim();
+    if (!id || !name || name === this.#workspaces.get(id)?.name) return;
+    const map = this.#map();
+    this.#saveMap({ ...map, [id]: { ...(map[id] ?? {}), renamedTo: name } });
+    this.#sendRename(id, name);
+  }
+
+  async #sendRename(id, name, attempt = 0) {
+    try {
+      const saved = await lazy.LimaBridge.request("workspace.rename", { id, name });
+      const map = this.#map();
+      if (map[id]?.renamedTo === name) {
+        const { renamedTo, ...rest } = map[id];
+        this.#saveMap({ ...map, [id]: rest });
+      }
+      if (saved?.name) this.#workspaces.set(id, { ...(this.#workspaces.get(id) ?? {}), ...saved });
+    } catch (error) {
+      log(`rename: ${error.message}`);
+      if (attempt < 5) setTimeout(() => this.#sendRename(id, name, attempt + 1), 2000 * 2 ** attempt);
+    }
   }
 
   // MARK: Prism: where the agent is
@@ -1356,6 +1445,20 @@ class Workspaces {
       await this.#ensureBookmark(parent, bookmark.url, bookmark.title);
     }
   }
+}
+
+
+/** Folders Lima itself manages (a workspace, its Tabs or Images, an agent's). */
+function isLimaFolder(folder) {
+  return ["lima-workspace", "lima-tabs", "lima-images", "lima-agents", "lima-agent", "lima-notebook", "lima-section"].some(name => folder.hasAttribute(name));
+}
+
+/** The folder path the agent last filed this tab under, kept across restarts. */
+function readFiled(tab) {
+  try {
+    const value = lazy.SessionStore.getCustomTabValue(tab, "lima-filed-as");
+    return typeof value === "string" ? value : undefined;
+  } catch { return undefined; }
 }
 
 export const LimaWorkspaces = new Workspaces();

@@ -218,22 +218,38 @@ const compiled = COMPILED;
     })(),
     // Search results without AI answers or ads; Lima Search stands in for the address bar.
     searchCleanup: (() => {
-      const { engineFor, stylesheet, safeToHide } = ChromeUtils.importESModule("resource://lima/actors/LimaSearchCleanChild.sys.mjs");
+      const { engineFor, stylesheet, safeToHide, aiBlock } = ChromeUtils.importESModule("resource://lima/actors/LimaSearchCleanChild.sys.mjs");
       const css = stylesheet("google", { ai: true, ads: true });
       // A filter must never hide the results themselves.
       const page = new DOMParser().parseFromString(`<body><div id="rcnt"><div id="center_col">
         <div id="ai"><h2>AI Overview</h2><a href="/x"><h3>One source</h3></a></div>
-        <div id="rso"><div id="wrap"><a href="/a"><h3>A</h3></a><a href="/b"><h3>B</h3></a></div></div></div></div></body>`, "text/html");
+        <div id="rso"><div id="wrap"><a href="/a"><h3>A</h3></a><a href="/b"><h3>B</h3></a></div></div></div></div>
+        <div id="outer"><div id="frame"><div id="label"><span id="sparkle"></span><span id="ovw">AI Overview</span></div><div data-subtree="aimc">x</div></div>
+        <div id="m"><a href="/c"><h3>C</h3></a><a href="/d"><h3>D</h3></a></div></div></body>`, "text/html");
       const guarded = safeToHide(page.getElementById("ai")) && !safeToHide(page.getElementById("center_col"))
-        && !safeToHide(page.getElementById("rcnt")) && !safeToHide(page.getElementById("wrap")) && !safeToHide(page.body);
+        && !safeToHide(page.getElementById("rcnt")) && !safeToHide(page.getElementById("wrap")) && !safeToHide(page.body)
+        // A plain-label heading takes its whole frame with it, not the results beside it.
+        && aiBlock(page.getElementById("ovw"), "#none")?.id === "frame";
       return (engineFor("https://www.google.com/search?q=x") === "google" && engineFor("https://example.com/search") === null &&
         css.includes("#tads") && css.includes(":not(:has(#rso") && guarded) || { css, guarded };
     })(),
     addressBar: window.limaAddressBar === true || "not installed",
+    // Right-click menus: a short sidebar menu (with New Folder), and the tab
+    // menu grouped with the rest under More.
+    menus: (() => {
+      const side = document.getElementById("lima-sidebar-menu");
+      const tab = document.getElementById("tabContextMenu");
+      const ok = !!side?.querySelector("#lima-sidebar-new-folder") && !!tab?.querySelector(":scope > #lima-tabctx-more")
+        && !!tab.querySelector("#lima-tabctx-more #context_bookmarkTab") && tab.querySelector(":scope > #context_closeTab") !== null;
+      return ok || { side: !!side, more: !!tab?.querySelector("#lima-tabctx-more") };
+    })(),
     shortsHidden: (() => {
       const { engineFor, shortsWatchURL, stylesheet } = ChromeUtils.importESModule("resource://lima/actors/LimaSearchCleanChild.sys.mjs");
       return (engineFor("https://www.youtube.com/") === "youtube" && shortsWatchURL("https://www.youtube.com/shorts/abcDEF12345") === "https://www.youtube.com/watch?v=abcDEF12345"
-        && stylesheet("youtube", { shorts: true }).includes("ytd-reel-shelf-renderer") && stylesheet("youtube", { shorts: false }) === "") || "shorts rules";
+        && stylesheet("youtube", { shorts: true }).includes("ytd-reel-shelf-renderer") && stylesheet("youtube", { shorts: false }) === ""
+        // Every rule parses, including the locked Shorts menu entry.
+        && (() => { const sheet = new window.CSSStyleSheet(); sheet.replaceSync(stylesheet("youtube", { shorts: true }));
+          return sheet.cssRules.length === 4 && [...sheet.cssRules].some(rule => rule.cssText.includes("pointer-events")); })()) || "shorts rules";
     })(),
     // Lima keeps no usage statistics: nothing to count, nothing to send.
     usageGone: !(await LimaBridge.request("host.hello")).methods.some(method => method.startsWith("usage."))
