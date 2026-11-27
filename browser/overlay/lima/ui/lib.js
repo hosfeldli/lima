@@ -565,3 +565,49 @@ export function outsideChanges(message) {
     el("summary", {}, icon("warning"), `Changed ${message.outside.length} file${message.outside.length === 1 ? "" : "s"} outside this workspace`),
     el("ul", {}, message.outside.map(path => el("li", {}, el("code", { text: path.replace(home, "~") })))));
 }
+
+/** Cache original image bytes, with both an entry limit and a byte budget.
+ * The image element owns any decoded pixels while it is still on screen. */
+export function imageCache(limit = 48, byteBudget = 24 * 1024 * 1024) {
+  const entries = new Map();
+  let totalBytes = 0;
+  const release = (key, entry) => {
+    if (entries.get(key) !== entry) return;
+    entries.delete(key);
+    totalBytes -= entry.bytes;
+    entry.url.then(url => {
+      // Give callers already awaiting the same URL time to start loading it.
+      setTimeout(() => URL.revokeObjectURL(url), 5_000);
+    }, () => {});
+  };
+  const trim = () => {
+    while (entries.size > limit || totalBytes > byteBudget) {
+      const [key, entry] = entries.entries().next().value;
+      release(key, entry);
+    }
+  };
+  return (key, load) => {
+    const existing = entries.get(key);
+    if (existing) {
+      entries.delete(key);
+      entries.set(key, existing);
+      return existing.url;
+    }
+    const entry = { bytes: 0, url: null };
+    entry.url = Promise.resolve().then(load).then(({ type, data }) => {
+      const bytes = Uint8Array.fromBase64(data);
+      const blob = new Blob([bytes], { type: type || "image/png" });
+      const url = URL.createObjectURL(blob);
+      if (entries.get(key) === entry) {
+        entry.bytes = blob.size;
+        totalBytes += entry.bytes;
+        trim();
+      }
+      return url;
+    });
+    entry.url.catch(() => release(key, entry));
+    entries.set(key, entry);
+    trim();
+    return entry.url;
+  };
+}

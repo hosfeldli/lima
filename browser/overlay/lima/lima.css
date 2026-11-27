@@ -1189,6 +1189,8 @@ zen-folder:is([lima-agents], [lima-tabs], [lima-images])[collapsed] > .tab-group
   .zen-settings-group:has(> [data-l10n-id="zen-settings-window-spaces-header"], [data-action="open-space-routing"]),
   .zen-settings-row:has([data-pref="zen.workspaces.continue-where-left-off"], [data-pref="zen.workspaces.separate-essentials"]),
   [data-section="space-routing"] { display: none !important; }
+  /* Lima has one layout (address bar on top), so there's no layout picker. */
+  .zen-settings-layout-row { display: none !important; }
 }
 
 /* Glance controls (close, open in tab, split) follow Lima's light/dark
@@ -1334,32 +1336,179 @@ zen-folder:is([lima-agents], [lima-tabs], [lima-images])[collapsed] > .tab-group
 .lima-s-icon:is([data-kind="app"], [data-kind="file"]):has(.lima-s-favicon) { background: none; box-shadow: none; }
 .lima-s-icon:is([data-kind="app"], [data-kind="file"]) .lima-s-favicon { width: 24px; height: 24px; border-radius: 0; }
 
-/* MARK: Mini Lima. A small window with no sidebar: a slim bar names the
-   site, with Copy link and Open in Lima; the page fills the rest. */
+/* MARK: Mini Lima. A compact floating window: a 44-point toolbar (back,
+   forward, reload, the site, share, pin, Open in Lima, more), a tab strip
+   only when there's more than one page, and the page. */
 :root[lima-mini] #navigator-toolbox,
+:root[lima-mini] #zen-appcontent-navbar-wrapper,
+:root[lima-mini] #zen-appcontent-navbar-container,
+:root[lima-mini] #nav-bar,
 :root[lima-mini] #zen-sidebar-splitter,
 :root[lima-mini] #lima-dock,
 :root[lima-mini] #lima-assistant-button,
 :root[lima-mini] .lima-companion-float { display: none !important; }
-:root[lima-mini] #tabbrowser-tabbox { margin: 40px 6px 6px !important; }
+:root[lima-mini] #tabbrowser-tabbox { margin: 44px 6px 6px !important; }
+:root[lima-mini][lima-mini-tabs] #tabbrowser-tabbox { margin-top: 78px !important; }
 #lima-mini-bar {
-  position: fixed; inset: 0 0 auto 0; z-index: 10;
-  display: flex; align-items: center; gap: 12px; height: 40px; padding: 0 8px 0 80px;
-  -moz-window-dragging: drag; color: var(--lima-ink, currentColor); font: 13px/1.2 system-ui;
+  position: fixed; inset: 0 0 auto 0; z-index: 10; display: flex; align-items: center; gap: 8px;
+  height: 44px; padding: 0 8px 0 78px; -moz-window-dragging: drag;
+  color: var(--lima-ink, currentColor); font: 13px/1.2 -apple-system, system-ui, sans-serif;
 }
-.lima-mini-site { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
-.lima-mini-favicon { width: 16px; height: 16px; flex: none; border-radius: 3px; }
-.lima-mini-favicon[hidden] { display: none; }
-.lima-mini-text { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.lima-mini-host { font-weight: 650; white-space: nowrap; }
-.lima-mini-title { color: var(--lima-ink-2, GrayText); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lima-mini-actions { display: flex; gap: 6px; flex: none; -moz-window-dragging: no-drag; }
-.lima-mini-button {
-  appearance: none; height: 26px; padding: 0 11px; border: 1px solid color-mix(in srgb, currentColor 16%, transparent); border-radius: 7px;
-  background: transparent; color: inherit; font: 600 12px/1 system-ui; cursor: default;
+#lima-mini-bar button { -moz-window-dragging: no-drag; }
+.lima-mini-nav, .lima-mini-actions { display: flex; align-items: center; gap: 2px; flex: none; }
+.lima-mini-icon {
+  appearance: none; display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 7px;
+  background: transparent; color: inherit; cursor: default; transition: background-color 120ms ease;
 }
-.lima-mini-button:hover:not(:disabled) { background: color-mix(in srgb, currentColor 8%, transparent); }
-.lima-mini-button.primary { background: var(--lima-ink, #222); border-color: transparent; color: var(--lima-bg, #fff); }
-.lima-mini-button.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--lima-ink, #222) 86%, transparent); }
-.lima-mini-button:disabled { opacity: .45; }
-.lima-mini-button:focus-visible { outline: 2px solid var(--lima-ink, currentColor); outline-offset: 1px; }
+.lima-mini-icon:hover:not(:disabled), .lima-mini-icon[aria-pressed="true"] { background: var(--lima-hover, color-mix(in srgb, currentColor 9%, transparent)); }
+.lima-mini-icon:disabled { opacity: .35; }
+.lima-mini-glyph { display: block; width: 15px; height: 15px; background: currentColor; mask: center / contain no-repeat; }
+.lima-mini-icon[data-flip] .lima-mini-glyph { transform: scaleX(-1); }
+.lima-mini-icon[aria-pressed="true"] .lima-mini-glyph { color: var(--lima-accent, currentColor); }
+/* The site: domain first and bold, path quieter; the whole URL on click. */
+.lima-mini-address {
+  flex: 1; min-width: 0; max-width: 560px; margin: 0 auto; display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px 0 4px;
+  border-radius: 9px; background: var(--lima-hover, color-mix(in srgb, currentColor 7%, transparent)); -moz-window-dragging: no-drag;
+}
+.lima-mini-identity { appearance: none; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--lima-ink-2, GrayText); flex: none; }
+.lima-mini-identity:hover { background: color-mix(in srgb, currentColor 10%, transparent); }
+.lima-mini-identity[data-kind="insecure"] { color: #b4521c; }
+.lima-mini-identity .lima-mini-glyph { width: 13px; height: 13px; }
+.lima-mini-shown { display: flex; align-items: baseline; min-width: 0; flex: 1; cursor: text; white-space: nowrap; overflow: hidden; }
+.lima-mini-host { font-weight: 650; flex: none; }
+.lima-mini-path { color: var(--lima-ink-2, GrayText); overflow: hidden; text-overflow: ellipsis; }
+.lima-mini-shown[hidden], .lima-mini-field[hidden] { display: none; }
+.lima-mini-field { flex: 1; min-width: 0; height: 26px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; outline: none; }
+.lima-mini-address[data-editing] { background: var(--lima-bg, Field); box-shadow: 0 0 0 1px var(--lima-line-strong, GrayText); }
+/* Open in Lima: the primary action, with where-to in its split. */
+.lima-mini-split { display: flex; margin-inline: 4px; }
+.lima-mini-handoff, .lima-mini-handoff-more {
+  appearance: none; height: 28px; border: 0; background: var(--lima-ink, #222); color: var(--lima-bg, #fff); font: 600 12.5px/1 inherit; cursor: default;
+}
+.lima-mini-handoff { padding: 0 11px 0 12px; border-radius: 8px 0 0 8px; }
+.lima-mini-handoff-more { display: grid; place-items: center; width: 24px; padding: 0; border-radius: 0 8px 8px 0; box-shadow: inset 1px 0 0 color-mix(in srgb, var(--lima-bg, #fff) 25%, transparent); }
+.lima-mini-handoff-more .lima-mini-glyph { width: 11px; height: 11px; transform: rotate(90deg); }
+.lima-mini-handoff:hover:not(:disabled), .lima-mini-handoff-more:hover:not(:disabled) { background: color-mix(in srgb, var(--lima-ink, #222) 86%, transparent); }
+.lima-mini-handoff:disabled, .lima-mini-handoff-more:disabled { opacity: .4; }
+#lima-mini-bar :focus-visible { outline: 2px solid var(--lima-accent, currentColor); outline-offset: 1px; }
+/* Temporary tabs, only with more than one page. */
+#lima-mini-tabs {
+  position: fixed; top: 44px; inset-inline: 0; z-index: 10; display: flex; gap: 4px; height: 34px; padding: 2px 8px 4px; overflow-x: auto;
+  scrollbar-width: none; color: var(--lima-ink, currentColor); font: 12px/1.2 -apple-system, system-ui, sans-serif;
+}
+#lima-mini-tabs[hidden] { display: none; }
+.lima-mini-tab { display: flex; align-items: center; gap: 6px; flex: 0 1 200px; min-width: 90px; height: 28px; padding: 0 4px 0 9px; border-radius: 8px; cursor: default; }
+.lima-mini-tab:hover { background: var(--lima-hover, color-mix(in srgb, currentColor 7%, transparent)); }
+.lima-mini-tab[aria-selected="true"] { background: var(--lima-panel, Field); box-shadow: 0 0 0 1px var(--lima-line, transparent); }
+.lima-mini-tab img, .lima-mini-tab > .lima-mini-glyph { width: 14px; height: 14px; flex: none; border-radius: 3px; }
+.lima-mini-tab-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lima-mini-tab-close { appearance: none; display: grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: inherit; opacity: .55; }
+.lima-mini-tab-close:hover { opacity: 1; background: color-mix(in srgb, currentColor 10%, transparent); }
+.lima-mini-tab-close .lima-mini-glyph { width: 9px; height: 9px; }
+/* A short note at the bottom: shortcuts on open, or why it stayed open. */
+#lima-mini-hint {
+  position: fixed; bottom: 16px; left: 50%; z-index: 12; transform: translateX(-50%); padding: 6px 12px; border-radius: 9px;
+  background: color-mix(in srgb, var(--lima-ink, #222) 88%, transparent); color: var(--lima-bg, #fff);
+  font: 500 12px/1.3 -apple-system, system-ui, sans-serif; pointer-events: none; animation: lima-mini-hint 2.6s ease both;
+}
+#lima-mini-hint[hidden] { display: none; }
+@keyframes lima-mini-hint { 0% { opacity: 0; transform: translate(-50%, 6px); } 8%, 85% { opacity: 1; transform: translate(-50%, 0); } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { #lima-mini-hint { animation: none; } }
+
+/* MARK: Copied link (⇧⌘C): a card under the address bar. */
+#lima-copied {
+  position: fixed; top: 52px; left: 50%; z-index: 20; display: flex; align-items: center; gap: 10px;
+  max-width: min(520px, calc(100vw - 40px)); padding: 9px 10px 9px 12px; border: 1px solid var(--lima-line-strong);
+  border-radius: 12px; background: var(--lima-panel); color: var(--lima-ink); box-shadow: 0 10px 30px rgb(0 0 0 / .16);
+  font: 500 12.5px/1.35 -apple-system, system-ui, sans-serif;
+  opacity: 0; transform: translate(-50%, -6px) scale(.97); transition: opacity 160ms ease, transform 220ms cubic-bezier(.16, 1, .3, 1);
+}
+#lima-copied[hidden] { display: none; }
+#lima-copied[data-open] { opacity: 1; transform: translate(-50%, 0) scale(1); }
+.lima-copied-check { flex: none; width: 20px; height: 20px; border-radius: 50%; background: var(--lima-accent, #47966b); position: relative; }
+.lima-copied-check::after {
+  content: ""; position: absolute; left: 6px; top: 4px; width: 5px; height: 9px; border: solid var(--lima-accent-contrast, #fff);
+  border-width: 0 2px 2px 0; transform: rotate(45deg) scale(0); transform-origin: 60% 60%;
+}
+#lima-copied[data-open] .lima-copied-check::after { animation: lima-copied-tick 260ms 80ms cubic-bezier(.16, 1, .3, 1) forwards; }
+@keyframes lima-copied-tick { to { transform: rotate(45deg) scale(1); } }
+.lima-copied-text { display: grid; gap: 1px; min-width: 0; flex: 1; }
+.lima-copied-title { font-weight: 650; }
+.lima-copied-site { display: flex; align-items: center; gap: 5px; min-width: 0; color: var(--lima-ink-2); }
+.lima-copied-link { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lima-copied-icon { width: 14px; height: 14px; flex: none; border-radius: 3px; }
+.lima-copied-actions { display: flex; gap: 6px; flex: none; }
+.lima-copied-button {
+  appearance: none; border: 1px solid var(--lima-line); border-radius: 7px; background: var(--lima-bg); color: var(--lima-ink);
+  padding: 4px 8px; font: inherit; font-size: 11.5px; cursor: default;
+}
+.lima-copied-button:hover { background: var(--lima-hover); }
+.lima-copied-button[hidden] { display: none; }
+@media (prefers-reduced-motion: reduce) { #lima-copied { transition: none; } #lima-copied[data-open] .lima-copied-check::after { animation: none; transform: rotate(45deg); } }
+
+/* MARK: Quick emoji (tap ⌘ twice). */
+#lima-emoji {
+  position: fixed; top: 64px; left: 50%; z-index: 30; display: grid; grid-template-rows: auto 1fr auto; gap: 6px;
+  width: 352px; height: 340px; padding: 10px; border: 1px solid var(--lima-line-strong); border-radius: 14px;
+  background: var(--lima-panel); color: var(--lima-ink); box-shadow: 0 18px 48px rgb(0 0 0 / .2);
+  font: 12px/1.3 -apple-system, system-ui, sans-serif;
+  opacity: 0; transform: translate(-50%, -6px) scale(.97); transition: opacity 140ms ease, transform 200ms cubic-bezier(.16, 1, .3, 1);
+}
+#lima-emoji[hidden] { display: none; }
+#lima-emoji[data-open] { opacity: 1; transform: translate(-50%, 0) scale(1); }
+.lima-emoji-search {
+  appearance: none; height: 30px; padding: 0 10px; border: 1px solid var(--lima-line); border-radius: 8px;
+  background: var(--lima-bg); color: inherit; font: inherit; font-size: 13px; outline: none;
+}
+.lima-emoji-search:focus { border-color: color-mix(in srgb, var(--lima-ink) 30%, var(--lima-line)); }
+.lima-emoji-grid { display: grid; grid-template-columns: repeat(9, 1fr); align-content: start; overflow-y: auto; min-height: 0; scrollbar-width: thin; }
+.lima-emoji-group { grid-column: 1 / -1; padding: 8px 2px 3px; font-size: 10.5px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; color: var(--lima-ink-2); }
+.lima-emoji-cell {
+  appearance: none; display: grid; place-items: center; height: 34px; padding: 0; border: 0; border-radius: 7px;
+  background: transparent; font-size: 21px; line-height: 1; cursor: default;
+}
+.lima-emoji-cell[aria-selected] { background: var(--lima-hover); }
+.lima-emoji-hint { min-height: 15px; padding: 0 2px; color: var(--lima-ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (prefers-reduced-motion: reduce) { #lima-emoji { transition: none; } }
+
+/* A workspace's status, as a dot on its Pip: needs approval (amber),
+   failed (red), finished and unseen (green). Only working Pips move. */
+zen-folder[lima-workspace][lima-status="approval"] > .tab-group-label-container > .tab-group-folder-icon::before { background: var(--lima-warning) !important; }
+zen-folder[lima-workspace][lima-status="failed"] > .tab-group-label-container > .tab-group-folder-icon::before { background: var(--lima-error) !important; }
+zen-folder[lima-workspace][lima-status="done"] > .tab-group-label-container > .tab-group-folder-icon::before {
+  content: ""; position: absolute; inset-block-start: -1px; inset-inline-end: -2px; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--lima-success); box-shadow: 0 0 0 1.5px var(--lima-bg); pointer-events: none;
+}
+zen-folder[lima-workspace]:not([lima-status="working"], [lima-archiving], [lima-ai]) > .tab-group-label-container > .tab-group-folder-icon::after { animation: none !important; }
+
+/* MARK: Pinned sites (Essentials): compact 38-point tiles in one row, their
+   own icons, the page's name on hover, and a quiet background and underline
+   for the one you're on instead of a heavy outline. */
+:root[lima-window] .zen-essentials-container {
+  --min-essentials-width-wrap: 38px;
+  grid-template-columns: repeat(auto-fill, minmax(38px, 1fr)) !important;
+  gap: 4px !important;
+}
+:root[lima-window] .tabbrowser-tab[zen-essential="true"] {
+  --tab-min-height: 34px;
+  min-height: 34px !important;
+  & .tab-background { border-radius: 9px !important; box-shadow: none !important; outline: none !important; }
+  &:not([visuallyselected], [multiselected="true"]) .tab-background { background: transparent !important; }
+  &:not([visuallyselected], [multiselected="true"]):hover .tab-background { background: var(--lima-hover) !important; }
+  &:is([visuallyselected], [multiselected="true"]) .tab-background {
+    background: color-mix(in srgb, var(--lima-ink) 7%, transparent) !important; border: 0 !important;
+  }
+  &[visuallyselected] .tab-stack::after {
+    content: ""; position: absolute; inset-inline: 30%; bottom: 1px; height: 2px; border-radius: 2px; background: var(--lima-ink-2);
+  }
+  & .tab-icon-image, & .tab-icon-stack { width: 18px !important; height: 18px !important; }
+}
+
+/* Scheduled work: a small clock at the foot of the workspace's Pip. */
+zen-folder[lima-workspace][lima-scheduled] > .tab-group-label-container > .tab-group-folder-icon {
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Ccircle cx='6' cy='6' r='5' fill='%23fff' stroke='%23555' stroke-width='1.2'/%3E%3Cpath d='M6 3.4V6l1.8 1.1' fill='none' stroke='%23555' stroke-width='1.2' stroke-linecap='round'/%3E%3C/svg%3E")
+    no-repeat right 1px bottom 2px / 9px 9px !important;
+}
+:root[lima-theme="dark"] zen-folder[lima-workspace][lima-scheduled] > .tab-group-label-container > .tab-group-folder-icon {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Ccircle cx='6' cy='6' r='5' fill='%23222' stroke='%23ccc' stroke-width='1.2'/%3E%3Cpath d='M6 3.4V6l1.8 1.1' fill='none' stroke='%23ccc' stroke-width='1.2' stroke-linecap='round'/%3E%3C/svg%3E") !important;
+}

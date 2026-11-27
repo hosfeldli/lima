@@ -198,7 +198,7 @@ const compiled = COMPILED;
       win.gBrowser.setIcon(sleeping, "resource://lima-ui/icons/note.svg");
       const loaded = win.gBrowser.addTab("about:lima?view=notes", { triggeringPrincipal: principal, inBackground: true });
       // Wait for the page's own icon (a slow machine briefly shows Lima's mark first).
-      for (let i = 0; i < 100 && !/lima-ui\/icons\//.test(loaded.getAttribute("image") ?? ""); i++) await new Promise(resolve => win.setTimeout(resolve, 100));
+      for (let i = 0; i < 100 && !/lima-ui\\/icons\\//.test(loaded.getAttribute("image") ?? ""); i++) await new Promise(resolve => win.setTimeout(resolve, 100));
       const filter = tab => win.getComputedStyle(tab.querySelector(".tab-icon-image")).filter;
       const result = { sleeping: filter(sleeping), loaded: filter(loaded), image: loaded.getAttribute("image") };
       // Lima's mark, shown before a page sets its icon, turns light as well.
@@ -234,6 +234,25 @@ const compiled = COMPILED;
         css.includes("#tads") && css.includes(":not(:has(#rso") && guarded) || { css, guarded };
     })(),
     addressBar: window.limaAddressBar === true || "not installed",
+    // Memory: an idle background tab is unloaded; the selected one, or one
+    // playing sound, never is.
+    idleTabsUnload: await (async () => {
+      const { canUnload } = ChromeUtils.importESModule("resource://lima/LimaMemory.sys.mjs");
+      const idle = gBrowser.addTab("data:text/html,<title>Idle</title>idle", { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(), inBackground: true });
+      for (let i = 0; i < 50 && (idle.linkedBrowser.currentURI.spec === "about:blank" || idle.hasAttribute("busy")); i++) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      idle.updateLastAccessed(Date.now() - 3600_000);
+      const before = canUnload(idle, { after: 30 * 60_000 });
+      const selected = canUnload(gBrowser.selectedTab, { after: 1 });
+      idle.setAttribute("soundplaying", "true");
+      const playing = canUnload(idle, { after: 30 * 60_000 });
+      idle.removeAttribute("soundplaying");
+      window.limaMemorySweep?.();
+      const unloaded = idle.hasAttribute("pending") || !idle.linkedPanel;
+      gBrowser.removeTab(idle);
+      return (before && !selected && !playing && unloaded) || { before, selected, playing, unloaded, installed: !!window.limaMemorySweep };
+    })(),
     // Right-click menus: a short sidebar menu (with New Folder), and the tab
     // menu grouped with the rest under More.
     menus: (() => {
@@ -318,8 +337,11 @@ const done = arguments[arguments.length - 1];
     id: chat.id, role: "assistant",
     text: "```lima-report\\n" + JSON.stringify({ status: "completed", summary: "Smoke report", verification: ["Local fixture"] }) + "\\n```",
   });
+  const image = await LimaBridge.request("notes.attachment.put", {
+    data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC",
+  });
   const note = await LimaBridge.request("notes.create", { title: "Smoke notebook", markdown:
-    "A zebra thermos\\n\\n```calculator\\n" + JSON.stringify({
+    `A zebra thermos\\n\\n![Smoke attachment](lima-attachment:${image.id})\\n\\n` + "```calculator\\n" + JSON.stringify({
       title: "Quantities", inputs: [{ id: "n", label: "Amount", value: 4 }], rows: [{ label: "Total", value: "n * 2" }],
     }) + "\\n```",
   });
@@ -361,21 +383,33 @@ MINI = """
 const done = arguments[arguments.length - 1];
 (async () => {
   const windows = () => [...Services.wm.getEnumerator("navigator:browser")];
+  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const main = windows().find(win => !win.limaMini);
   const before = main.gBrowser.tabs.length;
-  main.browserDOMWindow.openURI(Services.io.newURI("https://example.com/from-mail"), null, Ci.nsIBrowserDOMWindow.OPEN_NEWTAB,
+  const external = url => main.browserDOMWindow.openURI(Services.io.newURI(url), null, Ci.nsIBrowserDOMWindow.OPEN_NEWTAB,
     Ci.nsIBrowserDOMWindow.OPEN_EXTERNAL, Services.scriptSecurityManager.getSystemPrincipal());
+  external("https://example.com/from-mail");
   let mini;
-  for (let i = 0; i < 60 && !(mini = windows().find(win => win.limaMini && win.document.getElementById("lima-mini-bar"))); i++) {
-    await new Promise(resolve => main.setTimeout(resolve, 100));
-  }
+  for (let i = 0; i < 60 && !(mini = windows().find(win => win.limaMini && win.document.getElementById("lima-mini-bar"))); i++) await wait(100);
   if (!mini) return { opened: false };
-  const result = { opened: true, sidebarHidden: mini.getComputedStyle(mini.document.getElementById("navigator-toolbox")).display === "none",
-    mainUntouched: main.gBrowser.tabs.length === before };
-  for (let i = 0; i < 40 && mini.document.querySelector(".lima-mini-button.primary").disabled; i++) await new Promise(r => main.setTimeout(r, 100));
-  mini.document.querySelector(".lima-mini-button.primary").click();
-  for (let i = 0; i < 40 && !mini.closed; i++) await new Promise(resolve => main.setTimeout(resolve, 100));
-  result.moved = mini.closed && main.gBrowser.tabs.length === before + 1;
+  const doc = mini.document;
+  const result = { opened: true, sidebarHidden: mini.getComputedStyle(doc.getElementById("navigator-toolbox")).display === "none",
+    mainUntouched: main.gBrowser.tabs.length === before, toolbar: doc.getElementById("lima-mini-bar").getBoundingClientRect().height <= 48,
+    compact: mini.outerWidth <= 980 && mini.outerHeight <= 740 };
+  for (let i = 0; i < 40 && doc.querySelector(".lima-mini-host").textContent !== "example.com"; i++) await wait(100);
+  result.domain = doc.querySelector(".lima-mini-host").textContent === "example.com";
+  // A second link reuses this Mini Lima, as a temporary tab with a strip.
+  mini.limaMiniState.dirty = true;
+  external("https://example.org/second");
+  for (let i = 0; i < 40 && mini.gBrowser.tabs.length < 2; i++) await wait(100);
+  result.reused = windows().filter(win => win.limaMini).length === 1 && mini.gBrowser.tabs.length === 2;
+  await wait(200);
+  result.strip = !doc.getElementById("lima-mini-tabs").hidden;
+  // Open in Lima hands both pages over, live, and the window closes.
+  for (let i = 0; i < 40 && doc.querySelector(".lima-mini-handoff").disabled; i++) await wait(100);
+  doc.querySelector(".lima-mini-handoff").click();
+  for (let i = 0; i < 40 && !mini.closed; i++) await wait(100);
+  result.moved = mini.closed && main.gBrowser.tabs.length === before + 2;
   return Object.values(result).every(Boolean) || result;
 })().then(done, error => done({ error: String(error) }));
 """
@@ -430,6 +464,37 @@ def verify_browser(connection, compiled):
         checks[f"{kind}A11y"] = not problems
         if problems:
             print(f"{kind} accessibility: {problems}", file=sys.stderr)
+        if kind == "note" and ready:
+            checks["noteAttachment"] = run_script(send, "content", """
+              const done = arguments[arguments.length - 1];
+              const image = document.querySelector('img[alt="Smoke attachment"]');
+              if (!image) done(false);
+              else if (image.naturalWidth) done(image.src.startsWith("blob:"));
+              else {
+                image.addEventListener("load", () => done(image.src.startsWith("blob:")), { once: true });
+                image.addEventListener("error", () => done(false), { once: true });
+                setTimeout(() => done(false), 2000);
+              }
+            """)
+        if kind == "chat" and ready:
+            reply = "Routed live smoke reply"
+            delivered = run_script(send, "chrome", """
+              const done = arguments[arguments.length - 1];
+              const { LimaBridge } = ChromeUtils.importESModule("resource://lima/LimaBridge.sys.mjs");
+              LimaBridge.request("chat.record", { id: arguments[0], role: "assistant", text: arguments[1] })
+                .then(() => done(true), () => done(false));
+            """, [setup["chat"], reply])
+            checks["liveChatUpdate"] = delivered and run_script(send, "content", """
+              const done = arguments[arguments.length - 1];
+              const expected = arguments[0];
+              let tries = 0;
+              const verify = () => {
+                if (document.body.textContent.includes(expected)) done(true);
+                else if (++tries < 20) setTimeout(verify, 100);
+                else done(false);
+              };
+              verify();
+            """, [reply])
     # Mini Lima: a link from another app opens in a small window, and Open in Lima moves it home.
     checks["miniLima"] = run_script(send, "chrome", MINI)
     run_script(send, "chrome", """

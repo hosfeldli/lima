@@ -432,6 +432,8 @@ private func archivedText(_ archive: URL, _ entry: String) throws -> String {
     defer { try? FileManager.default.removeItem(at: dir) }
     let id = try #require(await call(runtime, "workspace.create", ["name": .string("Cooking")]).result?["id"]?.stringValue)
     #expect(await call(runtime, "workspace.rename", ["id": .string(id), "name": .string("Kitchen Lab")]).error == nil)
+    // The first runtime finishes its background writes before the "restart".
+    try await Task.sleep(nanoseconds: 600_000_000)
     let reopened = try await Runtime.open(paths: RuntimePaths(data: dir, socket: dir.appendingPathComponent("s2").path, lock: dir.appendingPathComponent("l2").path))
     let listed = await call(reopened, "workspace.get", ["id": .string(id)])
     #expect(listed.result?["name"]?.stringValue == "Kitchen Lab", "\(String(describing: listed.error))")

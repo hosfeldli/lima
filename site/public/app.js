@@ -223,6 +223,43 @@
     }
   }
 
+  /* The tour: the step in the middle of the screen sets the scene, which
+     plays once at its own pace (scroll only chooses which). On phones each
+     step carries its own copy of its scene. */
+  const tour = $(".tour");
+  if (tour) {
+    const stage = $(".tour-stage", tour);
+    const steps = $$(".tour-step", tour);
+    const play = (node, scene) => {
+      if (node.dataset.scene === scene && node.hasAttribute("data-play")) return;
+      node.dataset.scene = scene;
+      node.toggleAttribute("data-play", false);
+      void node.offsetWidth; // restarts this scene's one-time animations
+      node.toggleAttribute("data-play", true);
+    };
+    for (const step of steps) {
+      const inline = stage.cloneNode(true);
+      inline.classList.add("inline");
+      inline.dataset.scene = step.dataset.scene;
+      step.prepend(inline);
+    }
+    const setActive = step => {
+      for (const other of steps) other.classList.toggle("is-active", other === step);
+      play(stage, step.dataset.scene);
+    };
+    if ("IntersectionObserver" in window) {
+      const pick = new IntersectionObserver(entries => {
+        for (const entry of entries) if (entry.isIntersecting) setActive(entry.target);
+      }, { rootMargin: "-45% 0px -45% 0px" });
+      for (const step of steps) pick.observe(step);
+      const inlinePlay = new IntersectionObserver(entries => {
+        for (const entry of entries) if (entry.isIntersecting) play(entry.target, entry.target.dataset.scene);
+      }, { threshold: .5 });
+      for (const inline of $$(".tour-stage.inline", tour)) inlinePlay.observe(inline);
+    }
+    setActive(steps[0]);
+  }
+
   /* Sections ease in as they arrive (content stays visible without JS). */
   if (!reduced && "IntersectionObserver" in window) {
     document.documentElement.classList.add("reveal-ready");

@@ -252,7 +252,18 @@ enum WorldClock {
 }
 
 enum EmojiCatalog {
-    struct Entry { var emoji: String; var name: String }
+    struct Entry { var emoji: String; var name: String; var group: String = "" }
+
+    /// Every emoji in its group, skin-tone variants left out, for the picker.
+    static var groups: JSONValue {
+        var order: [String] = []
+        var byGroup: [String: [JSONValue]] = [:]
+        for entry in all where !entry.name.contains("skin tone") {
+            if byGroup[entry.group] == nil { order.append(entry.group) }
+            byGroup[entry.group, default: []].append(.array([.string(entry.emoji), .string(entry.name)]))
+        }
+        return .array(order.filter { $0 != "Component" }.map { .object(["name": .string($0), "emoji": .array(byGroup[$0] ?? [])]) })
+    }
 
     static let all: [Entry] = {
         // Inside Lima.app: Contents/Resources/lima-runtime; in development: the SwiftPM bundle.
@@ -260,12 +271,14 @@ enum EmojiCatalog {
         let packaged = executable.deletingLastPathComponent().appendingPathComponent("../Resources/lima-runtime/emoji-test.txt").standardizedFileURL
         let url = FileManager.default.fileExists(atPath: packaged.path) ? packaged : Bundle.module.url(forResource: "emoji-test", withExtension: "txt")
         guard let url, let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        var group = ""
         return text.split(separator: "\n").compactMap { line in
+            if line.hasPrefix("# group:") { group = line.dropFirst(8).trimmingCharacters(in: .whitespaces); return nil }
             guard line.contains("; fully-qualified"), let hash = line.firstIndex(of: "#") else { return nil }
             let tail = line[line.index(after: hash)...].trimmingCharacters(in: .whitespaces)
             let parts = tail.split(separator: " ", maxSplits: 2)
             guard parts.count == 3 else { return nil }
-            return Entry(emoji: String(parts[0]), name: String(parts[2]))
+            return Entry(emoji: String(parts[0]), name: String(parts[2]), group: group)
         }
     }()
 

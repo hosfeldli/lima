@@ -126,8 +126,17 @@ public enum Daemon {
         idleTimer.schedule(deadline: .now() + 60, repeating: 60)
         idleTimer.setEventHandler {
             Task {
+                // A runtime whose data folder is gone (a test's temporary
+                // copy) has nothing left to serve.
+                if !FileManager.default.fileExists(atPath: paths.data.path) {
+                    FileHandle.standardError.write(Data("lima-host: data folder removed; stopping the runtime\n".utf8))
+                    exit(0)
+                }
                 let working = await runtime.conversations.list().contains { $0.running }
-                let keep = runtime.hasBrowserClients || working || BackgroundAgent.status().installed
+                // Background mode keeps only the runtime it serves (Lima's own
+                // data folder) running, not test or preview copies.
+                let background = ProcessInfo.processInfo.environment["LIMA_DATA_DIR"] == nil && BackgroundAgent.status().installed
+                let keep = runtime.hasBrowserClients || working || background
                     || ProcessInfo.processInfo.environment["LIMA_KEEP_DAEMON"] != nil
                 guard idle.tick(busy: keep) else { return }
                 FileHandle.standardError.write(Data("lima-host: idle with no Lima window; stopping the runtime\n".utf8))

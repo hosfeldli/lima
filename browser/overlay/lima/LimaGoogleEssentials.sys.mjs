@@ -33,7 +33,8 @@ export function googleEssentialTabs(win) {
 }
 
 export async function refreshGoogleEssentials(win, retained) {
-  const tabs = matchingTabs(win);
+  // One tab per service stays loaded for its unread count, not every copy.
+  const tabs = Object.values(googleEssentialTabs(win));
   const owned = new Set(tabs.map(({ tab }) => tab));
   for (const tab of retained) {
     if (owned.has(tab)) continue;

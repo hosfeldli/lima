@@ -172,3 +172,38 @@ func openRuntime() async throws -> (Runtime, URL) {
     #expect(models[0].efforts?.map(\.id) == ["low", "medium", "xhigh", "max"] && models[0].defaultEffort == "medium")
     #expect(models[0].efforts?[2].label == "Extra high" && models[2].efforts == [])
 }
+
+@Test func messagesReadsRecentTextsOnlyWhenTurnedOn() async throws {
+    let (runtime, dir) = try await openRuntime()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    // A small stand-in for ~/Library/Messages/chat.db.
+    let db = dir.appendingPathComponent("chat.db")
+    let schema = """
+    CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, chat_identifier TEXT, display_name TEXT);
+    CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+    CREATE TABLE message (ROWID INTEGER PRIMARY KEY, text TEXT, attributedBody BLOB, is_from_me INTEGER, date INTEGER, handle_id INTEGER, associated_message_type INTEGER DEFAULT 0);
+    CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
+    INSERT INTO chat VALUES (1, '+15551234567', ''), (2, 'chat99', 'Family');
+    INSERT INTO handle VALUES (1, '+15551234567'), (2, 'mom@example.com');
+    INSERT INTO message VALUES (1, 'Dinner at 7?', NULL, 0, 790000000000000000, 1, 0), (2, 'Sounds good', NULL, 1, 790000100000000000, 0, 0),
+                               (3, 'Love you all', NULL, 0, 790000200000000000, 2, 0), (4, 'Loved “Dinner”', NULL, 0, 790000300000000000, 1, 2000);
+    INSERT INTO chat_message_join VALUES (1, 1), (1, 2), (2, 3), (1, 4);
+    """
+    let sqlite = Process()
+    sqlite.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+    sqlite.arguments = [db.path, schema]
+    try sqlite.run(); sqlite.waitUntilExit()
+    MessagesStore.databaseOverride = db
+    defer { MessagesStore.databaseOverride = nil }
+
+    #expect(await call(runtime, "messages.recent").error?.code == .notAuthorized, "off until the user turns it on")
+    let settings = await call(runtime, "messages.settings", ["enabled": .bool(true)])
+    #expect(settings.result?["enabled"]?.boolValue == true && settings.result?["fullDiskAccess"]?.boolValue == true)
+    let recent = try #require(await call(runtime, "messages.recent").result?.arrayValue)
+    #expect(recent.map { $0["text"]?.stringValue } == ["Love you all", "Sounds good", "Dinner at 7?"], "newest first, reactions left out")
+    #expect(recent[1]["from"]?.stringValue == "me" && recent[0]["chat"]?.stringValue == "Family")
+    let one = try #require(await call(runtime, "messages.recent", ["chat": .string("5551234567")]).result?.arrayValue)
+    #expect(one.count == 2)
+    #expect(MessagesStore.validRecipient("+1 (555) 123-4567") == "+15551234567" && MessagesStore.validRecipient("a@b.co") == "a@b.co")
+    #expect(MessagesStore.validRecipient("tell application \"Finder\"") == nil)
+}

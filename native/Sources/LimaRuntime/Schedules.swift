@@ -244,6 +244,9 @@ public struct ScheduledTask: Codable, Sendable, Equatable {
     public var provider: String?
     public var model: String?
     public var mascot: String?
+    /// Permissions the user approved when scheduling: granted to each run
+    /// (as workspace_request_permissions items), so it needn't wait for them.
+    public var preApprovals: JSONValue? = nil
     public var paused: Bool = false
     public var createdAt: Double
     public var updatedAt: Double
@@ -297,17 +300,19 @@ public actor ScheduleService {
     }
 
     public func create(title: String, instruction: String, schedule: TaskSchedule, workspaceID: String?, workspaceName: String?,
-                       provider: String?, model: String?, mascot: String?, createdBy: String, now: Date = Date()) async throws -> ScheduledTask {
+                       provider: String?, model: String?, mascot: String?, createdBy: String, preApprovals: JSONValue? = nil,
+                       now: Date = Date()) async throws -> ScheduledTask {
         let instruction = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !instruction.isEmpty else { throw BridgeError(.badRequest, "Say what the scheduled task should do.") }
         guard let next = schedule.next(after: now) else { throw BridgeError(.badRequest, "That schedule never comes due. Pick a future time.") }
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let stamp = (now.timeIntervalSince1970 * 1000).rounded()
-        let task = ScheduledTask(id: UUID().uuidString, title: String((cleanTitle.isEmpty ? Runtime.taskTitle(instruction) : cleanTitle).prefix(80)),
+        var task = ScheduledTask(id: UUID().uuidString, title: String((cleanTitle.isEmpty ? Runtime.taskTitle(instruction) : cleanTitle).prefix(80)),
                                  instruction: String(instruction.prefix(8000)), schedule: schedule, workspaceID: workspaceID,
                                  workspaceName: workspaceName.map { String($0.prefix(60)) }, provider: provider, model: model, mascot: mascot,
                                  createdAt: stamp, updatedAt: stamp, nextRunAt: (next.timeIntervalSince1970 * 1000).rounded(),
                                  createdBy: createdBy)
+        task.preApprovals = preApprovals
         try await save(task)
         return task
     }
@@ -422,15 +427,28 @@ extension Runtime {
         let timing = manual ? "The user asked to run it now, ahead of schedule."
             : late ? "It was due \(task.schedule.dateLabel(Date(timeIntervalSince1970: run.due / 1000))), but Lima wasn't running then, so it is starting late. Say so in your report."
             : "It is due now."
+        let approved = (task.preApprovals).flatMap { try? WorkspacePrompts.preflightItems($0) } ?? []
+        let granted = approved.filter { !$0.askAnyway }
+        let preapproved = granted.isEmpty ? "" : """
+
+
+        The user approved these in advance for every run of this task (valid 4 hours). Pass an item's id as grant to workspace_request_approval when you reach it; browser steps inside an approved site, paths and actions go ahead without asking:
+        \(granted.map { "- \($0.id): \($0.request)\($0.url.map { " (\($0))" } ?? "")" }.joined(separator: "\n"))
+        """
         let request = """
         Scheduled task “\(task.title)” (\(task.schedule.summary)). \(timing)
 
         \(task.instruction)
 
-        Carry it out now and report what you did. Ask the user only for a step that needs them.
+        Carry it out now and report what you did. Ask the user only for a step that needs them.\(preapproved)
         """
         do {
             let workspace = try await handoffWorkspace(.object(params), text: request)
+            if !granted.isEmpty {
+                let family = await familyRoot(workspace.id)
+                await workspacePrompts.addGrants(granted, family: family)
+                broadcast("workspace.permissionsChanged", .object(["family": .string(family)]))
+            }
             let record = try await Self.bridged {
                 try await self.orchestrator.submit(requestID: "schedule:\(task.id):\(Int(run.at))", title: task.title, request: request,
                                                    workspaceID: workspace.id, context: ["Scheduled · \(task.schedule.summary)"])
@@ -497,9 +515,22 @@ extension Runtime {
                 let workspace = try await self.workspaces.get(workspaceID)
                 guard workspace.parentID == nil else { throw BridgeError(.badRequest, "Schedule work in a top-level workspace.") }
             }
+            // Approvals given up front for every run; the user gives them in
+            // Lima (an agent's schedule card lists them, and asks).
+            var preApprovals: JSONValue? = nil
+            if let items = params?["preApprovals"], let list = items.arrayValue, !list.isEmpty {
+                let grants = try WorkspacePrompts.preflightItems(items)
+                if context.origin != .browser {
+                    try await self.approveAction(context, question: "Approve these for every run of the scheduled task?",
+                        facts: grants.map { .init(label: $0.kind == .login ? "Sign in" : $0.kind == .browser ? "Use site" : "Allow", value: [$0.request, $0.url].compactMap { $0 }.joined(separator: " · ")) },
+                        detail: "Each run gets these without asking. Payments and other irreversible steps still ask.", risk: "schedule")
+                }
+                preApprovals = .array(Array(list.prefix(8)))
+            }
             let task = try await self.schedules.create(title: title, instruction: instruction, schedule: schedule, workspaceID: workspaceID,
                 workspaceName: params.optionalString("workspaceName"), provider: params.optionalString("provider"),
-                model: params.optionalString("model"), mascot: params.optionalString("mascot"), createdBy: createdBy)
+                model: params.optionalString("model"), mascot: params.optionalString("mascot"), createdBy: createdBy,
+                preApprovals: preApprovals)
             return task.publicView
         }
 

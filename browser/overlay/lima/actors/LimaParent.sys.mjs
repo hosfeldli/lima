@@ -1,6 +1,8 @@
 /* Parent half of the about:lima bridge. Requests are limited to the
  * runtime namespaces the Lima UI needs; host lifecycle is never exposed. */
 
+import { chatAudience, chatPageEvent, chatSummary } from "resource://lima/LimaPageEvents.sys.mjs";
+
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.sys.mjs",
@@ -52,9 +54,15 @@ let unsubscribe = null;
 function ensureEventPump() {
   if (unsubscribe) return;
   unsubscribe = lazy.LimaBridge.onEvent(message => {
+    const chatEvent = message.event === "chat.updated" || message.event === "chat.delta";
+    let summary;
     for (const actor of actors) {
       try {
-        actor.sendAsyncMessage("event", message);
+        const delivery = chatEvent
+          ? chatPageEvent(message, actor.chatAudience(), message.event === "chat.updated"
+            ? (summary ??= { event: "chat.updated", data: chatSummary(message.data ?? {}) }) : null)
+          : message;
+        if (delivery) actor.sendAsyncMessage("event", delivery);
       } catch {
         actors.delete(actor);
       }
@@ -65,7 +73,7 @@ function ensureEventPump() {
   lazy.LimaVisualActivity.subscribe(data => {
     for (const actor of actors) {
       const win = actor.browsingContext?.topChromeWindow;
-      if (win && !lazy.PrivateBrowsingUtils.isWindowPrivate(win)) {
+      if (actor.watchesVisualActivity && win && !lazy.PrivateBrowsingUtils.isWindowPrivate(win)) {
         try { actor.sendAsyncMessage("event", { event: "ui.visualActivity", data }); }
         catch { actors.delete(actor); }
       }
@@ -85,6 +93,20 @@ export function broadcastToLimaPages(event, data = null) {
 }
 
 export class LimaParent extends JSWindowActorParent {
+  #mountedChat;
+  #pageURI;
+  #chatAudience;
+  watchesVisualActivity = false;
+
+  chatAudience() {
+    const uri = this.manager?.documentURI?.spec ?? this.browsingContext?.currentWindowGlobal?.documentURI?.spec ?? "";
+    if (!this.#chatAudience || this.#pageURI !== uri) {
+      this.#pageURI = uri;
+      this.#chatAudience = chatAudience(uri, this.#mountedChat);
+    }
+    return this.#chatAudience;
+  }
+
   actorCreated() {
     actors.add(this);
     ensureEventPump();
@@ -166,8 +188,14 @@ export class LimaParent extends JSWindowActorParent {
         if (kind === "locationCheck") return lazy.approximateLocation(win);
         return openPrivacyPane("location", "Privacy_LocationServices");
       }
+      case "watchChat":
+        this.#mountedChat = typeof payload?.id === "string" ? payload.id : undefined;
+        this.#chatAudience = undefined;
+        return null;
       case "visualActivity":
-        return lazy.PrivateBrowsingUtils.isWindowPrivate(win) ? null : lazy.LimaVisualActivity.snapshot;
+        if (lazy.PrivateBrowsingUtils.isWindowPrivate(win)) return null;
+        this.watchesVisualActivity = true;
+        return lazy.LimaVisualActivity.snapshot;
       case "finishWelcome": {
         if (lazy.PrivateBrowsingUtils.isWindowPrivate(win) || browser?.currentURI?.spec !== "about:lima?view=welcome") return null;
         const { LimaWelcome } = ChromeUtils.importESModule("resource://lima/LimaWelcome.sys.mjs");
@@ -237,14 +265,17 @@ export class LimaParent extends JSWindowActorParent {
         const principal = Services.scriptSecurityManager.getSystemPrincipal();
         if (win.gZenGlanceManager?.openGlance) {
           const rect = win.gBrowser.selectedBrowser.getBoundingClientRect();
+          // Zen names the point clientX/clientY; a zero size skips its
+          // element snapshot (there's no element to grow from), which with a
+          // size left the opening animation waiting and the page invisible.
           win.gZenGlanceManager.openGlance({ url, triggeringPrincipal: principal,
-            x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, width: 10, height: 10 });
+            clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2, width: 0, height: 0 });
         } else win.gBrowser.addTab(url, { triggeringPrincipal: principal, inBackground: false });
         return null;
       }
       // Browsing preferences set from Settings: tab size and search-result cleanup.
       case "browsingPrefs": {
-        const ints = { tabHeight: ["lima.tabs.height", 22, 40, 26] };
+        const ints = { tabHeight: ["lima.tabs.height", 22, 40, 26], unloadAfter: ["lima.tabs.unloadAfterMinutes", 0, 1440, 30] };
         const bools = { hideSearchAI: ["lima.search.hideAI", true], hideSearchAds: ["lima.search.hideAds", true],
           searchAsAddressBar: ["lima.search.replaceAddressBar", true], hideShorts: ["lima.youtube.hideShorts", true] };
         const { key, value } = payload ?? {};
@@ -283,6 +314,47 @@ export class LimaParent extends JSWindowActorParent {
       case "miniLinksChanged": {
         if (!lazy.PrivateBrowsingUtils.isWindowPrivate(win)) Services.prefs.setBoolPref("lima.mini.externalLinks", payload?.value === true);
         return null;
+      }
+      case "miniInfo": {
+        const { PREFS, shortcutLabel } = ChromeUtils.importESModule("resource://lima/LimaMini.sys.mjs");
+        return { lastClosed: Services.prefs.getStringPref(PREFS.lastClosed, "") || null, shortcut: shortcutLabel() };
+      }
+      // Mini Lima's settings (Settings → General → Mini Lima).
+      case "miniPrefs": {
+        const { PREFS, shortcutLabel } = ChromeUtils.importESModule("resource://lima/LimaMini.sys.mjs");
+        const bools = ["external", "reuse", "rememberSize", "pinned", "restoreFocus", "hints"];
+        const { key, value } = payload ?? {};
+        const writable = !lazy.PrivateBrowsingUtils.isWindowPrivate(win) && isSettingsPage(browser);
+        if (key && writable) {
+          if (bools.includes(key) && typeof value === "boolean") Services.prefs.setBoolPref(PREFS[key], value);
+          if (key === "outside" && ["dismiss", "keep"].includes(value)) Services.prefs.setStringPref(PREFS.outside, value);
+          // A shortcut needs ⌘ or ⌃ and a letter, digit or space.
+          if (key === "shortcut" && /^(?:(?:ctrl|alt|shift|meta)\+){1,4}(?:Key[A-Z]|Digit[0-9]|Space)$/.test(value) && /\b(meta|ctrl)\+/.test(value)) {
+            Services.prefs.setStringPref(PREFS.shortcut, value);
+          }
+          if (key === "siteRules" && Array.isArray(value)) {
+            const hosts = value.map(host => String(host).trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, ""))
+              .filter(host => /^[a-z0-9.-]+\.[a-z]{2,}$/.test(host));
+            Services.prefs.setStringPref(PREFS.siteRules, JSON.stringify([...new Set(hosts)].slice(0, 100)));
+          }
+          if (key === "appRule" && value?.bundleId && ["mini", "main", null].includes(value.open)) {
+            let rules = {};
+            try { rules = JSON.parse(Services.prefs.getStringPref(PREFS.appRules, "{}")); } catch {}
+            if (value.open) rules[String(value.bundleId).slice(0, 200)] = { name: String(value.name ?? value.bundleId).slice(0, 80), open: value.open };
+            else delete rules[value.bundleId];
+            Services.prefs.setStringPref(PREFS.appRules, JSON.stringify(rules));
+          }
+          if (key === "restoreDefaults") for (const name of Object.values(PREFS)) if (name !== PREFS.lastClosed) Services.prefs.clearUserPref(name);
+        }
+        const json = (pref, fallback) => { try { return JSON.parse(Services.prefs.getStringPref(pref, "")); } catch { return fallback; } };
+        return {
+          external: Services.prefs.getBoolPref(PREFS.external, true), reuse: Services.prefs.getBoolPref(PREFS.reuse, true),
+          rememberSize: Services.prefs.getBoolPref(PREFS.rememberSize, true), pinned: Services.prefs.getBoolPref(PREFS.pinned, false),
+          restoreFocus: Services.prefs.getBoolPref(PREFS.restoreFocus, true), hints: Services.prefs.getBoolPref(PREFS.hints, true),
+          outside: Services.prefs.getStringPref(PREFS.outside, "dismiss"),
+          shortcut: Services.prefs.getStringPref(PREFS.shortcut, "alt+meta+KeyN"), shortcutLabel: shortcutLabel(),
+          siteRules: json(PREFS.siteRules, []), appRules: json(PREFS.appRules, {}),
+        };
       }
       case "miniSearch": {
         if (!browser?.currentURI?.spec.startsWith("about:lima?view=mini")) throw new Error("Search from Mini Lima.");

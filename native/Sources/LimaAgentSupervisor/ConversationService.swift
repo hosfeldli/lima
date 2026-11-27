@@ -26,6 +26,10 @@ public struct ChatMessage: Codable, Equatable, Sendable {
     var recovered: Bool? = nil
     /// Files this reply changed outside the chat's working folder.
     public var outside: [String]? = nil
+    /// Out of usage or credit: when Lima retries this reply by itself (ms
+    /// since 1970), and how many automatic retries came before it.
+    public var retryAt: Double? = nil
+    public var autoRetries: Int? = nil
 }
 
 /// How far one run may go before Lima stops it and says so.
@@ -189,6 +193,11 @@ public actor ConversationService {
     public typealias Failover = @Sendable (_ failed: CLIProvider, _ tried: Set<CLIProvider>) async -> CLIProvider?
     private var failover: Failover?
     private var tried: [String: Set<CLIProvider>] = [:] // conversationID → providers that hit a limit this turn
+    /// How long to wait before the nth automatic retry when the provider
+    /// didn't say when its limit resets (seconds): 15 min, doubling to 2 h.
+    private var autoRetryDelay: @Sendable (Int) -> Double = { attempt in min(900 * pow(2, Double(attempt)), 7200) }
+    public static let maxAutoRetries = 12
+    public func setAutoRetryDelay(_ delay: @escaping @Sendable (Int) -> Double) { autoRetryDelay = delay }
 
     public private(set) var limits = RunLimits()
     public func setLimits(_ limits: RunLimits) { self.limits = limits }
@@ -219,6 +228,11 @@ public actor ConversationService {
             }
             conversations[conversation.id] = conversation
         }
+        // Replies waiting out a usage limit keep their retry across restarts.
+        let waiting = conversations.values.flatMap { conversation in
+            conversation.messages.compactMap { message in message.retryAt.map { (conversation.id, message.id, $0) } }
+        }
+        if !waiting.isEmpty { Task { for (id, reply, at) in waiting { await self.scheduleAutoRetry(id, replyID: reply, at: at) } } }
     }
 
     public func list() -> [ConversationSummary] {
@@ -417,6 +431,36 @@ public actor ConversationService {
         return conversation
     }
 
+    private func scheduleAutoRetry(_ id: String, replyID: String, at: Double) {
+        Task {
+            let delay = max(at / 1000 - Date().timeIntervalSince1970, 0)
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            await self.autoRetry(id, replyID: replyID, at: at)
+        }
+    }
+
+    /// Runs a scheduled retry, unless the reply was retried, edited, deleted
+    /// or a new turn started meanwhile; a busy chat tries again shortly.
+    private func autoRetry(_ id: String, replyID: String, at: Double) async {
+        guard let conversation = conversations[id],
+              let reply = conversation.messages.first(where: { $0.id == replyID }),
+              reply.status == .failed, let scheduled = reply.retryAt, abs(scheduled - at) < 1000 else { return }
+        guard running[id] == nil, conversation.messages.last(where: { $0.role == .assistant })?.id == replyID else {
+            if running[id] != nil { scheduleAutoRetry(id, replyID: replyID, at: (Date().timeIntervalSince1970 + 60) * 1000) }
+            return
+        }
+        _ = try? await retry(id, assistantMessageID: replyID)
+    }
+
+    /// Stops an automatic retry; the reply stays failed for a manual retry.
+    public func cancelAutoRetry(_ id: String, messageID: String) async throws -> Conversation {
+        var conversation = try get(id)
+        guard let index = conversation.messages.firstIndex(where: { $0.id == messageID }) else { throw ConversationError.messageNotFound(messageID) }
+        conversation.messages[index].retryAt = nil
+        try await save(conversation)
+        return conversation
+    }
+
     /// Retry the turn that produced a failed assistant message.
     public func retry(_ id: String, assistantMessageID: String) async throws -> Conversation {
         let conversation = try get(id)
@@ -573,6 +617,7 @@ public actor ConversationService {
         reply.provider = provider
         reply.model = model
         reply.effort = effort
+        reply.autoRetries = retrying?.retryAt != nil ? retrying?.autoRetries : nil
         if recovered { reply.recovered = true }
         conversation.messages.insert(reply, at: userIndex + 1)
         activeReply[id] = reply.id
@@ -732,6 +777,19 @@ public actor ConversationService {
             }
             conversation.messages[index].status = .failed
             conversation.messages[index].error = failure
+            // Out of usage or credit with no other provider to switch to:
+            // Lima retries by itself when the limit resets (or, when the
+            // provider doesn't say, after a growing wait).
+            if failure.kind == .rateLimited, reply.text.isEmpty {
+                let attempt = (reply.autoRetries ?? -1) + 1
+                if attempt < Self.maxAutoRetries {
+                    let wait = failure.resetsAt.map { max($0 - Date().timeIntervalSince1970, 0) + 30 } ?? autoRetryDelay(attempt)
+                    let at = (Date().timeIntervalSince1970 + wait) * 1000
+                    conversation.messages[index].retryAt = at.rounded()
+                    conversation.messages[index].autoRetries = attempt
+                    scheduleAutoRetry(id, replyID: replyID, at: at)
+                }
+            }
             // A rejected resume shouldn't poison the next turn.
             if failure.kind == .unknown || failure.kind == .modelRejected { conversation.cliSessionID = nil }
         default:

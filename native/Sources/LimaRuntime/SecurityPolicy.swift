@@ -38,11 +38,12 @@ enum SecurityPolicy {
         add(["context.deleteAll", "context.settings.set"], "change or delete your activity history", "system")
         add(["context.settings.get"], "read your activity-tracking settings")
         add(["chat.list", "chat.get", "chat.create", "chat.record", "chat.configure", "chat.mascot", "chat.send", "chat.attach", "chat.attachment", "chat.media",
-             "chat.interrupt", "chat.unqueue", "chat.retry", "chat.edit", "chat.cancel", "chat.delete", "chat.resources"],
+             "chat.interrupt", "chat.unqueue", "chat.retry", "chat.cancelRetry", "chat.edit", "chat.cancel", "chat.delete", "chat.resources"],
             "read or change your AI chats")
         add(["quickAsk"], "ask your AI provider a question on your account")
         add(["system.openApp", "system.openSettings"], "open apps or System Settings", "system")
         add(["integrations.messages.compose"], "write a message in Messages for you", "account")
+        add(["messages.recent", "messages.send", "messages.settings"], "read or send your texts", "account")
         add(["integrations.grammar.configure", "integrations.google.configure", "integrations.google.refresh", "integrations.setup.start"],
             "change Lima's integrations", "system")
         add(["update.install", "update.rollback", "update.check", "update.moveToApplications"], "install, check or roll back Lima updates", "system")

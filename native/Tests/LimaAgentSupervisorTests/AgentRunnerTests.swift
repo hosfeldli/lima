@@ -413,3 +413,35 @@ func waitIdle(_ service: ConversationService, _ id: String) async throws -> Conv
     #expect(changesOutside(tools, folder: "/Users/me/project") == ["/Users/me/.zshrc", "/Users/me/other/b.txt", "/Users/me/secrets.txt"])
     #expect(RunLimits(maxSteps: 1, maxMinutes: 99_999) == RunLimits(maxSteps: 10, maxMinutes: 600))
 }
+
+@Test(.timeLimit(.minutes(1))) func outOfCreditRetriesByItselfWhenNoOtherProviderIsReady() async throws {
+    // The first run is out of credit; the second succeeds.
+    let cli = try fakeCLI("claude", script: """
+    cat >/dev/null
+    marker="$(dirname "$0")/ran"
+    if [ ! -f "$marker" ]; then
+      touch "$marker"
+      echo '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Credit balance is too low"}'
+      exit 1
+    fi
+    echo '{"type":"result","subtype":"success","is_error":false,"result":"done"}'
+    """)
+    let (service, dir) = try await makeConversations(cliDir: cli)
+    defer {
+        try? FileManager.default.removeItem(at: cli)
+        try? FileManager.default.removeItem(at: dir)
+    }
+    await service.setFailover { _, _ in nil }
+    await service.setAutoRetryDelay { _ in 0.3 }
+    let conversation = try await service.create(provider: .claude, model: nil, workingDirectory: NSTemporaryDirectory())
+    _ = try await service.send(conversation.id, text: "hello")
+    var result = try await waitIdle(service, conversation.id)
+    #expect(result.messages.last?.error?.kind == .rateLimited)
+    #expect(result.messages.last?.retryAt != nil && result.messages.last?.autoRetries == 0)
+    for _ in 0..<60 where result.messages.last?.status != .complete {
+        try await Task.sleep(nanoseconds: 100_000_000)
+        result = try await service.get(conversation.id)
+    }
+    #expect(result.messages.last?.status == .complete && result.messages.last?.text == "done")
+    #expect(result.messages.filter { $0.role == .assistant }.count == 1, "the retry replaces the failed reply")
+}

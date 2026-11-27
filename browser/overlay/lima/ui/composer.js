@@ -388,6 +388,8 @@ const attachmentCache = new Map();
 /** An attachment's contents as a data URL (cached per chat and file). */
 export function attachmentURL(chatId, path) {
   const key = `${chatId}\n${path}`;
+  // At most a dozen files held at once (each is the whole file).
+  while (!attachmentCache.has(key) && attachmentCache.size >= 12) attachmentCache.delete(attachmentCache.keys().next().value);
   if (!attachmentCache.has(key)) {
     attachmentCache.set(key, call("chat.attachment", { id: chatId, path })
       .then(file => ({ ...file, url: `data:${file.type};base64,${file.data}` }))

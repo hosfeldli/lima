@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="102" height="100" viewBox="0 0 102 100">
+  <style>.accessory { display: none; } .accessory:target { display: inline; }</style>
+  <ellipse cx="51" cy="84" rx="25" ry="3" fill="#eaeaea"/>
+  <path d="M24 57c0-8 4-16 11-21 0-8 6-15 13-17l9 12c3 0 6 1 9 2l8-5c-1 5-1 9 1 12 7 7 10 17 8 26-3 10-13 14-32 14S18 75 18 65c0-3 2-6 6-8Z" fill="#fff" stroke="#242424" stroke-width="2.7" stroke-linejoin="round"/>
+  <path d="M37 35c1-7 5-12 10-15l10 13c-8 2-14 3-20 2Zm-16 30c3 8 15 12 29 12 15 0 26-4 30-11-1 9-15 12-29 12S23 75 21 65Z" fill="#eaeaea"/>
+  <path d="M37 36c6 2 12 1 20-3m-16 19v2m19-2v2m-15 7c3 4 7 4 10 0m-31-2c-4-1-8 1-10 4m64-4c4 0 7 1 10 4" fill="none" stroke="#242424" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <g fill="#fff" stroke="#242424" stroke-width="3.4" stroke-linejoin="round" stroke-linecap="round">
+    <path class="accessory" id="builder" d="M31 40c1-14 9-21 21-21 13 0 22 9 23 21ZM27 41h52M49 22v10"/>
+    <path class="accessory" id="explorer" fill="none" d="M59 50a12 12 0 1 0 24 0 12 12 0 1 0-24 0Zm20 9 12 13"/>
+    <path class="accessory" id="chef" d="M35 35v-9c-8 1-12-3-11-9 1-5 7-8 13-5 1-6 6-9 12-8 6 0 10 4 11 9 5-3 12 0 13 5 2 6-3 10-10 9v8c-9 3-19 4-28 0Zm0-5c9 3 20 3 28 0"/>
+    <path class="accessory" id="traveler" d="M29 36c3-14 12-19 24-19 10 0 18 6 22 16m-50 4c0-6 13-10 30-9 17 0 27 4 27 8s-12 7-28 7c-16 1-29-1-29-6Z"/>
+    <path class="accessory" id="artist" d="M32 27c4-10 20-17 32-11 7 4 10 10 7 15-5 5-16 2-23 1-9-2-17 1-16-5Zm21-13 5-5"/>
+    <path class="accessory" id="analyst" fill="none" d="M28 45h21v16H28Zm28 0h21v16H56Zm-7 7h7"/>
+    <g class="accessory" id="dj">
+      <path d="M25 48l8 1m35 0 9-3M48 50q3-3 6 0" fill="none"/>
+      <path d="M31 48h17l-1 5c-1 5-5 7-9 6s-6-4-7-11Zm23 0h17c-1 7-3 10-7 11s-8-1-9-6Z" fill="#242424"/>
+      <path d="m35 51 4-1m19 1 4-1" fill="none" stroke="#bfbfbf" stroke-width="1.5"/>
+    </g>
+  </g>
+</svg>

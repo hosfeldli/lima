@@ -13,6 +13,7 @@ extension Runtime {
         "automation": "Privacy_Automation",
         "microphone": "Privacy_Microphone",
         "screen": "Privacy_ScreenCapture",
+        "fullDisk": "Privacy_AllFiles",
     ]
 
     func registerSystemSettings() {

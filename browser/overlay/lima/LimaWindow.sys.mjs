@@ -9,6 +9,10 @@ ChromeUtils.defineESModuleGetters(lazy, {
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
   LimaSidebar: "resource://lima/LimaSidebar.sys.mjs",
   LimaMini: "resource://lima/LimaMini.sys.mjs",
+  installCopyLink: "resource://lima/LimaCopyLink.sys.mjs",
+  LimaEmoji: "resource://lima/LimaEmoji.sys.mjs",
+  LimaSidebarModes: "resource://lima/LimaSidebarModes.sys.mjs",
+  LimaMemory: "resource://lima/LimaMemory.sys.mjs",
   installSidebarRows: "resource://lima/LimaSidebarRows.sys.mjs",
   LimaTabs: "resource://lima/LimaTabs.sys.mjs",
   LimaWorkspaces: "resource://lima/LimaWorkspaces.sys.mjs",
@@ -18,6 +22,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
 function attachContextRecorder(win) {
   if (lazy.PrivateBrowsingUtils.isWindowPrivate(win)) return; // never record private browsing
   const recent = new Map();
+  const recentLimit = 512;
   win.gBrowser.addTabsProgressListener({
     onStateChange(browser, webProgress, request, flags) {
       const STOP = Ci.nsIWebProgressListener.STATE_STOP | Ci.nsIWebProgressListener.STATE_IS_WINDOW;
@@ -25,8 +30,13 @@ function attachContextRecorder(win) {
       const uri = browser.currentURI;
       if (!uri || !["http", "https"].includes(uri.scheme)) return;
       const key = uri.spec;
-      const now = Date.now();
-      if (recent.get(key) > now - 60_000) return; // dedupe reloads/refreshes
+      const now = win.performance.now();
+      for (const [url, recordedAt] of recent) {
+        if (recordedAt > now - 60_000) break;
+        recent.delete(url);
+      }
+      if (recent.has(key)) return; // dedupe reloads/refreshes
+      if (recent.size >= recentLimit) recent.delete(recent.keys().next().value);
       recent.set(key, now);
       const title = browser.contentTitle || uri.host;
       lazy.LimaBridge.request("context.record", { title, url: uri.spec }).catch(() => {});
@@ -45,6 +55,7 @@ export const LimaWindow = {
     const unwatch = lazy.LimaAppearance.subscribe(theme => root.setAttribute("lima-theme", theme));
     win.addEventListener("unload", unwatch, { once: true });
     lazy.LimaMini.setup(win);
+    try { lazy.installCopyLink(win); lazy.LimaEmoji.install(win); } catch (error) { Services.console.logStringMessage(`[lima] mini extras: ${error}`); }
   },
 
   attach(win) {
@@ -55,6 +66,10 @@ export const LimaWindow = {
     win.document.documentElement.setAttribute("lima-window", "true");
     win.document.documentElement.style.setProperty("--lima-motion-settle", SETTLE);
     lazy.LimaSidebar.attach(win);
+    try { lazy.installCopyLink(win); } catch (error) { Services.console.logStringMessage(`[lima] copy link: ${error}`); }
+    try { lazy.LimaEmoji.install(win); } catch (error) { Services.console.logStringMessage(`[lima] emoji: ${error}`); }
+    try { lazy.LimaSidebarModes.install(win); } catch (error) { Services.console.logStringMessage(`[lima] sidebar modes: ${error}`); }
+    try { lazy.LimaMemory.install(win); } catch (error) { Services.console.logStringMessage(`[lima] memory: ${error}`); }
     lazy.installSidebarRows(win, { privateWindow: lazy.PrivateBrowsingUtils.isWindowPrivate(win) });
     lazy.LimaAssistant.attach(win);
     lazy.LimaWorkspaces.keepChatFoldersCollapsed(win);

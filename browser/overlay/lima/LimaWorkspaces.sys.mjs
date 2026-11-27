@@ -103,13 +103,34 @@ class Workspaces {
   #mascots = new Map();
   #seenWorkspaceNotes = new Set();
   #finishedHelpers = new Set();
+  /** Workspace ID → its scheduled tasks (id → next run, ms) still to come. */
+  #schedules = new Map();
+
+  #noteSchedule(task) {
+    for (const [workspaceID, tasks] of this.#schedules) {
+      if (tasks.delete(task.id) && !tasks.size) this.#schedules.delete(workspaceID);
+      if (workspaceID !== task.workspaceID) this.#paintFocus(workspaceID);
+    }
+    if (task.workspaceID && task.state === "scheduled" && task.nextRunAt) {
+      if (!this.#schedules.has(task.workspaceID)) this.#schedules.set(task.workspaceID, new Map());
+      this.#schedules.get(task.workspaceID).set(task.id, { at: task.nextRunAt, label: task.nextRunLabel, title: task.title });
+    }
+    if (task.workspaceID) this.#paintFocus(task.workspaceID);
+  }
 
   start() {
     if (this.#started) return;
     this.#started = true;
+    lazy.LimaBridge.request("schedule.list").then(tasks => { for (const task of tasks ?? []) this.#noteSchedule(task); }).catch(() => {});
     lazy.LimaBridge.onEvent(message => {
       const data = message.data;
       switch (message.event) {
+        case "schedule.updated":
+          this.#noteSchedule(data);
+          break;
+        case "schedule.deleted":
+          this.#noteSchedule({ id: data.id });
+          break;
         case "workspace.created":
         case "workspace.updated":
           if (this.#archived.has(data.id)) break;
@@ -1133,9 +1154,21 @@ class Workspaces {
     if (moving) folder.setAttribute("lima-ai", "working"); else folder.removeAttribute("lima-ai");
     const attention = activity?.attention || ["blocked", "failed"].includes(activity?.state);
     folder.toggleAttribute("lima-attention", attention);
+    // One status at a glance: needs approval (amber), failed (red), or
+    // finished and not looked at yet (green, until you open its chat).
+    const selectedChat = folder.hasAttribute("lima-chat-selected");
+    if (folder.limaWasWorking && activity?.state === "complete" && !selectedChat) folder.limaUnseenDone = true;
+    if (selectedChat || moving) folder.limaUnseenDone = false;
+    folder.limaWasWorking = moving;
+    const status = activity?.state === "failed" ? "failed" : attention ? "approval" : folder.limaUnseenDone ? "done" : moving ? "working" : "";
+    if (status) folder.setAttribute("lima-status", status); else folder.removeAttribute("lima-status");
+    // A clock on the Pip when this workspace has work scheduled.
+    const upcoming = [...(this.#schedules.get(id)?.values() ?? [])].sort((a, b) => a.at - b.at)[0];
+    folder.toggleAttribute("lima-scheduled", !!upcoming);
+    folder.limaNextRun = upcoming ? `Scheduled: ${upcoming.title}, ${upcoming.label ?? "soon"}` : null;
     const label = folder.querySelector(":scope > .tab-group-label-container");
     if (label) {
-      const title = [folder.label, activity?.label ?? "Ready", activity?.detail, activity?.lastResult].filter(Boolean).join(" · ");
+      const title = [folder.label, activity?.label ?? "Ready", activity?.detail, activity?.lastResult, folder.limaNextRun].filter(Boolean).join(" · ");
       if (activity && label.limaLastState !== activity.state) {
         const prior = label.limaLastState;
         label.limaLastState = activity.state;

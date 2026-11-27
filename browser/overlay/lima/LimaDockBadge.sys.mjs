@@ -10,7 +10,7 @@ import { LimaAppearance } from "resource://lima/LimaAppearance.sys.mjs";
  * "system", which tracks macOS appearance live through the runtime). */
 
 const FRAMES = 12;
-const FRAME_MS = 95;
+const FRAME_MS = 190; // ~5 fps: enough to read as motion, half the Dock updates
 const DONE_MS = 1400;
 // A 1×1 transparent PNG: drawn over the badge if the engine can't clear it.
 const CLEAR = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";

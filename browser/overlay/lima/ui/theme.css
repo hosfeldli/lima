@@ -1,22 +1,26 @@
 :root:is([lima-window], [data-lima-page]) {
+  /* Neutrals (2026-11 palette): canvas, sidebar, surface, border, text. */
   --lima-bg: #ffffff;
-  --lima-sidebar: #f2f2f2;
-  --lima-surface: #f7f7f7;
-  --lima-elevated: #eaeaea;
-  --lima-border: #dedede;
-  --lima-fg: #242424;
-  --lima-secondary: #515151;
-  --lima-muted: #646464;
-  --lima-accent: #383838;
-  --lima-accent-hover: #252525;
-  --lima-accent-fill: #e3e3e3;
+  --lima-sidebar: #f2f3f5;
+  --lima-surface: #f7f8fa;
+  --lima-elevated: #eceef1;
+  --lima-border: #e2e4e8;
+  --lima-fg: #222428;
+  --lima-secondary: #4f545c;
+  --lima-muted: #6b7078;
+  /* Primary actions stay ink; colour is kept for meaning. */
+  --lima-accent: #2c2f34;
+  --lima-accent-hover: #1d1f23;
+  --lima-accent-fill: #e6e9ee;
   --lima-accent-contrast: #ffffff;
-  --lima-success: #383838;
-  --lima-warning: #4b4b4b;
-  --lima-error: #303030;
-  --lima-info: #4e4e4e;
+  /* Meaning: done, needs approval, failed, and information / selection. */
+  --lima-success: #47966b;
+  --lima-warning: #b9801f;
+  --lima-error: #c0504d;
+  --lima-info: #6586a6;
+  --lima-focus: #6586a6;
   --lima-scrim: rgb(22 24 27 / .1);
-  --lima-overlay-shadow: 0 12px 32px rgb(0 0 0 / .1), 0 1px 3px rgb(0 0 0 / .06);
+  --lima-overlay-shadow: 0 12px 32px rgb(20 24 30 / .1), 0 1px 3px rgb(20 24 30 / .06);
   --lima-radius: 8px;
   --lima-panel-radius: 14px;
 }
@@ -25,22 +29,23 @@
  * Search set lima-theme="dark" when Lima's theme resolves to dark. */
 :root:is([lima-window], [data-lima-page])[lima-theme="dark"], [lima-theme="dark"] {
   color-scheme: dark;
-  --lima-bg: #1c1c1d;
-  --lima-sidebar: #202021;
-  --lima-surface: #262627;
-  --lima-elevated: #333335;
-  --lima-border: #3b3b3d;
-  --lima-fg: #ececec;
-  --lima-secondary: #bdbdbf;
-  --lima-muted: #a4a4a7;
-  --lima-accent: #e6e6e6;
+  --lima-bg: #1c1d1f;
+  --lima-sidebar: #202124;
+  --lima-surface: #26282b;
+  --lima-elevated: #313338;
+  --lima-border: #3a3d42;
+  --lima-fg: #ecedef;
+  --lima-secondary: #c3c6cc;
+  --lima-muted: #a2a6ae;
+  --lima-accent: #e8e9ec;
   --lima-accent-hover: #ffffff;
-  --lima-accent-fill: #3a3a3c;
-  --lima-accent-contrast: #1c1c1d;
-  --lima-success: #d6d6d6;
-  --lima-warning: #cfcfcf;
-  --lima-error: #f0f0f0;
-  --lima-info: #c8c8c8;
+  --lima-accent-fill: #383b41;
+  --lima-accent-contrast: #1c1d1f;
+  --lima-success: #63b386;
+  --lima-warning: #dba84b;
+  --lima-error: #e3807c;
+  --lima-info: #8fabc7;
+  --lima-focus: #8fabc7;
   --lima-scrim: rgb(0 0 0 / .28);
   --lima-overlay-shadow: 0 16px 40px rgb(0 0 0 / .45), 0 0 0 1px rgb(255 255 255 / .04);
 }

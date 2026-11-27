@@ -120,3 +120,34 @@ private func local(_ text: String) -> Date {
         #expect(!Runtime.soundsScheduled(text), "\(text)")
     }
 }
+
+@Test(.timeLimit(.minutes(1))) func scheduledRunsGetTheApprovalsGivenWhenScheduling() async throws {
+    let (runtime, dir) = try await workspaceRuntime()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let workspace = try #require(await call(runtime, "workspace.create", ["name": .string("Dinner Plans")]).result?["id"]?.stringValue)
+    let created = await call(runtime, "schedule.create", [
+        "title": .string("Book dinner"), "instruction": .string("Book a table for two on opentable.com."),
+        "when": .object(["kind": .string("daily"), "time": .string("08:00")]), "workspaceId": .string(workspace),
+        "preApprovals": .array([
+            .object(["id": .string("opentable"), "kind": .string("browser"), "request": .string("Use OpenTable to find and book a table"),
+                     "url": .string("https://www.opentable.com/"), "actions": .string("click, type, scroll")]),
+            .object(["id": .string("confirm"), "kind": .string("approval"), "request": .string("Confirm a free reservation")]),
+        ]),
+    ])
+    let id = try #require(created.result?["id"]?.stringValue, "\(String(describing: created.error))")
+    #expect(created.result?["preApprovals"]?.arrayValue?.count == 2)
+    // A bad item is refused before anything is scheduled.
+    let bad = await call(runtime, "schedule.create", ["instruction": .string("x"), "when": .object(["kind": .string("daily"), "time": .string("08:00")]),
+                                                      "preApprovals": .array([.object(["id": .string("no spaces!"), "request": .string("x")])])])
+    #expect(bad.error != nil)
+
+    let first = try #require(created.result?["nextRunAt"]?.doubleValue)
+    await runtime.runDueSchedules(now: Date(timeIntervalSince1970: first / 1000 + 60))
+    let run = try #require(try await runtime.schedules.get(id).runs.first)
+    let record = try #require(await runtime.orchestrator.roots(limit: 10).first { $0.id == run.taskID })
+    #expect(record.request.contains("approved these in advance") && record.request.contains("- confirm: Confirm a free reservation"))
+    // The run's workspace holds the grants, so the agent needn't ask.
+    let granted = await runtime.workspacePrompts.preapproval(family: workspace, id: "confirm")
+    #expect(granted?.request == "Confirm a free reservation")
+    #expect(await runtime.workspacePrompts.preapproval(family: workspace, id: "opentable")?.kind == .browser)
+}

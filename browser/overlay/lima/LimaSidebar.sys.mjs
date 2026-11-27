@@ -195,10 +195,12 @@ function installMenus(win) {
       separator("lima-sidebar-menu-sep"),
       item("lima-sidebar-reopen", "Reopen Closed Tab", "undo", () => win.undoCloseTab()),
       separator("lima-sidebar-menu-sep2"),
+      siteModeMenu(win),
       item("lima-sidebar-settings", "Sidebar Settings…", "sliders", () => win.switchToTabHavingURI(settingsURL, true, { triggeringPrincipal: system() })));
     menu.addEventListener("popupshowing", event => {
       if (event.target !== menu) return;
       doc.getElementById("lima-sidebar-reopen").disabled = !lazy.SessionStore.getClosedTabCountForWindow?.(win);
+      doc.getElementById("lima-sidebar-site-mode")?.limaLabel?.();
     });
     (doc.getElementById("mainPopupSet") ?? doc.documentElement).append(menu);
     let point = null;
@@ -369,6 +371,40 @@ function organizeTabMenu(win, tabMenu) {
     lima.hidden = !visible(limaPopup);
     for (const popup of [tabMenu, morePopup, limaPopup]) tidySeparators(popup);
   });
+}
+
+/** "Sidebar on chatgpt.com ▸ Expanded / Compact / Hidden / Like other sites". */
+function siteModeMenu(win) {
+  const doc = win.document;
+  const { LimaSidebarModes, hostOf } = ChromeUtils.importESModule("resource://lima/LimaSidebarModes.sys.mjs");
+  const menu = doc.createXULElement("menu");
+  menu.id = "lima-sidebar-site-mode";
+  menu.classList.add("menu-iconic", "lima-menuitem");
+  menu.setAttribute("image", ICON("sliders"));
+  const popup = doc.createXULElement("menupopup");
+  menu.append(popup);
+  const modes = [["expanded", "Expanded", "Full sidebar"], ["compact", "Compact", "Icons and status"], ["hidden", "Hidden", "All page"], [null, "Like other sites", ""]];
+  popup.addEventListener("popupshowing", event => {
+    if (event.target !== popup) return;
+    const host = hostOf(win.gBrowser.currentURI);
+    const rule = LimaSidebarModes.ruleFor(host);
+    popup.replaceChildren(...modes.map(([mode, label, hint]) => {
+      const entry = doc.createXULElement("menuitem");
+      entry.setAttribute("type", "radio");
+      entry.setAttribute("label", hint ? `${label} — ${hint}` : label);
+      if ((rule ?? null) === mode) entry.setAttribute("checked", "true");
+      entry.addEventListener("command", () => LimaSidebarModes.set(win, host, mode));
+      return entry;
+    }));
+  });
+  // The label names the site; on a Lima page there's no site to set.
+  const label = () => {
+    const host = hostOf(win.gBrowser.currentURI);
+    menu.hidden = !host;
+    menu.setAttribute("label", `Sidebar on ${host}`);
+  };
+  menu.limaLabel = label;
+  return menu;
 }
 
 /** No leading, trailing or doubled separators once items are hidden. */
@@ -665,6 +701,8 @@ function attachDock(win) {
   /** The volume button: a slider springs up above the bar (and folds away). */
   function toggleMute(event) {
     event?.stopPropagation();
+    // The sound button brings a collapsed bar back with its volume slider.
+    if (music.hidden) { lastActive = Date.now(); paintTrack(); }
     const open = volumePop.hidden || volumePop.limaLeaving;
     mute.setAttribute("aria-expanded", String(open));
     if (!open) { sinkAway(volumePop, { flow: true, gap: 0 }); return; }
@@ -716,6 +754,9 @@ function attachDock(win) {
   let gestureTimer = null;
   let revision = 0;
   let musicVisible = true;
+  const IDLE_MS = 5 * 60_000;
+  let lastActive = 0;
+  let idleTimer = null;
   let scrubbing = false;
   const personality = () => music.dataset.personality = Services.prefs.getStringPref("lima.personality", "full");
   personality();
@@ -730,7 +771,14 @@ function attachDock(win) {
   }
   function paintTrack() {
     const open = music.hasAttribute("data-open");
-    music.hidden = !musicVisible && source !== "browser";
+    // The bar collapses when nothing has played for a few minutes; playing
+    // anything (or the sound button) brings it back.
+    const active = track?.state === "Playing" || playingTabs().length > 0;
+    if (active) lastActive = Date.now();
+    const idle = !active && Date.now() - lastActive > IDLE_MS && !music.hasAttribute("data-open") && volumePop.hidden;
+    music.hidden = (!musicVisible && source !== "browser") || idle;
+    win.clearTimeout(idleTimer);
+    if (!active && !idle) idleTimer = win.setTimeout(() => paintTrack(), IDLE_MS - (Date.now() - lastActive) + 200);
     music.dataset.source = source;
     spotify.dataset.source = source;
     dj.hidden = source !== "Spotify";

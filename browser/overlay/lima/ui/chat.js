@@ -2,10 +2,11 @@ import { SPRING } from "./motion.sys.mjs";
 /* AI chat tab: one conversation per URL (about:lima?chat=<id>). For a
  * workspace or helper agent it is the agent's chat; a live line says where
  * the agent is working (the sidebar shows the same with the prism). */
-import { activityStatus, agentSetupAction, outsideChanges, replyAuthor, bridge, call, el, errorText, filesPrivacyButton, icon, markdown, onEvent, prefs, setPage, popButton } from "./lib.js";
+import { imageCache, activityStatus, agentSetupAction, outsideChanges, replyAuthor, bridge, call, el, errorText, filesPrivacyButton, icon, markdown, onEvent, prefs, setPage, popButton } from "./lib.js";
 import { failureActivity, isFolderPermissionError, stepParts, toolActivity } from "./tool-activity.sys.mjs";
 
 import { agentControls, attachmentTray, composerMenu, preferredAgent, QUEUE_HINT, queuedActions, restoreDraft, sentAttachments, sendMode } from "./composer.js";
+import { replyResults, stepPhases } from "./agent-story.sys.mjs";
 import { companion, MASCOTS, setCompanionState, watchVisualActivity, setCompanionSeed } from "./companion.js";
 import { workspacePrompts } from "./workspace-prompts.js";
 const MASCOT = "resource://lima-ui/marks/companion.svg";
@@ -30,8 +31,9 @@ async function mountWorkspaceChats(app, chatId) {
   const pane = el("div", { class: "chat-tab-pane" });
   app.replaceChildren(strip, pane);
   let current = chatId;
-  let unmount = mountChat(pane, current);
-  const opened = await call("chat.get", { id: chatId }).catch(() => null);
+  const initialChat = Promise.resolve().then(() => call("chat.get", { id: chatId }));
+  let unmount = mountChat(pane, current, { initialChat });
+  const opened = await initialChat.catch(() => null);
   const workspace = opened?.workspaceID ? await call("workspace.get", { id: opened.workspaceID }).catch(() => null) : null;
   if (!workspace || workspace.parentID || workspace.browserTestURL || workspace.conversationID !== chatId) return;
   let chats = [];
@@ -98,7 +100,7 @@ async function mountWorkspaceChats(app, chatId) {
     if (event === "workspace.chats" && data?.id === workspace.id) refresh();
     else if (event === "chat.updated" && tabs.has(data?.id)) {
       const chat = chats.find(item => item.id === data.id);
-      if (chat) { chat.running = data.messages?.some(message => message.status === "streaming") ?? chat.running; chat.title = chat.main ? "Main" : data.title ?? chat.title; paint(); }
+      if (chat) { chat.running = data.running ?? data.messages?.some(message => message.status === "streaming") ?? chat.running; chat.title = chat.main ? "Main" : data.title ?? chat.title; paint(); }
     }
   });
   await refresh();
@@ -172,19 +174,22 @@ export function mergeSteps(steps, cwd = "") {
 
 // Images a step saw (screenshots, pictures it read): small thumbnails that
 // open full size in Glance.
-const mediaCache = new Map();
+const mediaCache = imageCache(60);
 function mediaURL(chatId, mediaId) {
-  const key = `${chatId}/${mediaId}`;
-  if (!mediaCache.has(key)) {
-    mediaCache.set(key, call("chat.media", { id: chatId, mediaId }).then(media => `data:${media.type};base64,${media.data}`)
-      .catch(error => { mediaCache.delete(key); throw error; }));
-  }
-  return mediaCache.get(key);
+  return mediaCache(`${chatId}/${mediaId}`, () => call("chat.media", { id: chatId, mediaId }));
 }
 export function mediaStrip(chatId, ids) {
   return el("span", { class: "tool-media" }, ids.map(mediaId => {
-    const img = el("img", { alt: "Screenshot", loading: "lazy" });
-    mediaURL(chatId, mediaId).then(url => { img.src = url; }, () => img.closest("button")?.remove());
+    const img = el("img", { alt: "Screenshot", loading: "lazy", decoding: "async" });
+    const remove = () => img.closest("button")?.remove();
+    const load = () => mediaURL(chatId, mediaId).then(url => { img.src = url; }, remove);
+    img.addEventListener("error", () => {
+      // A thumbnail can become visible after its cached URL was evicted.
+      img.loading = "eager";
+      img.addEventListener("error", remove, { once: true });
+      load();
+    }, { once: true });
+    load();
     return el("button", { type: "button", class: "tool-thumb", title: "Open in Glance", onclick: event => {
       event.stopPropagation();
       bridge.browser("openGlance", { url: `about:lima?view=media&chat=${encodeURIComponent(chatId)}&media=${encodeURIComponent(mediaId)}` })
@@ -193,14 +198,15 @@ export function mediaStrip(chatId, ids) {
   }));
 }
 
-export function mountChat(app, chatId, { compact = false } = {}) {
+export function mountChat(app, chatId, { compact = false, initialChat } = {}) {
   const controller = new AbortController();
   const signal = controller.signal;
-  initializeChat(app, chatId, compact, signal);
+  initializeChat(app, chatId, compact, signal, initialChat);
   return () => controller.abort();
 }
 
-async function initializeChat(app, chatId, compact, signal) {
+async function initializeChat(app, chatId, compact, signal, initialChat) {
+  const watching = bridge.browser("watchChat", { id: chatId });
   let conversation;
   let workspace = null;
   let modulesRequest = 0;
@@ -320,15 +326,45 @@ async function initializeChat(app, chatId, compact, signal) {
     if (name === "progress") drawProgress();
   }
   for (const [key, node] of Object.entries(views)) { node.classList.add("chat-view"); node.hidden = key !== "chat"; }
+  // The model, its provider and effort (and Pip's style) sit behind one
+  // button in the composer, so the message stays the focus.
+  const modelSummary = el("span", { class: "model-summary" });
+  const modelPopover = el("div", { class: "model-popover", role: "dialog", "aria-label": "Model settings", hidden: true },
+    el("label", {}, el("span", { text: "Provider" }), controls.provider),
+    el("label", {}, el("span", { text: "Model" }), controls.model),
+    el("label", { class: "model-effort" }, el("span", { text: "Effort" }), controls.effort),
+    compact ? null : el("label", {}, el("span", { text: "Pip" }), mascot));
+  const modelButton = el("button", { type: "button", class: "model-button", "aria-haspopup": "dialog", "aria-expanded": "false",
+    title: "Model, provider and effort", onclick: event => { event.stopPropagation(); toggleModelPopover(); } }, icon("spark"), modelSummary, icon("chevron", "icon model-chevron"));
+  function toggleModelPopover(open = modelPopover.hidden) {
+    modelPopover.hidden = !open;
+    modelButton.setAttribute("aria-expanded", String(open));
+    if (open) (controls.model.disabled ? controls.provider : controls.model).focus();
+  }
+  document.addEventListener("click", event => { if (!modelPopover.hidden && !modelPopover.contains(event.target)) toggleModelPopover(false); }, { signal });
+  modelPopover.addEventListener("keydown", event => { if (event.key === "Escape") { toggleModelPopover(false); modelButton.focus(); } });
+  function paintModelSummary() {
+    const pick = select => select?.selectedOptions?.[0]?.textContent?.replace(/^Effort: /, "") ?? "";
+    const effort = controls.effort.hidden || controls.effort.value === "default" ? "" : pick(controls.effort);
+    modelSummary.textContent = [pick(controls.provider), pick(controls.model), effort].filter(Boolean).join(" · ") || "Choose a model";
+  }
+  for (const control of [controls.provider, controls.model, controls.effort]) control.addEventListener("change", () => setTimeout(paintModelSummary, 0));
+  new MutationObserver(paintModelSummary).observe(controls.model, { childList: true });
+  new MutationObserver(paintModelSummary).observe(controls.provider, { childList: true });
+  const keysHint = el("span", { class: "composer-keys", text: "↩ to send · ⇧↩ new line" });
   const body = el("div", { class: "chat-body solo" },
-    el("section", { class: "chat-main" }, el("div", { class: "mod-head chat-views", role: "tablist" }, chatTab, progressTab, agentsTab, stepsTab, filesTab),
+    el("section", { class: "chat-main" },
       messages, progress, agents, steps, files,
       el("div", { class: "composer" }, prompts.node, permissions, activity.node, recovery,
         el("div", { class: "composer-box" }, tray.node, input, completionMenu.node,
-          el("div", { class: "composer-row" }, controls.provider, controls.model, controls.effort, el("span", { class: "spacer" }), stopButton, nowButton, sendButton)), queueHint,
+          el("div", { class: "composer-row" }, el("div", { class: "model-anchor" }, modelButton, modelPopover), keysHint,
+            el("span", { class: "spacer" }), stopButton, nowButton, sendButton)), queueHint,
         el("p", { class: "ai-disclaimer", text: "AI can make mistakes. Check important details." }))));
+  // Two rows: the workspace's chats (above, in the workspace) and this one:
+  // who it is, then its views. Nothing pinned beside the conversation.
   app.replaceChildren(el("div", { class: compact ? "chat-page assistant-chat" : "chat-page" },
-    el("header", { class: "chat-head" }, character, title, subtitle, el("span", { class: "spacer" }), mascot),
+    el("header", { class: "chat-head" }, character, el("div", { class: "chat-identity" }, title, subtitle), el("span", { class: "spacer" }),
+      el("nav", { class: "chat-views", role: "tablist", "aria-label": "Views" }, chatTab, progressTab, agentsTab, stepsTab, filesTab)),
     body));
 
   const autosize = () => { input.style.height = "auto"; input.style.height = `${Math.min(220, input.scrollHeight)}px`; };
@@ -472,16 +508,30 @@ async function initializeChat(app, chatId, compact, signal) {
     if (steps.length) {
       const added = steps.reduce((sum, step) => sum + (step.added ?? 0), 0);
       const removed = steps.reduce((sum, step) => sum + (step.removed ?? 0), 0);
-      const row = (step, index) => el("li", {}, stepRow(step, { active: message.status === "streaming" && index === steps.length - 1, chatId, cwd }));
-      const recent = steps.slice(-8);
-      const earlier = steps.slice(0, -8);
+      const streaming = message.status === "streaming";
+      const row = (step, index) => el("li", {}, stepRow(step, { active: streaming && index === steps.length - 1, chatId, cwd }));
+      // Phases: runs of the same kind of work, each folding its steps. The
+      // phase in progress stays open while the agent works.
+      const phases = stepPhases(steps, { cwd });
+      let index = 0;
+      const phaseNodes = phases.map((phase, position) => {
+        const first = index;
+        index += phase.steps.length;
+        const current = streaming && position === phases.length - 1;
+        const details = el("details", { class: "step-phase", "data-current": current ? "" : null },
+          el("summary", {}, icon(phase.icon), el("span", { class: "phase-title", text: phase.title }),
+            el("span", { class: "phase-count", text: `${phase.steps.length} step${phase.steps.length === 1 ? "" : "s"}` })),
+          el("ol", { class: "steps-list" }, phase.steps.map((step, offset) => row(step, first + offset))));
+        if (current) details.open = true;
+        return details;
+      });
+      const files = new Set(steps.map(step => stepParts(step.tool ?? "", { cwd })).filter(part => part.kind === "file" || part.kind === "files").map(part => part.full)).size;
       node.append(el("div", { class: "steps-log" },
-        el("div", { class: "steps-head" }, el("strong", { text: `${steps.length} step${steps.length === 1 ? "" : "s"}` }),
+        el("div", { class: "steps-head" }, el("strong", { text: streaming ? "Working" : "Done" }),
+          el("span", { class: "muted", text: [`${steps.length} action${steps.length === 1 ? "" : "s"}`, files ? `${files} file${files === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ") }),
           stepSummary(steps, cwd),
           added || removed ? el("span", { class: "tool-diff" }, added ? el("span", { class: "diff-add", text: `+${added}` }) : null, removed ? el("span", { class: "diff-del", text: `−${removed}` }) : null) : null),
-        earlier.length ? el("details", { class: "steps-earlier" }, el("summary", { text: `${earlier.length} earlier step${earlier.length === 1 ? "" : "s"}` }),
-          el("ol", { class: "steps-list" }, earlier.map(row))) : null,
-        el("ol", { class: "steps-list" }, recent.map((step, index) => row(step, earlier.length + index)))));
+        el("div", { class: "step-phases" }, phaseNodes)));
     }
     const body = markdown(message.text, { onTaskToggle: () => {}, breaks: true, taskReports: true });
     if (message.status === "streaming") body.classList.add("typing");
@@ -502,11 +552,60 @@ async function initializeChat(app, chatId, compact, signal) {
           }
           catch (error) { button.disabled = false; reportError(error); }
           draw();
-        } }, "Retry Message")));
+        } }, message.retryAt ? "Retry Now" : "Retry Message")));
+      // Out of usage or credit: Lima retries by itself when the limit resets.
+      if (message.retryAt && message.error.kind !== "cancelled") {
+        const when = new Date(message.retryAt);
+        const sameDay = when.toDateString() === new Date().toDateString();
+        const time = when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+        node.append(el("div", { class: "auto-retry", role: "status" }, icon("history"),
+          el("span", { class: "grow", text: `Lima will try again ${sameDay ? `at ${time}` : `on ${when.toLocaleDateString([], { weekday: "long" })} at ${time}`}${message.autoRetries ? ` (attempt ${message.autoRetries + 1})` : ""}.` }),
+          el("button", { class: "ghost", onclick: async () => {
+            try { conversation = await call("chat.cancelRetry", { id: chatId, messageId: message.id }); draw(); } catch (error) { reportError(error); }
+          } }, "Don't retry")));
+      }
     } else if (message.status === "complete" && message.text) {
-      node.append(el("button", { class: "ghost copy", onclick: () => bridge.copy(message.text) }, icon("copy"), "Copy"));
+      const results = resultCards(message);
+      if (results) node.append(results);
+      // Copy it, or keep it as a note.
+      node.append(el("div", { class: "reply-actions" },
+        el("button", { class: "ghost copy", title: "Copy this reply", onclick: () => bridge.copy(message.text) }, icon("copy"), "Copy"),
+        el("button", { class: "ghost", title: "Save this reply as a note", onclick: async event => {
+          const button = event.currentTarget;
+          button.disabled = true;
+          try {
+            const note = await call("notes.create", { title: `${workspace?.name ?? conversation?.title ?? "Chat"} — reply`, markdown: message.text });
+            button.replaceChildren(icon("check"), "Saved");
+            button.onclick = () => bridge.openTab(`about:lima?note=${encodeURIComponent(note.id)}`);
+            button.disabled = false;
+            button.title = "Open the note";
+          } catch (error) { button.disabled = false; reportError(error); }
+        } }, icon("note"), "Save to Note")));
     }
     return node;
+  }
+
+  /** Cards for what a finished reply changed, each one opens it. */
+  function resultCards(message) {
+    const found = replyResults(message, { cwd: workspace?.directory ?? conversation?.workingDirectory ?? "" });
+    const cards = [];
+    const card = (glyph, heading, detail, label, run) => el("div", { class: "result-card" },
+      el("span", { class: "result-icon" }, icon(glyph)),
+      el("div", { class: "result-text" }, el("strong", { text: heading }), detail ? el("span", { class: "muted", text: detail }) : null),
+      label ? el("button", { class: "ghost", onclick: run }, label) : null);
+    for (const note of found.notes) {
+      const node = card("note", note.title ?? "Note", `${note.verb} · Note`, note.id ? "Open note" : null,
+        () => bridge.openTab(`about:lima?note=${encodeURIComponent(note.id)}`));
+      if (note.id && !note.title) call("notes.get", { id: note.id }).then(full => { node.querySelector("strong").textContent = full?.title || "Note"; }).catch(() => {});
+      cards.push(node);
+    }
+    for (const page of found.pages) cards.push(card("globe", page.title, page.url.replace(/^https?:\/\/(www\.)?/, "").slice(0, 60), "Open", () => bridge.openTab(page.url)));
+    if (found.files.length) cards.push(card("file", found.files.length === 1 ? found.files[0].name : `${found.files.length} files changed`,
+      found.files.map(file => file.name).slice(0, 4).join(", "), "Show", () => showView("files")));
+    if (found.arranged) cards.push(card("folder", "Sidebar reorganized", "Folders, icons and tab names", null));
+    if (found.scheduled) cards.push(card("calendar", "Scheduled task", "Runs on its own; see Scheduled Tasks", "Open", () => bridge.openTab("about:lima?view=schedules")));
+    if (!cards.length) return null;
+    return el("section", { class: "result-cards", "aria-label": "What this reply changed" }, cards);
   }
 
   function edit(message, node) {
@@ -665,7 +764,10 @@ async function initializeChat(app, chatId, compact, signal) {
       : !loaded ? { state: "starting", label: "Opening conversation", icon: "notebook", motion: "think" }
       : pendingRequest && !runningReply() ? { state: "starting", label: "Sending request", icon: "send", motion: "think" }
       : (visualActivity ?? { state: "idle", label: "Ready", motion: "idle" });
-    activity.update(next);
+    // The strip above the composer speaks only while something's happening
+    // (or went wrong); a finished reply already says what it did.
+    activity.update(["idle", "complete"].includes(next.state) ? { ...next, lastResult: undefined } : next);
+    activity.node.hidden = ["idle", "complete"].includes(next.state) && !requestError;
     setCompanionState(character, next.motion ?? "idle", next.label);
     const working = ["starting", "working"].includes(next.state);
     if (chatTab.hasAttribute("data-working") !== working) {
@@ -674,7 +776,7 @@ async function initializeChat(app, chatId, compact, signal) {
     }
     const folderError = requestError ?? reply?.error;
     recovery.replaceChildren(
-      !loaded && requestError ? el("button", { class: "ghost", onclick: loadConversation }, "Retry") : null,
+      !loaded && requestError ? el("button", { class: "ghost", onclick: () => loadConversation() }, "Retry") : null,
       loaded && sendFailed && requestError ? el("button", { class: "ghost", onclick: () => send() }, "Retry Message") : null,
       isFolderPermissionError(folderError) ? filesPrivacyButton(reportError) : null,
       ...(!requestError ? attentionActions(next) : []));
@@ -706,7 +808,7 @@ async function initializeChat(app, chatId, compact, signal) {
           if (atBottom) messages.scrollTop = messages.scrollHeight;
         });
       }
-    } else if (message.event === "chat.updated" && data.id === chatId) {
+    } else if (message.event === "chat.updated" && data.id === chatId && Array.isArray(data.messages)) {
       eventRevision++;
       const previous = runningReply();
       conversation = data;
@@ -749,12 +851,14 @@ async function initializeChat(app, chatId, compact, signal) {
     cancelAnimationFrame(deltaPaint);
   }, { once: true });
 
-  async function loadConversation() {
+  async function loadConversation(initial) {
     requestError = undefined;
     paintNow();
     try {
+      await watching;
+      if (signal.aborted) return;
       if (!conversation) {
-        const opened = await call("chat.get", { id: chatId });
+        const opened = await (initial ?? call("chat.get", { id: chatId }));
         conversation ??= opened;
       }
       if (conversation.workspaceID) workspace = await call("workspace.get", { id: conversation.workspaceID });
@@ -774,7 +878,7 @@ async function initializeChat(app, chatId, compact, signal) {
     autosize();
     input.focus();
   }
-  loadConversation();
+  loadConversation(initialChat);
 }
 
 /** about:lima?view=media: one image an agent saw, full size (opened in Glance). */

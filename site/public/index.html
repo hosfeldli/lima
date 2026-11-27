@@ -104,7 +104,7 @@
     <div class="topbar-inner">
       <a class="brand" href="#top" aria-label="Lima, back to top"><img src="/lima.svg" alt="" width="26" height="26"><span>Lima</span></a>
       <nav class="topnav" aria-label="Sections">
-        <a href="#demo">How it works</a>
+        <a href="#tour">Tour</a><a href="#demo">How it works</a>
         <a href="#browser">Browser</a>
         <a href="#control">Privacy &amp; control</a>
         <a href="#start">Get started</a>
@@ -122,13 +122,63 @@
       <p class="lede">Browse, research, build and get things done alongside AI agents that work in their own tabs. You see what they're doing, and anything sensitive waits for your OK.</p>
       <div class="cta-row">
         <a class="button primary large" data-download href="/download"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Download for Mac</a>
-        <a class="button ghost large" href="#demo">See how it works</a>
+        <a class="button ghost large" href="#tour">Take the tour</a>
       </div>
       <p class="cta-meta" id="release" data-platform-note>Free and open source · No Lima account · Apple Silicon · macOS 14 or later</p>
       <p class="works-with">Works with the AI you already use: <span>Claude Code</span><span>Codex</span><span>OpenCode</span>. Or skip AI and just browse.</p>
     </section>
 
-    <!-- 02 Live demonstration -->
+
+    <!-- 02 The tour: the same steps as Lima's welcome walkthrough -->
+    <section class="section tour" id="tour" aria-labelledby="tour-title">
+      <header class="section-head">
+        <p class="eyebrow">Lima, step by step</p>
+        <h2 id="tour-title">The tour Lima gives you on day one.</h2>
+        <p>These are the steps of Lima's welcome walkthrough. Each takes a few seconds, and you can skip any of them.</p>
+      </header>
+      <div class="tour-body">
+        <div class="tour-stage" aria-hidden="true" data-scene="meet">
+          <div class="scene scene-meet"><div class="ring"></div><div class="ring small"></div>
+            <div class="orbit"><i style="--a:0deg"><svg class="icon"><use href="#i-globe"/></svg></i><i style="--a:60deg"><svg class="icon"><use href="#i-note"/></svg></i><i style="--a:120deg"><svg class="icon"><use href="#i-download"/></svg></i><i style="--a:180deg"><svg class="icon"><use href="#i-search"/></svg></i><i style="--a:240deg"><svg class="icon"><use href="#i-agent"/></svg></i><i style="--a:300deg"><svg class="icon"><use href="#i-folder"/></svg></i></div>
+            <img class="pip" src="/pip.svg" alt="" width="102" height="100"></div>
+          <div class="scene scene-move">
+            <div class="mock-window"><b>Your old browser</b><span></span><span></span><span></span></div>
+            <div class="flight"><em style="--i:0">Bookmarks</em><em style="--i:1">History</em><em style="--i:2">Passwords</em><em style="--i:3">Tabs</em></div>
+            <div class="mock-window lima"><b>Lima</b><span></span><span></span><span></span><span></span></div></div>
+          <div class="scene scene-passwords">
+            <div class="mock-window field"><b>Sign in · bank.example</b><label>Email<span class="typed">you@example.com</span></label><label>Password<span class="dots">••••••••••</span></label></div>
+            <div class="keychip"><svg class="icon"><use href="#i-lock"/></svg><span>From Passwords</span></div></div>
+          <div class="scene scene-links">
+            <div class="apps"><span style="--i:0"><svg class="icon"><use href="#i-note"/></svg>Mail</span><span style="--i:1"><svg class="icon"><use href="#i-agent"/></svg>Messages</span><span style="--i:2"><svg class="icon"><use href="#i-briefcase"/></svg>Slack</span></div>
+            <div class="mini-window"><div class="mini-bar"><i></i><b>example.com</b><em>Open in Lima</em></div><span></span><span></span><span></span></div></div>
+          <div class="scene scene-ai">
+            <div class="provider" style="--i:0"><svg class="icon"><use href="#i-sparkle"/></svg><b>Claude Code</b><i><svg class="icon"><use href="#i-check"/></svg></i></div>
+            <div class="provider" style="--i:1"><svg class="icon"><use href="#i-terminal"/></svg><b>Codex</b><i><svg class="icon"><use href="#i-check"/></svg></i></div>
+            <div class="provider" style="--i:2"><svg class="icon"><use href="#i-agent"/></svg><b>OpenCode</b><i><svg class="icon"><use href="#i-check"/></svg></i></div></div>
+          <div class="scene scene-search">
+            <div class="search-panel"><div class="search-field"><svg class="icon"><use href="#i-search"/></svg><span class="typing">launch notes</span></div>
+              <ul><li style="--i:0"><svg class="icon"><use href="#i-search"/></svg>launch notes<small>Search</small></li><li style="--i:1"><svg class="icon"><use href="#i-note"/></svg>Launch notes<small>Open note</small></li><li style="--i:2"><svg class="icon"><use href="#i-globe"/></svg>Launch plan — Docs<small>Switch to tab</small></li><li style="--i:3"><svg class="icon"><use href="#i-sparkle"/></svg>Ask Lima<small>⌘↩</small></li></ul></div></div>
+          <div class="scene scene-workspace">
+            <div class="ws-folder"><b><img src="/pip.svg" alt="" width="20" height="20">Japan Trip</b>
+              <span style="--i:0"><svg class="icon"><use href="#i-globe"/></svg>Hotels in Kyoto</span><span style="--i:1"><svg class="icon"><use href="#i-globe"/></svg>Gion · reviews</span><span style="--i:2"><svg class="icon"><use href="#i-note"/></svg>Kyoto shortlist</span>
+              <span class="approval" style="--i:3"><svg class="icon"><use href="#i-shield"/></svg>Reserve for $214? <em>Allow</em></span></div></div>
+          <div class="scene scene-ready"><img class="pip" src="/pip.svg" alt="" width="102" height="100"><div class="confetti"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+        </div>
+        <ol class="tour-steps">
+          <li class="tour-step" data-scene="meet"><p class="step-eyebrow">Welcome to Lima · 1 of 8</p><h3>Hi, I'm Pip.</h3><p>Lima's companion. Lima is your browser, your notes and your AI helpers, all in one calm place, and every workspace gets a Pip of its own.</p></li>
+          <li class="tour-step" data-scene="move"><p class="step-eyebrow">Move in · 2 of 8</p><h3>Bring your browser with you.</h3><p>Bookmarks, history and passwords from Chrome, Safari, Arc or Firefox. You choose exactly what comes along.</p></li>
+          <li class="tour-step" data-scene="passwords"><p class="step-eyebrow">Passwords · 3 of 8</p><h3>Your passwords, already here.</h3><p>Passwords and passkeys you save with Apple, in Safari, the Passwords app or on your iPhone, fill in Lima too, through Apple's own iCloud Passwords add-on.</p></li>
+          <li class="tour-step" data-scene="links"><p class="step-eyebrow">Links · 4 of 8</p><h3>Open every link in Lima.</h3><p>Links from Mail, Messages and Slack open in Mini Lima, a small window you read and dismiss, or move into Lima with one click and nothing lost.</p></li>
+          <li class="tour-step" data-scene="ai"><p class="step-eyebrow">Your AI · 5 of 8</p><h3>Connect an AI.</h3><p>Lima works with Claude Code, Codex or OpenCode on the plan you already have. It finds what's on your Mac and can set one up for you. Or skip AI and just browse.</p></li>
+          <li class="tour-step" data-scene="search"><p class="step-eyebrow">⌘T · 6 of 8</p><h3>One search for everything.</h3><p>A website, an open tab, a note, a workspace or a command. Ask a question and get a quick answer right there.</p></li>
+          <li class="tour-step" data-scene="workspace"><p class="step-eyebrow">Workspaces · 7 of 8</p><h3>Hand off the big stuff.</h3><p>Give an agent a goal. It gets its own folder in your sidebar with a chat and the pages it opens, and anything sensitive waits for your OK.</p></li>
+          <li class="tour-step" data-scene="ready"><p class="step-eyebrow">All set · 8 of 8</p><h3>You're ready.</h3><p>Start browsing. Pip lives at the top of the sidebar whenever you want to hand something off.</p>
+            <p class="tour-cta"><a class="button primary" data-download href="/download"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Download for Mac</a></p></li>
+        </ol>
+      </div>
+    </section>
+
+    <!-- 03 Live demonstration -->
     <section class="section" id="demo" aria-labelledby="demo-title">
       <header class="section-head">
         <h2 id="demo-title">Watch an agent work in real tabs.</h2>

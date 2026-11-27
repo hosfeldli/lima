@@ -217,7 +217,7 @@ export async function renderIntegrations(app, section) {
     ]],
     ["image-generation", "Image Generation", "local ComfyUI checkpoints model artwork generator", [card("Local provider", generationSettings())]],
     ["writing", "Writing tools", "grammar accessibility global shortcut ai replace", [card("Grammar checker", grammarSettings())]],
-    ["connections", "Integrations", "gmail google calendar oauth github reminders login spotify automation", [
+    ["connections", "Integrations", "gmail google calendar oauth github reminders login spotify automation messages imessage sms texts", [
       card("Gmail & Google Calendar", googleSettings()), card("GitHub", services),
       card("Messages", messagesSettings()),
     ]],
@@ -323,10 +323,16 @@ function tabSizeSettings() {
   }
   slider.addEventListener("input", () => apply(Number(slider.value), false));
   slider.addEventListener("change", () => apply(Number(slider.value), true));
-  bridge.browser("browsingPrefs", {}).then(prefs => paint(prefs?.tabHeight ?? 26)).catch(() => paint(26));
+  // Unloading idle tabs keeps memory in check; they reload when clicked.
+  const unload = el("select", { "aria-label": "Unload tabs you haven't used for",
+    onchange: () => bridge.browser("browsingPrefs", { key: "unloadAfter", value: Number(unload.value) }).catch(() => {}) },
+    [[15, "15 minutes"], [30, "30 minutes"], [60, "1 hour"], [120, "2 hours"], [0, "Never"]].map(([value, text]) => el("option", { value: String(value), text })));
+  bridge.browser("browsingPrefs", {}).then(prefs => { paint(prefs?.tabHeight ?? 26); unload.value = String(prefs?.unloadAfter ?? 30); }).catch(() => paint(26));
   return el("div", { class: "tab-size-settings" },
     el("label", { class: "row" }, "Tab size", slider, readout), presets, preview,
-    el("p", { class: "muted", text: "Changes every window's sidebar tabs as you drag." }));
+    el("p", { class: "muted", text: "Changes every window's sidebar tabs as you drag." }),
+    el("label", { class: "row" }, "Unload tabs you haven't used for", unload),
+    el("p", { class: "muted", text: "Unloaded tabs stay in your sidebar and load again when you click them. Tabs playing sound, sharing your camera or holding unsaved input stay loaded." }));
 }
 
 /** Settings → Search: Lima Search, result-page filters per engine, YouTube. */
@@ -378,14 +384,69 @@ function policyLinks(items) {
 }
 
 /** Standard notices that hold for every user, with links to the full texts. */
-/* Mini Lima: links from other apps open in a small window of their own. */
+/* Mini Lima: links from other apps open in a small floating window. */
 function miniSettings() {
-  const toggle = el("input", { type: "checkbox", checked: true, onchange: () => bridge.browser("miniLinksChanged", { value: toggle.checked }).catch(() => {}) });
-  bridge.browser("agentPreferences", {}).then(data => { if (typeof data?.miniLinks === "boolean") toggle.checked = data.miniLinks; }).catch(() => {});
-  return el("div", {},
-    el("label", { class: "row appearance-checkbox" }, toggle, "Open links from other apps in Mini Lima"),
-    el("p", { class: "muted" }, "A link you click in Mail, Messages or Slack opens in a small window instead of your sidebar. Read it and close it, or press ",
-      el("kbd", { text: "⌘O" }), " to move it into Lima. ", el("kbd", { text: "⌥⌘N" }), " opens Mini Lima for a quick search anytime."));
+  const save = (key, value) => bridge.browser("miniPrefs", { key, value }).then(paint).catch(() => {});
+  const check = (key, label, hint) => {
+    const box = el("input", { type: "checkbox", onchange: () => save(key, box.checked) });
+    boxes[key] = box;
+    return el("label", { class: "mini-setting" }, box, el("span", {}, el("strong", { text: label }), hint ? el("small", { class: "muted", text: hint }) : null));
+  };
+  const boxes = {};
+  const outside = el("select", { "aria-label": "Clicking outside", onchange: () => save("outside", outside.value) },
+    el("option", { value: "dismiss", text: "Closes it, when nothing would be lost" }), el("option", { value: "keep", text: "Keeps it open" }));
+  // The shortcut: click, then press the keys you want.
+  const shortcut = el("button", { type: "button", class: "shortcut-recorder", "aria-label": "Mini Lima shortcut" });
+  let recording = false;
+  shortcut.addEventListener("click", () => { recording = true; shortcut.textContent = "Press keys…"; shortcut.focus(); });
+  shortcut.addEventListener("blur", () => { if (recording) { recording = false; paint(); } });
+  shortcut.addEventListener("keydown", event => {
+    if (!recording) return;
+    event.preventDefault();
+    if (event.key === "Escape") { recording = false; paint(); return; }
+    if (["Meta", "Alt", "Shift", "Control"].includes(event.key)) return;
+    const mods = [event.ctrlKey && "ctrl", event.altKey && "alt", event.shiftKey && "shift", event.metaKey && "meta"].filter(Boolean);
+    recording = false;
+    if (!mods.includes("meta") && !mods.includes("ctrl")) { shortcutNote.textContent = "Include ⌘ or ⌃ in the shortcut."; paint(); return; }
+    shortcutNote.textContent = "";
+    save("shortcut", [...mods, event.code].join("+"));
+  });
+  const shortcutNote = el("small", { class: "muted", role: "status" });
+  const sites = el("textarea", { rows: 2, placeholder: "github.com, docs.google.com", "aria-label": "Sites that always open in your main window" });
+  sites.addEventListener("change", () => save("siteRules", sites.value.split(/[\s,]+/).filter(Boolean)));
+  const apps = el("div", { class: "mini-app-rules" });
+  function paint(state) {
+    if (!state) { bridge.browser("miniPrefs", {}).then(paint).catch(() => {}); return; }
+    for (const [key, box] of Object.entries(boxes)) box.checked = !!state[key];
+    outside.value = state.outside;
+    if (!recording) shortcut.textContent = state.shortcutLabel;
+    if (document.activeElement !== sites) sites.value = state.siteRules.join(", ");
+    apps.replaceChildren(...Object.entries(state.appRules).map(([bundleId, rule]) => el("div", { class: "row" },
+      el("span", { class: "grow", text: `Links from ${rule.name} open in ${rule.open === "main" ? "your Lima window" : "Mini Lima"}` }),
+      el("button", { class: "ghost", onclick: () => save("appRule", { bundleId, open: null }) }, "Remove"))));
+    call("system.previousApp").then(app => {
+      if (!app?.bundleId || state.appRules[app.bundleId]) return;
+      apps.append(el("div", { class: "row" }, el("span", { class: "grow muted", text: `Links from ${app.name}:` }),
+        el("button", { class: "ghost", onclick: () => save("appRule", { ...app, open: "main" }) }, "Open in Lima window"),
+        el("button", { class: "ghost", onclick: () => save("appRule", { ...app, open: "mini" }) }, "Open in Mini Lima")));
+    }).catch(() => {});
+  }
+  paint();
+  return el("div", { class: "mini-settings" },
+    check("external", "Open links from other apps in Mini Lima", "Links you click in Mail, Messages or Slack open in a small window instead of your sidebar."),
+    check("restoreFocus", "Go back to the app the link came from", "When you close Mini Lima."),
+    check("reuse", "Reuse the open Mini Lima", "A second link joins it as a tab instead of opening another window."),
+    check("rememberSize", "Remember its size", "For each arrangement of displays."),
+    check("pinned", "Keep it above other apps", "Every Mini Lima starts pinned. ⇧⌘P pins one."),
+    check("hints", "Show quick keyboard hints"),
+    el("label", { class: "row" }, "Clicking outside", outside),
+    el("div", { class: "row" }, el("span", { class: "grow" }, "Open Mini Lima"), shortcut), shortcutNote,
+    el("label", { class: "mini-setting wide" }, el("span", {}, el("strong", { text: "Sites that open in your Lima window" }),
+      el("small", { class: "muted", text: "Links to these skip Mini Lima." })), sites),
+    el("div", { class: "mini-setting wide" }, el("strong", { text: "Apps" }), apps),
+    el("p", { class: "muted" }, "In Mini Lima: ", el("kbd", { text: "esc" }), " closes, ", el("kbd", { text: "⌘O" }), " opens it in Lima, ",
+      el("kbd", { text: "⇧⌘O" }), " chooses where, ", el("kbd", { text: "⌘L" }), " edits the address."),
+    el("div", { class: "row" }, el("button", { class: "ghost", onclick: () => save("restoreDefaults", true) }, "Restore defaults")));
 }
 
 /* Apple Passwords: the passwords and passkeys saved on this Mac (iCloud
@@ -738,20 +799,28 @@ function providerSettings() {
   return node;
 }
 
+/* Messages: agents can read recent texts and send one, with your OK each
+ * time. Off until turned on; reading needs Full Disk Access for Lima. */
 function messagesSettings() {
-  const recipient = el("input", { maxlength: 160, placeholder: "Phone number or email" });
-  const message = el("textarea", { maxlength: 5000, rows: 3, required: true });
-  const status = el("p", { class: "muted", role: "status" });
-  const send = el("button", { class: "primary", type: "submit" }, "Open draft in Messages");
-  return el("form", { class: "messages-settings", onsubmit: async event => {
-    event.preventDefault();
-    send.disabled = true;
-    status.textContent = "";
-    try { await call("integrations.messages.compose", { recipient: recipient.value, message: message.value }); }
-    catch (error) { status.textContent = errorText(error); }
-    finally { send.disabled = false; }
-  } }, el("label", {}, "Recipient (optional)", recipient),
-  el("label", {}, "Message", message), send, status);
+  const toggle = el("input", { type: "checkbox" });
+  const access = el("p", { class: "muted", role: "status" });
+  const allow = el("button", { class: "ghost", hidden: true, onclick: () => call("system.openSettings", { pane: "fullDisk" }).catch(() => {}) },
+    "Open Full Disk Access…");
+  const paint = state => {
+    toggle.checked = !!state.enabled;
+    allow.hidden = !state.enabled || state.fullDiskAccess;
+    access.textContent = !state.enabled ? "Off. Agents can't read or send your texts."
+      : state.fullDiskAccess ? "On. An agent asks before it reads your texts (once per task) and before it sends each one."
+      : "On, but Lima can't read Messages yet: allow Lima in System Settings → Privacy & Security → Full Disk Access. Sending works once macOS asks about Messages.";
+  };
+  toggle.addEventListener("change", () => call("messages.settings", { enabled: toggle.checked }).then(paint).catch(error => { access.textContent = errorText(error); }));
+  const check = () => call("messages.settings", {}).then(paint).catch(error => { access.textContent = errorText(error); });
+  check();
+  addEventListener("focus", check);
+  return el("div", { class: "messages-settings" },
+    el("label", { class: "row appearance-checkbox" }, toggle, "Let agents read and send texts"),
+    el("p", { class: "muted", text: "Lets an agent check a conversation (“did the restaurant text back?”) or send a text for you. Texts an agent reads go to your AI provider for that task." }),
+    access, el("div", { class: "row" }, allow));
 }
 
 function googleSettings() {

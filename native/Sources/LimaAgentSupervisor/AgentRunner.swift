@@ -40,7 +40,8 @@ public struct AgentFailure: Codable, Equatable, Sendable, Error {
         if has("operation not permitted", "permission denied", "sandbox denied", "access to this folder", "denied access to") {
             return AgentFailure(.permissionDenied, summary)
         }
-        if has("rate limit", "429", "usage limit", "quota", "limit reached", "-hour limit", "weekly limit", "opus limit")
+        if has("rate limit", "429", "usage limit", "quota", "limit reached", "-hour limit", "weekly limit", "opus limit",
+               "credit balance", "insufficient credit", "out of credit", "no credits", "credits remaining", "payment required")
             || (has("hit your") && has("limit")) {
             return AgentFailure(.rateLimited, summary, resetsAt: usageReset(in: text)?.timeIntervalSince1970)
         }

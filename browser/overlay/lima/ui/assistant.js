@@ -274,11 +274,25 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
   /** Scheduling is confirmed here: what runs, when, and where. */
   function showSchedule(task, proposal, agentSettings) {
     const destination = proposal.workspaceId && workspaces.get(proposal.workspaceId);
+    // What each run will need, specced out by the Companion: each one you
+    // keep ticked is approved for every run, so it needn't wait for you.
+    const grants = (proposal.preApprovals ?? []).map(item => ({ item, box: el("input", { type: "checkbox", checked: true }) }));
+    const grantLabel = item => item.kind === "login" ? "Sign in" : item.kind === "browser" ? "Use site" : item.risk === "money" ? "Spend" : "Allow";
+    const site = item => { try { return item.url ? new URL(item.url).hostname.replace(/^www\./, "") : ""; } catch { return ""; } };
+    const grantList = grants.length ? el("fieldset", { class: "schedule-grants" },
+      el("legend", { text: "Approve ahead of time" }),
+      el("p", { class: "muted", text: "Runs may happen while you're away. Each item you keep ticked is approved for every run; anything else waits for you. Payments always ask." }),
+      grants.map(({ item, box }) => el("label", { class: "schedule-grant" }, box,
+        el("span", { class: "schedule-grant-kind", text: grantLabel(item) }),
+        el("span", { class: "schedule-grant-text" }, el("strong", { text: item.request }),
+          site(item) || item.detail ? el("small", { class: "muted", text: [site(item), item.detail].filter(Boolean).join(" · ") }) : null)))) : null;
     const create = async () => {
       paintTask(task, "working", "Scheduling…");
       try {
+        const preApprovals = grants.filter(({ box }) => box.checked).map(({ item }) => item);
         const created = await call("schedule.create", { ...agentSettings, title: proposal.title, instruction: proposal.instruction, when: proposal.when,
-          workspaceId: destination ? proposal.workspaceId : undefined, workspaceName: destination ? undefined : proposal.newName });
+          workspaceId: destination ? proposal.workspaceId : undefined, workspaceName: destination ? undefined : proposal.newName,
+          preApprovals: preApprovals.length ? preApprovals : undefined });
         paintTask(task, "complete", el("strong", { text: `Scheduled · ${created.summary}` }),
           el("button", { class: "ghost", onclick: openSchedules }, icon("calendar"), "Scheduled Tasks"));
         await remember(task.thread, `Scheduled “${created.title}”: ${created.summary.toLowerCase()}${created.nextRunLabel ? `. First run ${created.nextRunLabel}` : ""}.` +
@@ -299,8 +313,9 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
       el("p", { class: "schedule-proposal-what", text: proposal.instruction }),
       proposal.note ? el("p", { class: "muted", text: proposal.note }) : null,
       el("p", { class: "muted", text: destination ? `Runs in ${destination.name}.` : `Runs in a new workspace, “${proposal.newName}”.` }),
+      grantList,
       el("div", { class: "row" },
-        el("button", { class: "primary", onclick: create }, "Schedule"),
+        el("button", { class: "primary", onclick: create }, grants.length ? "Schedule and approve" : "Schedule"),
         el("button", { class: "ghost", onclick: () => { paintTask(task, "complete"); remember(task.thread, "Scheduling canceled."); } }, "Cancel")));
   }
 

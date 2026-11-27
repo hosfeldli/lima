@@ -40,6 +40,7 @@ extension Runtime {
             return .bool(true)
         }
         register("agents.discover") { [unowned self] _, _ in try JSONValue.from(await self.discovery.discoverAll()) }
+        register("emoji.catalog") { _, _ in EmojiCatalog.groups }
         register("agents.models") { params, _ in
             let provider = CLIProvider(rawValue: try params.string("provider")) ?? .claude
             return try JSONValue.from(ModelCatalog.models(for: provider))
@@ -258,6 +259,9 @@ extension Runtime {
         }
         register("chat.unqueue") { [unowned self] params, _ in
             try JSONValue.from(try await self.conversations.unqueue(try params.string("id"), messageID: try params.string("messageId")))
+        }
+        register("chat.cancelRetry") { [unowned self] params, _ in
+            try JSONValue.from(try await self.conversations.cancelAutoRetry(try params.string("id"), messageID: try params.string("messageId")))
         }
         register("chat.retry") { [unowned self] params, _ in try JSONValue.from(try await self.conversations.retry(try params.string("id"), assistantMessageID: try params.string("messageId"))) }
         register("chat.edit") { [unowned self] params, _ in

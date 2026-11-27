@@ -66,7 +66,7 @@ public final class Runtime: @unchecked Sendable {
     public let startedAt = Date()
 
     private static let conversationMethods: Set<String> = [
-        "chat.get", "chat.resources", "chat.configure", "chat.mascot", "chat.send", "chat.attach", "chat.attachment", "chat.media", "chat.interrupt", "chat.unqueue", "chat.retry", "chat.edit", "chat.cancel", "chat.delete"
+        "chat.get", "chat.resources", "chat.configure", "chat.mascot", "chat.send", "chat.attach", "chat.attachment", "chat.media", "chat.interrupt", "chat.unqueue", "chat.retry", "chat.cancelRetry", "chat.edit", "chat.cancel", "chat.delete"
     ]
     private var handlers: [String: MethodHandler] = [:]
     private let clientsLock = NSLock()
@@ -160,6 +160,8 @@ public final class Runtime: @unchecked Sendable {
         registerWorkspaceActivity()
         registerDictation()
         registerSystemSettings()
+        registerMessages()
+        registerFrontApps()
         registerUpdates()
         // A usage limit on one provider continues the turn on another ready
         // one: the user's default first, then Lima's usual order.

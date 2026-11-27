@@ -1,19 +1,12 @@
 /* Notes: index (organized by the bookmark tree), classic editor and canvas. */
-import { bar, bridge, call, debounce, el, errorText, hydrateEmbeds, icon, installEmbedActions, markdown, noteEmbed, onEvent, relativeTime, setPage } from "./lib.js";
+import { bar, bridge, call, debounce, el, errorText, hydrateEmbeds, imageCache, icon, installEmbedActions, markdown, noteEmbed, onEvent, relativeTime, setPage } from "./lib.js";
 import { artifactFromBlock, CALCULATOR_TEMPLATE, evaluateFormula, noteFacts, noteScope, parseValueSource, valueChip, wireValues } from "./rich-content.js";
 
 installEmbedActions();
 
-const attachmentCache = new Map();
+const attachmentCache = imageCache(60);
 function attachmentURL(id) {
-  if (!attachmentCache.has(id)) {
-    attachmentCache.set(id, call("notes.attachment.get", { id }).then(result =>
-      `data:image/png;base64,${result.data}`).catch(error => {
-      attachmentCache.delete(id);
-      throw error;
-    }));
-  }
-  return attachmentCache.get(id);
+  return attachmentCache(id, () => call("notes.attachment.get", { id }).then(result => ({ type: "image/png", data: result.data })));
 }
 
 // MARK: Index

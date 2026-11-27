@@ -39,3 +39,19 @@ test("what the agent made lists pages, notes and changed files", () => {
   assert.equal(made.notes[0].title, "Plan");
   assert.deepEqual(made.files, [{ path: "src/app.js", name: "app.js" }], "reading a file isn't making it");
 });
+
+test("a reply's steps read as phases of work", async () => {
+  const { stepPhases } = await import("../overlay/lima/ui/agent-story.sys.mjs");
+  const step = tool => ({ tool });
+  const phases = stepPhases([
+    step('mcp__lima__workspace_browser: {"url":"https://www.opentable.com/r/la-grotta","action":"inspect"}'),
+    step('mcp__lima__workspace_browser: {"url":"https://www.opentable.com/r/la-grotta","action":"click"}'),
+    step('Read: {"file_path":"/w/notes.md"}'),
+    step('Read: {"file_path":"/w/plan.md"}'),
+    step('Read: {"file_path":"/w/plan.md"}'),
+    step('Edit: {"file_path":"/w/plan.md"}'),
+    step('Bash: {"command":"npm test"}'),
+  ], { cwd: "/w" });
+  assert.deepEqual(phases.map(phase => phase.title), ["Worked on opentable.com", "Read 2 files", "Edited 1 file", "Ran 1 command"]);
+  assert.deepEqual(phases.map(phase => phase.steps.length), [2, 3, 1, 1]);
+});
