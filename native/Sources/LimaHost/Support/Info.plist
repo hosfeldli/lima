@@ -7,7 +7,7 @@
 	<key>CFBundleName</key>
 	<string>Lima Runtime</string>
 	<key>CFBundleShortVersionString</key>
-	<string>5.0.13</string>
+	<string>5.0.14</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Lima controls music playback when you use its media controls.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
