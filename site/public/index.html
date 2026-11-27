@@ -3,22 +3,22 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Lima: the Mac browser where AI agents work in your tabs</title>
-  <meta name="description" content="A free Mac browser where Claude Code, Codex and OpenCode work in real tabs beside yours, and nothing risky happens until you approve it.">
+  <title>Lima: your browser and your AI, working together</title>
+  <meta name="description" content="Lima is a free, open-source Mac browser. Browse, research and build alongside AI agents that work in their own tabs, while you stay in control of anything sensitive.">
   <link rel="canonical" href="https://lima.liamhosfeld.com/">
-  <meta name="theme-color" content="#f2f2f2" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#202021" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1c1c1d" media="(prefers-color-scheme: dark)">
   <meta name="color-scheme" content="light dark">
   <meta name="robots" content="index, follow, max-image-preview:large">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Lima">
   <meta property="og:url" content="https://lima.liamhosfeld.com/">
-  <meta property="og:title" content="Lima: the Mac browser where AI agents work in your tabs">
-  <meta property="og:description" content="Claude Code, Codex and OpenCode work in real tabs beside yours. The sidebar shows what each agent is doing, and risky steps wait for your approval.">
+  <meta property="og:title" content="Lima: your browser and your AI, working together">
+  <meta property="og:description" content="A free, open-source Mac browser where AI agents work in their own tabs beside yours. You see what they do, and sensitive steps wait for your OK.">
   <meta property="og:image" content="https://lima.liamhosfeld.com/og.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="Lima's sidebar with AI workspaces working, beside the headline “The browser where your AI agents work in plain sight.”">
+  <meta property="og:image:alt" content="Lima's sidebar with AI workspaces at work.">
   <meta name="twitter:card" content="summary_large_image">
   <link rel="icon" href="/lima.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
@@ -33,7 +33,7 @@
         "@type": "SoftwareApplication",
         "@id": "https://lima.liamhosfeld.com/#app",
         "name": "Lima",
-        "description": "A macOS browser and AI workspace built on Zen and Firefox. AI coding agents (Claude Code, Codex, OpenCode) work in real browser tabs beside the user's, the sidebar shows each agent's activity, and risky actions wait for the user's approval.",
+        "description": "A free, open-source macOS browser built on Zen and Firefox. AI agents (Claude Code, Codex or OpenCode) work in their own tabs and workspaces beside the user's, their activity is visible, and sensitive actions wait for the user's approval.",
         "applicationCategory": "BrowserApplication",
         "applicationSubCategory": "AI workspace",
         "operatingSystem": "macOS 14 or later (Apple Silicon)",
@@ -44,15 +44,15 @@
         "isAccessibleForFree": true,
         "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
         "featureList": [
-          "AI workspaces where agents work in real browser tabs",
-          "Approval cards for risky actions and sign-ins that stay until answered",
+          "A complete browser built on Zen and Firefox, with Firefox add-ons and import from other browsers",
+          "AI workspaces where agents work in their own browser tabs",
+          "Approval cards for sensitive actions",
+          "Mini Lima: links from other apps open in a small window",
           "Universal search over the web, tabs, workspaces and notes (⌘T)",
-          "Companion that hands work to agents and shows their state",
-          "Notes, music controls, dictation and downloads in the sidebar",
-          "Hides search engines' AI answers and sponsored results, and YouTube Shorts",
-          "Encrypted local storage; no account"
+          "Notes with live values and calculators",
+          "Encrypted local storage; no account; no telemetry"
         ],
-        "softwareRequirements": "Claude Code, Codex or OpenCode CLI for AI features",
+        "softwareRequirements": "Optional for AI features: Claude Code, Codex or OpenCode",
         "license": "https://www.mozilla.org/en-US/MPL/2.0/",
         "codeRepository": "https://github.com/hosfeldli/lima",
         "author": { "@type": "Person", "name": "Liam Hosfeld" }
@@ -63,37 +63,22 @@
         "name": "Lima",
         "url": "https://lima.liamhosfeld.com/",
         "about": { "@id": "https://lima.liamhosfeld.com/#app" }
-      },
-      {
-        "@type": "FAQPage",
-        "mainEntity": [
-          { "@type": "Question", "name": "Is Lima free?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. Lima is free to download and use, and there's no account. AI features run on the Claude Code, Codex or OpenCode CLI you already use, under that provider's own plan." } },
-          { "@type": "Question", "name": "Which AI agents does Lima work with?", "acceptedAnswer": { "@type": "Answer", "text": "Claude Code, Codex and OpenCode. Lima finds the CLIs installed on your Mac and drives them through its own tools, so they can work in browser tabs, ask you questions and request approval." } },
-          { "@type": "Question", "name": "What does an agent need my approval for?", "acceptedAnswer": { "@type": "Answer", "text": "Anything Lima's policy flags: spending money, acting on an account, changing your Mac, new access, or a sign-in. The approval card names who is asking and what for, and it stays until you answer. When you approve, the agent picks up where it stopped." } },
-          { "@type": "Question", "name": "Which Macs does Lima run on?", "acceptedAnswer": { "@type": "Answer", "text": "Macs with Apple Silicon (M1 or later) running macOS 14 Sonoma or later." } },
-          { "@type": "Question", "name": "Is Lima built on Chrome?", "acceptedAnswer": { "@type": "Answer", "text": "No. Lima is built on Zen, a Firefox-based browser, so it uses the Firefox (Gecko) engine and Firefox's security updates." } },
-          { "@type": "Question", "name": "Does Lima send my data anywhere?", "acceptedAnswer": { "@type": "Answer", "text": "Notes, chats and workspace history stay on your Mac in an encrypted store. Your AI provider receives what you send and what agents read while working for you." } }
-        ]
       }
     ]
   }
   </script>
 </head>
 <body>
-  <a class="skip" href="#overview">Skip to content</a>
+  <a class="skip" href="#top">Skip to content</a>
 
   <svg class="sprite" aria-hidden="true" focusable="false">
-    <symbol id="i-home" viewBox="0 0 20 20"><path d="M3.5 9 10 3.5 16.5 9v7a1 1 0 0 1-1 1h-3v-5h-5v5h-3a1 1 0 0 1-1-1Z"/></symbol>
     <symbol id="i-agent" viewBox="0 0 20 20"><rect x="2.5" y="4" width="15" height="12" rx="2.5"/><path d="M2.5 7.5h15M6 11l2 1.5L6 14m4 0h3"/></symbol>
     <symbol id="i-shield" viewBox="0 0 20 20"><path d="M10 2.8 16 5v4.6c0 3.7-2.5 6.3-6 7.6-3.5-1.3-6-3.9-6-7.6V5Z"/><path d="m7.3 10 1.9 1.9 3.6-3.8"/></symbol>
     <symbol id="i-search" viewBox="0 0 20 20"><circle cx="8.8" cy="8.8" r="5.3"/><path d="m12.8 12.8 4 4"/></symbol>
-    <symbol id="i-companion" viewBox="0 0 20 20"><path d="M4.6 11.6c0-1.8.8-3.4 2.3-4.3 0-1.7 1.2-3.1 2.7-3.5l1.8 2.4c.7 0 1.2.2 1.8.4l1.7-1c-.2 1-.2 1.8.2 2.4 1.4 1.4 2 3.4 1.6 5.2-.6 2-2.6 2.8-6.4 2.8S3.6 15.2 3.6 13.2c0-.6.4-1.2 1-1.6Z"/><path d="M8.6 12.2c.6.8 1.4.8 2 0"/></symbol>
     <symbol id="i-note" viewBox="0 0 20 20"><path d="M5 3h7l3.5 3.5V16a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"/><path d="M12 3v3.5h3.5M7 10h6M7 13h4"/></symbol>
     <symbol id="i-lock" viewBox="0 0 20 20"><rect x="4" y="9" width="12" height="8" rx="2"/><path d="M7 9V6.5a3 3 0 0 1 6 0V9"/></symbol>
     <symbol id="i-download" viewBox="0 0 20 20"><path d="M10 3.5v9m-3.8-3.7L10 12.6l3.8-3.8M4 16.5h12"/></symbol>
-    <symbol id="i-question" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7"/><path d="M8 8a2 2 0 1 1 3 1.7c-.7.4-1 .9-1 1.6M10 14h.01"/></symbol>
     <symbol id="i-folder" viewBox="0 0 20 20"><path d="M2.8 6.2a1.5 1.5 0 0 1 1.5-1.5h3.4l1.7 1.8h6.3a1.5 1.5 0 0 1 1.5 1.5v6.8a1.5 1.5 0 0 1-1.5 1.5H4.3a1.5 1.5 0 0 1-1.5-1.5Z"/></symbol>
-    <symbol id="i-chevron" viewBox="0 0 20 20"><path d="m7.5 5 5 5-5 5"/></symbol>
     <symbol id="i-github" viewBox="0 0 20 20"><path d="M10 2.5a7.5 7.5 0 0 0-2.4 14.6c.4.1.5-.2.5-.4v-1.4c-2.1.5-2.5-1-2.5-1-.4-.9-.9-1.1-.9-1.1-.7-.5 0-.5 0-.5.8.1 1.2.8 1.2.8.7 1.2 1.8.8 2.2.6.1-.5.3-.8.5-1-1.7-.2-3.4-.8-3.4-3.7 0-.8.3-1.5.8-2-.1-.2-.3-1 .1-2 0 0 .6-.2 2.1.8a7.2 7.2 0 0 1 3.8 0c1.4-1 2.1-.8 2.1-.8.4 1 .1 1.8.1 2 .5.5.8 1.2.8 2 0 2.9-1.8 3.5-3.4 3.7.3.2.5.7.5 1.4v2.1c0 .2.1.5.5.4A7.5 7.5 0 0 0 10 2.5Z"/></symbol>
     <symbol id="i-check" viewBox="0 0 20 20"><path d="m5 10.5 3 3 7-7"/></symbol>
     <symbol id="i-file" viewBox="0 0 20 20"><path d="M5.5 3h6l3 3v10a1 1 0 0 1-1 1h-8a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"/><path d="M11.5 3v3h3"/></symbol>
@@ -105,282 +90,308 @@
     <symbol id="i-music" viewBox="0 0 20 20"><path d="M8 15V5l8-1.5v10"/><circle cx="6" cy="15" r="2"/><circle cx="14" cy="13.5" r="2"/></symbol>
     <symbol id="i-sparkle" viewBox="0 0 20 20"><path d="M10 3c.6 3.6 2.4 5.4 6 6-3.6.6-5.4 2.4-6 6-.6-3.6-2.4-5.4-6-6 3.6-.6 5.4-2.4 6-6Z"/></symbol>
     <symbol id="i-replay" viewBox="0 0 20 20"><path d="M4.5 10a5.5 5.5 0 1 0 1.8-4.1M4.5 3.5v3h3"/></symbol>
+    <symbol id="i-plane" viewBox="0 0 20 20"><path d="M17 3 3 9l5 2 2 5 7-13Z"/><path d="m8 11 4-4"/></symbol>
+    <symbol id="i-bag" viewBox="0 0 20 20"><path d="M4.5 7h11l-1 9.5h-9Z"/><path d="M7.5 7V6a2.5 2.5 0 0 1 5 0v1"/></symbol>
+    <symbol id="i-briefcase" viewBox="0 0 20 20"><rect x="3" y="6.5" width="14" height="10" rx="2"/><path d="M7.5 6.5V5a1.5 1.5 0 0 1 1.5-1.5h2A1.5 1.5 0 0 1 12.5 5v1.5M3 11h14"/></symbol>
+    <symbol id="i-window" viewBox="0 0 20 20"><rect x="3.5" y="5" width="13" height="10" rx="2"/><path d="M3.5 8h13"/></symbol>
+    <symbol id="i-puzzle" viewBox="0 0 20 20"><path d="M8 3.5a1.5 1.5 0 0 1 3 0V5h3.5v3.5h-1.5a1.5 1.5 0 0 0 0 3h1.5V15H11v-1.5a1.5 1.5 0 0 0-3 0V15H4.5v-3.5H6a1.5 1.5 0 0 0 0-3H4.5V5H8Z"/></symbol>
+    <symbol id="i-import" viewBox="0 0 20 20"><path d="M10 3v8.5m-3.5-3L10 12l3.5-3.5M4 14v1.5A1.5 1.5 0 0 0 5.5 17h9a1.5 1.5 0 0 0 1.5-1.5V14"/></symbol>
+    <symbol id="i-split" viewBox="0 0 20 20"><rect x="3" y="4.5" width="14" height="11" rx="2"/><path d="M10 4.5v11"/></symbol>
   </svg>
 
-  <div class="window">
-    <!-- The sidebar is the site's navigation, as it is Lima's. -->
-    <aside class="sidebar" aria-label="Lima">
-      <div class="side-head">
-        <a class="brand" href="#overview" aria-label="Lima, back to top">
-          <img src="/lima.svg" alt="" width="28" height="28">
-          <span>Lima</span>
-        </a>
-        <a class="download-compact" data-download href="/download">Download</a>
-      </div>
-
-      <nav class="features" id="features" aria-label="Features">
-        <p class="folder-label"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>What it does</p>
-        <ul>
-          <li><a href="#overview" data-tab><svg class="icon" aria-hidden="true"><use href="#i-home"/></svg><span>Overview</span></a></li>
-          <li><a href="#agents" data-tab data-keywords="claude codex opencode chat tabs steps"><svg class="icon" aria-hidden="true"><use href="#i-agent"/></svg><span>Agents in your tabs</span></a></li>
-          <li><a href="#approvals" data-tab data-keywords="approve permission sign in login safety"><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg><span>Approvals</span></a></li>
-          <li><a href="#search" data-tab data-keywords="command t universal ask"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg><span>Search</span><kbd>⌘T</kbd></a></li>
-          <li><a href="#companion" data-tab data-keywords="folders schedule overview delegate"><svg class="icon" aria-hidden="true"><use href="#i-companion"/></svg><span>Companion</span></a></li>
-          <li><a href="#everyday" data-tab data-keywords="notes music spotify youtube dictation downloads ads shorts"><svg class="icon" aria-hidden="true"><use href="#i-note"/></svg><span>Notes, music &amp; more</span></a></li>
-        </ul>
-        <p class="folder-label"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>Get Lima</p>
-        <ul>
-          <li><a href="#privacy" data-tab data-keywords="data encrypted local account"><svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg><span>Privacy</span></a></li>
-          <li><a href="#install" data-tab data-keywords="download requirements update verify"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span>Install</span></a></li>
-          <li><a href="#faq" data-tab data-keywords="questions free chrome mac"><svg class="icon" aria-hidden="true"><use href="#i-question"/></svg><span>Questions</span></a></li>
-        </ul>
+  <!-- Top bar: the site's navigation (Lima's own sidebar appears in the demos). -->
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="#top" aria-label="Lima, back to top"><img src="/lima.svg" alt="" width="26" height="26"><span>Lima</span></a>
+      <nav class="topnav" aria-label="Sections">
+        <a href="#demo">How it works</a>
+        <a href="#browser">Browser</a>
+        <a href="#control">Privacy &amp; control</a>
+        <a href="#start">Get started</a>
+        <a href="#faq">FAQ</a>
       </nav>
+      <a class="button primary small" data-download href="/download"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Download</a>
+    </div>
+  </header>
 
-      <section class="demo-folder" aria-label="Demo workspaces">
-        <p class="folder-label"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>Workspaces<span class="tag">demo</span></p>
-        <ul>
-          <li class="ws" data-ws="client" data-state="idle"><span class="dot"></span><span class="ws-name">Client Website</span><span class="ws-state"></span></li>
-          <li class="ws" data-ws="lima" data-state="working"><span class="dot"></span><span class="ws-name">Lima Browser</span><span class="ws-state">Running tests</span></li>
-          <li class="ws" data-ws="trip" data-state="idle"><span class="dot"></span><span class="ws-name">Japan Trip</span><span class="ws-state"></span></li>
-        </ul>
-      </section>
-
-      <div class="dock">
-        <a class="button primary" data-download href="/download">
-          <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Download for macOS
-        </a>
-        <p class="dock-meta" data-platform-note><span data-version>Free</span> · Apple Silicon · macOS 14+</p>
-        <a class="dock-link" href="https://github.com/hosfeldli/lima"><svg class="icon" aria-hidden="true"><use href="#i-github"/></svg>Source on GitHub</a>
+  <main id="top">
+    <!-- 01 Hero -->
+    <section class="hero" aria-labelledby="hero-title">
+      <p class="eyebrow">Open source · macOS</p>
+      <h1 id="hero-title">Your browser. Your AI. Working together.</h1>
+      <p class="lede">Browse, research, build and get things done alongside AI agents that work in their own tabs. You see what they're doing, and anything sensitive waits for your OK.</p>
+      <div class="cta-row">
+        <a class="button primary large" data-download href="/download"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Download for Mac</a>
+        <a class="button ghost large" href="#demo">See how it works</a>
       </div>
-    </aside>
+      <p class="cta-meta" id="release" data-platform-note>Free and open source · No Lima account · Apple Silicon · macOS 14 or later</p>
+      <p class="works-with">Works with the AI you already use: <span>Claude Code</span><span>Codex</span><span>OpenCode</span>. Or skip AI and just browse.</p>
+    </section>
 
-    <main class="tab" id="main">
-      <section class="pane hero" id="overview" aria-labelledby="overview-title">
-        <div class="hero-copy">
-          <h1 id="overview-title">The browser where your AI agents work in plain sight.</h1>
-          <p class="lede">Lima is a free Mac browser where the Claude Code, Codex or OpenCode you already use works in real tabs beside yours, and nothing risky happens until you say yes.</p>
-          <div class="cta">
-            <a class="button primary large" data-download href="/download">
-              <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Download for macOS
-            </a>
-            <p class="cta-meta" id="release" aria-live="polite" data-platform-note>Free · Apple Silicon · macOS 14 or later</p>
+    <!-- 02 Live demonstration -->
+    <section class="section" id="demo" aria-labelledby="demo-title">
+      <header class="section-head">
+        <h2 id="demo-title">Watch an agent work in real tabs.</h2>
+        <p>Tell Lima what you want. An agent opens the pages it needs in its own workspace, so your tabs stay yours, and you can follow every step. Pick a task.</p>
+      </header>
+      <figure class="session" data-demo="session" aria-label="Simulated Lima session">
+        <div class="session-tasks" role="tablist" aria-label="Tasks">
+          <button type="button" role="tab" data-task="trip" aria-selected="true"><svg class="icon" aria-hidden="true"><use href="#i-plane"/></svg>Plan a trip</button>
+          <button type="button" role="tab" data-task="site" aria-selected="false"><svg class="icon" aria-hidden="true"><use href="#i-terminal"/></svg>Build a website</button>
+          <button type="button" role="tab" data-task="research" aria-selected="false"><svg class="icon" aria-hidden="true"><use href="#i-briefcase"/></svg>Research a topic</button>
+        </div>
+        <div class="lw" aria-live="polite">
+          <div class="lw-side">
+            <p class="lw-ws"><span class="dot" data-state="working"></span><span class="lw-ws-name"></span><span class="lw-ws-state"></span></p>
+            <ol class="lw-tabs"></ol>
           </div>
-          <ul class="trust" aria-label="Why it's safe to try">
-            <li><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Uses your existing CLI and plan</li>
-            <li><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Notarized by Apple</li>
-            <li><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Open source</li>
+          <div class="lw-main">
+            <p class="lw-url"><svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg><span></span></p>
+            <div class="lw-page"><p class="lw-page-title"></p><div class="lw-lines"><i></i><i></i><i></i><i></i></div></div>
+            <div class="lw-agent">
+              <p class="lw-ask"></p>
+              <ol class="lw-steps"></ol>
+              <div class="lw-approval" hidden>
+                <p class="lw-approval-q"></p>
+                <div class="lw-approval-actions"><button type="button" class="button ghost small" data-answer="deny">Not now</button><button type="button" class="button primary small" data-answer="allow">Allow once</button></div>
+              </div>
+              <p class="lw-done" hidden><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><span></span></p>
+            </div>
+          </div>
+        </div>
+        <figcaption class="caption-row">Simulated session for illustration, not a live AI.<button class="replay" type="button" data-replay="session"><svg class="icon" aria-hidden="true"><use href="#i-replay"/></svg>Replay</button></figcaption>
+      </figure>
+    </section>
+
+    <!-- 03 Everyday use -->
+    <section class="section" id="uses" aria-labelledby="uses-title">
+      <header class="section-head">
+        <h2 id="uses-title">For the things you already do.</h2>
+        <p>Not just code. If it happens in a browser, an agent can take the busywork while you keep going.</p>
+      </header>
+      <ul class="uses">
+        <li><svg class="icon" aria-hidden="true"><use href="#i-terminal"/></svg><strong>Build something</strong><span>Ask an agent to fix a website, run the tests and open the result, while you work in another tab.</span></li>
+        <li><svg class="icon" aria-hidden="true"><use href="#i-plane"/></svg><strong>Plan a trip</strong><span>Research hotels and flights and keep the findings in a travel workspace, sorted into folders.</span></li>
+        <li><svg class="icon" aria-hidden="true"><use href="#i-bag"/></svg><strong>Find the right product</strong><span>Compare products across sites and collect reviews. Nothing is bought without your OK.</span></li>
+        <li><svg class="icon" aria-hidden="true"><use href="#i-briefcase"/></svg><strong>Get work done</strong><span>Research a topic, keep the sources together and get a draft report in a note.</span></li>
+        <li><svg class="icon" aria-hidden="true"><use href="#i-calendar"/></svg><strong>Repeat it</strong><span>“Every Friday at 5, write my weekly report.” Scheduled work runs and waits for you when it's done.</span></li>
+      </ul>
+    </section>
+
+    <!-- 04 A complete browser -->
+    <section class="section" id="browser" aria-labelledby="browser-title">
+      <header class="section-head">
+        <h2 id="browser-title">Everything you expect from a browser.</h2>
+        <p>Lima is a full browser first, built on <a href="https://zen-browser.app">Zen</a> and Firefox. AI is there when you want it and out of the way when you don't.</p>
+      </header>
+      <ul class="grid-facts">
+        <li><svg class="icon" aria-hidden="true"><use href="#i-import"/></svg><strong>Move in from your old browser</strong><span>Bring bookmarks, history and saved passwords from Chrome, Safari, Edge, Brave and others. You choose what comes along.</span></li>
+        <li><svg class="icon" aria-hidden="true"><use href="#i-puzzle"/></svg><strong>Firefox add-ons</strong><span>Your favourite Firefox extensions install and run as they do in Firefox.</span></li>
+        <li><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg><strong>Tabs that stay organized</strong><span>Vertical tabs, folders and split view, with a sidebar that keeps work, reading and agents apart.</span></li>
+        <li><svg class="icon" aria-hidden="true"><use href="#i-window"/></svg><strong>Mini Lima</strong><span>Links you click in Mail, Messages or Slack open in a small window. Read and close it, or move it into Lima with ⌘O.</span></li>
+        <li><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg><strong>Firefox's protections</strong><span>The same engine and security updates as Firefox, with tracking protection on. Lima updates itself automatically.</span></li>
+        <li><svg class="icon" aria-hidden="true"><use href="#i-sparkle"/></svg><strong>AI is optional</strong><span>Skip AI setup and Lima is a fast, private browser with notes and search. Use it beside your current browser for as long as you like.</span></li>
+      </ul>
+    </section>
+
+    <!-- 05 Workspaces and the Companion -->
+    <section class="section split" id="workspaces" aria-labelledby="workspaces-title">
+      <header class="section-head">
+        <h2 id="workspaces-title">One assistant to coordinate. Workspaces to do the work.</h2>
+        <p>Tell the Companion what you want. It hands the job to a workspace: a folder in your sidebar with its own agent, tabs and notes. You can watch, step in, or come back when it's done.</p>
+      </header>
+      <ol class="flow">
+        <li><strong>Ask</strong><span>Type a request, or press ⌘↩ in search to hand it off.</span></li>
+        <li><strong>Lima organizes it</strong><span>The request goes to the right workspace, and big jobs split into helpers.</span></li>
+        <li><strong>Watch it happen</strong><span>Each workspace tells its story: what it's doing now, each step, and what it made.</span></li>
+        <li><strong>Approve what matters</strong><span>Sensitive steps wait for you on a card that says who's asking and why.</span></li>
+      </ol>
+      <figure class="stage chat" data-demo="chat" aria-label="Demo: an agent's steps in a workspace chat">
+        <div class="chat-window">
+          <p class="chat-title"><svg class="icon" aria-hidden="true"><use href="#i-agent"/></svg>Client Website<span class="chat-provider">Claude Code</span></p>
+          <p class="bubble user">Fix the checkout bug on the client site and run the tests.</p>
+          <ol class="steps">
+            <li><svg class="icon" aria-hidden="true"><use href="#i-file"/></svg><span>Read</span><code>src/checkout/total.ts</code></li>
+            <li><svg class="icon" aria-hidden="true"><use href="#i-pencil"/></svg><span>Edited</span><code>src/checkout/total.ts</code><span class="diff"><ins>+12</ins> <del>−3</del></span></li>
+            <li><svg class="icon" aria-hidden="true"><use href="#i-terminal"/></svg><span>Ran</span><code>npm test</code><span class="result">48 passed</span></li>
+            <li><svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg><span>Opened</span><code>localhost:3000/checkout</code></li>
+          </ol>
+          <p class="bubble agent">Fixed: the discount applied twice when the cart had a gift card. The tests pass and the checkout page totals correctly.</p>
+          <p class="report"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Done · 2 checks ran</p>
+        </div>
+        <figcaption class="caption-row">Demo data.<button class="replay" type="button" data-replay="chat"><svg class="icon" aria-hidden="true"><use href="#i-replay"/></svg>Replay</button></figcaption>
+      </figure>
+    </section>
+
+    <!-- 06 Built-in tools -->
+    <section class="section" id="tools" aria-labelledby="tools-title">
+      <header class="section-head">
+        <h2 id="tools-title">The tools between tasks are built in.</h2>
+        <p>No extra apps for notes, search or music. They live in the same sidebar, and your agents can use them too.</p>
+      </header>
+      <figure class="stage product-recording" id="product-recording">
+        <video controls playsinline preload="none" width="1120" height="402" poster="/lima-search-demo.webp" aria-label="Lima Search finds a word inside a note and opens the note">
+          <source src="/lima-search-demo.mp4" type="video/mp4">
+          <a href="/lima-search-demo.mp4">Download the Lima recording</a>
+        </video>
+        <figcaption>Recorded in Lima: ⌘T finds “thermos” inside a note and opens it.</figcaption>
+      </figure>
+      <ul class="ledger">
+        <li><span class="ledger-k">⌘T searches everything</span><span>The web, open tabs, bookmarks, history, files, workspaces and notes in one box. Ask a question for a quick answer, or ⌘↩ to hand it to an agent.</span></li>
+        <li><span class="ledger-k">Notes that calculate</span><span>Sliders, switches and live results: a recipe that scales with guests, a budget that splits itself, checklist progress that updates as you tick.</span></li>
+        <li><span class="ledger-k">One music bar</span><span>Spotify, Apple Music and any tab playing audio, in one control.</span></li>
+        <li><span class="ledger-k">Dictation and grammar</span><span>Press ⌃⌥D to dictate anywhere in Lima, and ⌘G to fix the grammar of selected text in any app once you allow it.</span></li>
+        <li><span class="ledger-k">Cleaner search results</span><span>Hide AI answers and sponsored results on Google, Bing, DuckDuckGo, Yahoo and Brave, and YouTube Shorts. Each is a switch.</span></li>
+      </ul>
+    </section>
+
+    <!-- 07 Privacy and control -->
+    <section class="section split reverse" id="control" aria-labelledby="control-title">
+      <header class="section-head">
+        <h2 id="control-title">You're in control of sensitive actions.</h2>
+        <p>When an agent reaches a step that matters, it stops and asks with a card that names who is asking and what for. The card stays until you answer.</p>
+      </header>
+      <figure class="stage approval" data-demo="approval" aria-label="Demo: an approval card you can answer">
+        <div class="approval-card" data-state="open">
+          <p class="approval-who"><span class="dot"></span>Client Website <span class="risk">Acts on your account</span></p>
+          <p class="approval-q">Publish release v2.4.1 to GitHub?</p>
+          <dl class="approval-facts">
+            <div><dt>Site</dt><dd>github.com</dd></div>
+            <div><dt>Repository</dt><dd>client/website</dd></div>
+          </dl>
+          <div class="approval-actions">
+            <button type="button" class="button ghost" data-answer="deny">Deny</button>
+            <button type="button" class="button primary" data-answer="allow">Allow once</button>
+          </div>
+          <p class="approval-result" aria-live="polite"></p>
+        </div>
+        <figcaption>Try it: the card waits for you. Demo data.</figcaption>
+      </figure>
+      <ul class="facts">
+        <li><strong>What asks first</strong>Spending money or placing a bet, entering a password, submitting a form, signing in, acting on one of your accounts, changing your Mac, or visiting a site outside the plan.</li>
+        <li><strong>Permissions you can see</strong>Access you grant up front is listed in the workspace's chat, with a Revoke button.</li>
+        <li><strong>Guardrails on every run</strong>A run stops after a set number of steps or minutes. Text an agent reads on the web is treated as information, not instructions, and any file it changes outside its workspace is listed.</li>
+      </ul>
+    </section>
+
+    <section class="section" id="data" aria-labelledby="data-title">
+      <header class="section-head">
+        <h2 id="data-title">Your data stays on your Mac, with clear exceptions.</h2>
+        <p>Lima has no account and no cloud copy, and it collects no usage statistics or telemetry. Notes, chats and workspace history are kept in an encrypted store whose key is in your Keychain, with a week of encrypted backups.</p>
+      </header>
+      <ul class="ledger">
+        <li><span class="ledger-k">Your AI provider</span><span>Receives your messages and files, plus what agents read while working for you, such as pages they open. That's under your provider's terms; Lima doesn't proxy or copy it.</span></li>
+        <li><span class="ledger-k">Companion memory</span><span>Once a day, the Companion sends your recent requests and activity to your AI provider to write short notes about what you're working on. It's on by default; turn it off in Settings → Personal Memory.</span></li>
+        <li><span class="ledger-k">Your search engine</span><span>Gets what you search for, like any browser. Google is the default for new installs; you can change it.</span></li>
+        <li><span class="ledger-k">Updates</span><span>Lima downloads its signed updates without sending anything that identifies you.</span></li>
+        <li><span class="ledger-k">Private windows</span><span>Never recorded and never shown to agents.</span></li>
+      </ul>
+      <p class="more"><a href="/legal/privacy">Read the privacy policy</a> · <a href="/legal">All policies</a></p>
+    </section>
+
+    <!-- 08 Getting started -->
+    <section class="section" id="start" aria-labelledby="start-title">
+      <header class="section-head">
+        <h2 id="start-title">Get started in a few minutes.</h2>
+        <p>A short walkthrough opens the first time you start Lima. Every step can be skipped.</p>
+      </header>
+      <ol class="steps-big">
+        <li><strong>Install Lima</strong><span>Download it, drag it to Applications and open it. It's signed and notarized by Apple.</span></li>
+        <li><strong>Bring over your browser</strong><span>Import bookmarks, history and passwords from the browser you use now.</span></li>
+        <li><strong>Connect your AI, or skip it</strong><span>Lima finds Claude Code, Codex or OpenCode on your Mac, can install one for you, and checks that you're signed in.</span></li>
+        <li><strong>Choose your permissions</strong><span>Decide on Companion memory and optional access like Files and Accessibility. Each can change later.</span></li>
+        <li><strong>Try a first task</strong><span>A safe example: an agent reads a page and sums it up while you watch.</span></li>
+      </ol>
+      <div class="requirements">
+        <div>
+          <h3>What AI costs</h3>
+          <p>Lima is free. AI features use an agent you sign in to, with that provider's plan and pricing:</p>
+          <ul>
+            <li><strong>Claude Code</strong> with a Claude subscription or an Anthropic API key.</li>
+            <li><strong>Codex</strong> with a ChatGPT plan or an OpenAI API key.</li>
+            <li><strong>OpenCode</strong> with the model provider and key you choose.</li>
           </ul>
+          <p class="muted">You don't need a terminal: the walkthrough installs the agent and opens its sign-in.</p>
         </div>
-
-        <figure class="stage product-recording" id="product-recording">
-          <video controls playsinline preload="none" width="1120" height="402"
-                 poster="/lima-search-demo.webp" aria-label="Lima Search finds a word inside a note and opens the note">
-            <source src="/lima-search-demo.mp4" type="video/mp4">
-            <a href="/lima-search-demo.mp4">Download the Lima recording</a>
-          </video>
-          <figcaption>Recorded in Lima. Search for “thermos” in Notes, see it highlighted in the result, then open “Weekend plans.”</figcaption>
-        </figure>
-      </section>
-
-      <section class="pane" id="agents" aria-labelledby="agents-title">
-        <header class="pane-head">
-          <h2 id="agents-title">Agents work in real tabs, and you can watch.</h2>
-          <p>Each workspace is a folder in the sidebar with its own chat, tabs and folder on disk, and the sidebar shows what every agent is doing. Its agent reads, edits, runs and browses, and every step is listed where it happens. When an agent changes what it's working on, the tab you're reading stays put.</p>
-        </header>
-        <figure class="stage chat" data-demo="chat" aria-label="Demo: an agent's steps in a workspace chat">
-          <div class="chat-window">
-            <p class="chat-title"><svg class="icon" aria-hidden="true"><use href="#i-agent"/></svg>Client Website<span class="chat-provider">Claude Code</span></p>
-            <p class="bubble user">Fix the checkout bug on the client site and run the tests.</p>
-            <ol class="steps">
-              <li><svg class="icon" aria-hidden="true"><use href="#i-file"/></svg><span>Read</span><code>src/checkout/total.ts</code></li>
-              <li><svg class="icon" aria-hidden="true"><use href="#i-pencil"/></svg><span>Edited</span><code>src/checkout/total.ts</code><span class="diff"><ins>+12</ins> <del>−3</del></span></li>
-              <li><svg class="icon" aria-hidden="true"><use href="#i-terminal"/></svg><span>Ran</span><code>npm test</code><span class="result">48 passed</span></li>
-              <li><svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg><span>Opened</span><code>localhost:3000/checkout</code></li>
-            </ol>
-            <p class="bubble agent">Fixed: the discount applied twice when the cart had a gift card. The test suite passes and the checkout page totals correctly.</p>
-            <p class="report"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Done · 2 checks ran</p>
-          </div>
-          <figcaption class="caption-row">Demo data.<button class="replay" type="button" data-replay="chat"><svg class="icon" aria-hidden="true"><use href="#i-replay"/></svg>Replay</button></figcaption>
-        </figure>
-        <ul class="facts">
-          <li><strong>Your agents, unchanged.</strong> Lima drives the Claude Code, Codex or OpenCode CLI you already have signed in, with your model and plan.</li>
-          <li><strong>Helpers in their own folders.</strong> A coordinating agent can split work across helper agents, each with its own chat, and they start when their dependencies finish.</li>
-          <li><strong>Readable work.</strong> File edits show added and removed lines, commands show their result, and screenshots open full size.</li>
-        </ul>
-      </section>
-
-      <section class="pane split" id="approvals" aria-labelledby="approvals-title">
-        <header class="pane-head">
-          <h2 id="approvals-title">Nothing risky happens without a yes.</h2>
-          <p>Spending money, acting on an account, changing your Mac or signing in: when an agent reaches a step like that, it asks with a card that names who is asking and what for. The card stays until you answer, even if the agent's turn ends, and approving picks the work back up where it stopped.</p>
-        </header>
-        <figure class="stage approval" data-demo="approval" aria-label="Demo: an approval card you can answer">
-          <div class="approval-card" data-state="open">
-            <p class="approval-who"><span class="dot"></span>Client Website <span class="risk">Acts on your account</span></p>
-            <p class="approval-q">Publish release v2.4.1 to GitHub?</p>
-            <dl class="approval-facts">
-              <div><dt>Site</dt><dd>github.com</dd></div>
-              <div><dt>Repository</dt><dd>client/website</dd></div>
-            </dl>
-            <div class="approval-actions">
-              <button type="button" class="button ghost" data-answer="deny">Deny</button>
-              <button type="button" class="button primary" data-answer="allow">Allow once</button>
-            </div>
-            <p class="approval-result" aria-live="polite"></p>
-          </div>
-          <figcaption>Try it: the card waits for you. Demo data.</figcaption>
-        </figure>
-        <ul class="facts">
-          <li><strong>Sign-ins too.</strong> When a site needs you to log in, the card links to the page and offers “I've signed in” for when you're done.</li>
-          <li><strong>Outside AI tools are held to it.</strong> Tools connected over MCP can't read your chats, take screenshots or change settings until you allow it, one session at a time.</li>
-        </ul>
-      </section>
-
-      <section class="pane" id="search" aria-labelledby="search-title">
-        <header class="pane-head">
-          <h2 id="search-title">⌘T searches everything.</h2>
-          <p>One box for the web, your open tabs, bookmarks, history, workspaces and notes. Ask Lima a question and the answer streams in place, or press ⌘↩ to hand the task to an agent.</p>
-        </header>
-        <p><a href="#product-recording">Watch Lima search inside a note</a></p>
-      </section>
-
-      <section class="pane split reverse" id="companion" aria-labelledby="companion-title">
-        <header class="pane-head">
-          <h2 id="companion-title">See every agent at a glance.</h2>
-          <p>The Companion takes a request, sends it to the right workspace and reports back. Its list follows your sidebar folders and shows only what needs a look: what's working, what's waiting on you and what's scheduled for later.</p>
-        </header>
-        <figure class="stage companion-demo" data-demo="companion" aria-label="Demo: the Companion's workspace overview">
-          <div class="companion-panel">
-            <div class="companion-head">
-              <span class="companion-wrap"><svg class="companion" viewBox="0 0 102 100" aria-hidden="true">
-                <ellipse class="c-shadow" cx="51" cy="84" rx="25" ry="3"/>
-                <g class="c-body">
-                  <path class="c-fill" d="M24 57c0-8 4-16 11-21 0-8 6-15 13-17l9 12c3 0 6 1 9 2l8-5c-1 5-1 9 1 12 7 7 10 17 8 26-3 10-13 14-32 14S18 75 18 65c0-3 2-6 6-8Z"/>
-                  <path class="c-tone" d="M37 35c1-7 5-12 10-15l10 13c-8 2-14 3-20 2Zm-16 30c3 8 15 12 29 12 15 0 26-4 30-11-1 9-15 12-29 12S23 75 21 65Z"/>
-                  <path class="c-line" d="M37 36c6 2 12 1 20-3m-12 28c3 4 7 4 10 0m-31-2c-4-1-8 1-10 4m64-4c4 0 7 1 10 4"/>
-                  <g class="c-eyes"><ellipse cx="41" cy="53" rx="2.3" ry="3.3"/><ellipse cx="60" cy="53" rx="2.3" ry="3.3"/></g>
-                </g>
-                <g class="c-sparks"><path d="M16 37l-3-4m5-2v-4M83 27l4-4m-1 8 6-1M86 69l5 2"/></g>
-              </svg></span>
-              <span><strong>Companion</strong><span>Hand it a request. It picks the workspace.</span></span>
-            </div>
-            <div class="overview-chips">
-              <span class="ochip" data-kind="blocked"><i></i>1 needs you</span>
-              <span class="ochip" data-kind="working"><i></i>2 working</span>
-              <span class="ochip" data-kind="scheduled"><svg class="icon" aria-hidden="true"><use href="#i-calendar"/></svg>3 scheduled</span>
-            </div>
-            <div class="group">
-              <p class="group-head"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>Work<span class="badge" data-state="working">2 working</span><span class="count">3</span></p>
-              <p class="row" data-state="blocked"><span class="dot"></span><span class="row-name">Client Website</span><span class="row-state">Needs you</span></p>
-              <p class="row" data-state="working"><span class="dot"></span><span class="row-name">Lima Browser</span><span class="row-state">Running tests</span></p>
-              <p class="row" data-state="working"><span class="dot"></span><span class="row-name">Docs refresh</span><span class="row-state">Editing guide.md</span></p>
-            </div>
-            <div class="group">
-              <p class="group-head"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>Personal<span class="count">2</span></p>
-              <p class="row" data-state="idle"><span class="dot"></span><span class="row-name">Japan Trip</span><span class="row-meta">2h ago</span></p>
-              <p class="row" data-state="complete"><span class="dot"></span><span class="row-name">Tax Prep 2026</span><span class="row-meta">Yesterday</span></p>
-            </div>
-          </div>
-          <figcaption>Demo data.</figcaption>
-        </figure>
-        <ul class="facts">
-          <li><strong>Schedule it.</strong> “Every Friday at 5, write my weekly report” becomes a scheduled task, confirmed with a card before it's created.</li>
-          <li><strong>Remembers what you tell it.</strong> Personal memory is yours to read, edit or switch off.</li>
-        </ul>
-      </section>
-
-      <section class="pane" id="everyday" aria-labelledby="everyday-title">
-        <header class="pane-head">
-          <h2 id="everyday-title">The rest of your day lives in the sidebar too.</h2>
-          <p>Lima is a full browser first, built on Zen and Firefox. The things you reach for between tasks sit in the same sidebar.</p>
-        </header>
-        <figure class="stage note-demo" data-demo="note" aria-label="Demo: a Lima note with two columns, a link preview and a saved selection">
-          <div class="note-window">
-            <p class="note-title">Payment edge cases</p>
-            <div class="note-cols">
-              <div>
-                <p class="note-h">Discounts</p>
-                <ul class="note-list"><li>Gift card plus promo code applied the discount twice</li><li>Fixed in total.ts, covered by tests</li></ul>
-                <blockquote class="note-quote">“Coupons apply to the subtotal before gift cards are redeemed.”<cite>docs.stripe.com · saved from page</cite></blockquote>
-              </div>
-              <div>
-                <p class="note-h">Reference</p>
-                <div class="embed"><span class="embed-img" aria-hidden="true"><svg class="icon"><use href="#i-globe"/></svg></span><span class="embed-text"><strong>Stripe Docs: Discounts</strong><span>How coupons and promotion codes apply to invoices.</span></span></div>
-                <p class="note-actions"><span>Open Side by Side</span><span>Open in Tab</span></p>
-              </div>
-            </div>
-          </div>
-          <div class="inline-dock" aria-label="Demo: the sidebar's music bar and dictation">
-            <div class="music"><span class="music-source"><svg class="icon" aria-hidden="true"><use href="#i-music"/></svg></span><span class="music-text"><strong>Midnight City</strong><span>M83 · Spotify</span></span><span class="bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span></div>
-            <div class="dictate"><svg class="icon" aria-hidden="true"><use href="#i-mic"/></svg><span>Dictating</span><span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span><kbd>⌃⌥D</kbd></div>
-          </div>
-          <figcaption>Demo data.</figcaption>
-        </figure>
-        <ul class="ledger">
-          <li><span class="ledger-k">Notes and canvases</span><span>One, two or three columns, tables and link previews, plus a canvas for sketching. Save a selection from any page with its source.</span></li>
-          <li><span class="ledger-k">One music bar</span><span>Spotify, Apple Music and any tab playing audio, in one control at the bottom of the sidebar.</span></li>
-          <li><span class="ledger-k">Dictation</span><span>Press ⌃⌥D to dictate, and the mic control sits in the dock.</span></li>
-          <li><span class="ledger-k">Cleaner results</span><span>Hide AI answers and sponsored results on Google, Bing, DuckDuckGo, Yahoo and Brave, and YouTube Shorts. Each is a switch in Settings.</span></li>
-        </ul>
-      </section>
-
-      <section class="pane" id="privacy" aria-labelledby="privacy-title">
-        <header class="pane-head">
-          <h2 id="privacy-title">Your work stays on your Mac.</h2>
-          <p>Lima has no account and no cloud copy. Notes, chats, workspace history and the Companion's memory are kept in an encrypted store whose key lives in your Keychain.</p>
-        </header>
-        <ul class="ledger">
-          <li><span class="ledger-k">Your AI provider</span><span>Gets your messages and files, plus what agents read while working for you, such as pages they open. Lima doesn't proxy the request or keep a copy of what the provider receives.</span></li>
-          <li><span class="ledger-k">Private windows</span><span>Never recorded, never shown to agents, never counted.</span></li>
-          <li><span class="ledger-k">Page cleanup</span><span>Runs in the browser and sends nothing.</span></li>
-        </ul>
-        <p class="more"><a href="https://github.com/hosfeldli/lima/blob/main/docs/PRIVACY.md">Read the full privacy notes</a></p>
-      </section>
-
-      <section class="pane install" id="install" aria-labelledby="install-title">
-        <header class="pane-head">
-          <h2 id="install-title">Install in a minute.</h2>
-        </header>
-        <ol class="install-steps">
-          <li><strong>Download and open <code>Lima.dmg</code></strong>, then drag Lima to Applications.</li>
-          <li><strong>Open Lima.</strong> It's signed with Developer ID and notarized by Apple, so it opens like any Mac app. A short walkthrough brings over your browser data and connects your AI.</li>
-          <li><strong>That's it.</strong> Lima keeps itself up to date, and checks every update against a signed release feed before installing it.</li>
-        </ol>
-        <div class="install-cta">
-          <a class="button primary large" data-download href="/download"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Download for macOS</a>
-          <p class="cta-meta" data-platform-note><span data-version>Free</span> · Apple Silicon · macOS 14 or later · AI features use the Claude Code, Codex or OpenCode CLI</p>
-          <p class="cta-meta" id="verify" hidden>Checksums: <a id="sums" href="#">SHA256SUMS</a> · Built from Zen <span id="engine"></span></p>
+        <div class="download-card">
+          <h3>Lima for Mac</h3>
+          <dl class="spec">
+            <div><dt>Version</dt><dd data-version-plain>Latest release</dd></div>
+            <div><dt>Requires</dt><dd>macOS 14 or later, Apple Silicon (M1 or later)</dd></div>
+            <div><dt>Download</dt><dd data-size>About 230 MB</dd></div>
+            <div><dt>Price</dt><dd>Free</dd></div>
+          </dl>
+          <a class="button primary large" data-download href="/download"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Download for Mac</a>
         </div>
-      </section>
+      </div>
+    </section>
 
-      <section class="pane" id="faq" aria-labelledby="faq-title">
-        <header class="pane-head">
-          <h2 id="faq-title">Questions</h2>
-        </header>
-        <div class="faq">
-          <details><summary>Is Lima free?</summary><p>Yes. Lima is free to download and use, and there's no account. AI features run on the Claude Code, Codex or OpenCode CLI you already use, under that provider's own plan.</p></details>
-          <details><summary>Which AI agents does Lima work with?</summary><p>Claude Code, Codex and OpenCode. Lima finds the CLIs installed on your Mac and drives them through its own tools, so they can work in browser tabs, ask you questions and request approval.</p></details>
-          <details><summary>What does an agent need my approval for?</summary><p>Anything Lima's policy flags: spending money, acting on an account, changing your Mac, new access, or a sign-in. The approval card names who is asking and what for, and it stays until you answer. When you approve, the agent picks up where it stopped.</p></details>
-          <details><summary>Which Macs does Lima run on?</summary><p>Macs with Apple Silicon (M1 or later) running macOS 14 Sonoma or later. The download is about 230 MB.</p></details>
-          <details><summary>Is Lima built on Chrome?</summary><p>No. Lima is built on Zen, a Firefox-based browser, so it uses the Firefox (Gecko) engine and Firefox's security updates.</p></details>
-          <details><summary>Does Lima send my data anywhere?</summary><p>Notes, chats and workspace history stay on your Mac in an encrypted store. Your AI provider receives what you send and what agents read while working for you.</p></details>
-        </div>
-      </section>
+    <!-- How Lima compares -->
+    <section class="section" id="compare" aria-labelledby="compare-title">
+      <header class="section-head">
+        <h2 id="compare-title">One app instead of several.</h2>
+        <p>Lima puts your browser, your AI agents, notes and search in one place, so you aren't switching between separate apps.</p>
+      </header>
+      <div class="table-wrap">
+        <table class="compare">
+          <thead><tr><th scope="col">Capability</th><th scope="col">A typical browser</th><th scope="col">A standalone AI assistant</th><th scope="col">Lima</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Everyday browsing</th><td>Primary</td><td>Secondary or limited</td><td>Primary</td></tr>
+            <tr><th scope="row">AI help</th><td>Varies</td><td>Primary</td><td>Built in</td></tr>
+            <tr><th scope="row">Agents in their own tabs and workspaces</th><td>Varies</td><td>Varies</td><td>Core</td></tr>
+            <tr><th scope="row">Approval for sensitive steps</th><td>Varies</td><td>Varies</td><td>Core</td></tr>
+            <tr><th scope="row">Uses the AI agent you already have</th><td>Usually separate</td><td>Varies</td><td>Core</td></tr>
+            <tr><th scope="row">Notes with live values</th><td>Varies</td><td>Varies</td><td>Built in</td></tr>
+            <tr><th scope="row">Local, encrypted history</th><td>Varies</td><td>Varies</td><td>Core</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
 
-      <section class="pane closing" aria-labelledby="closing-title">
-        <h2 id="closing-title">Watch your agents work.</h2>
-        <div class="cta">
-          <a class="button primary large" data-download href="/download">
-            <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Download for macOS
-          </a>
-          <p class="cta-meta" data-platform-note><span data-version>Free</span> · Apple Silicon · macOS 14 or later · about 230 MB</p>
-        </div>
-      </section>
+    <!-- 09 About and support -->
+    <section class="section" id="about" aria-labelledby="about-title">
+      <header class="section-head">
+        <h2 id="about-title">About Lima</h2>
+      </header>
+      <ul class="grid-facts about">
+        <li><strong>Who makes it</strong><span>Lima is an independent, open-source project published by Liam Hosfeld under the MPL-2.0 license. The code is on <a href="https://github.com/hosfeldli/lima">GitHub</a>.</span></li>
+        <li><strong>Why it exists</strong><span>AI agents are most useful where your work already happens. Lima puts them in the browser, where you can see and steer them.</span></li>
+        <li><strong>How it's paid for</strong><span>Lima is free, with no paid tier. It shows no ads, sells no data and collects no telemetry.</span></li>
+        <li><strong>Security updates</strong><span>New Zen and Firefox releases are rebuilt into Lima automatically. Every update is signed, checked before it installs, and rolls out gradually.</span></li>
+        <li><strong>Get help</strong><span>Use Settings → Help &amp; support → Report a problem, open an <a href="https://github.com/hosfeldli/lima/issues">issue on GitHub</a>, or email <a href="mailto:lima.issues@gmail.com">lima.issues@gmail.com</a>.</span></li>
+        <li><strong>What's new</strong><span>Each update opens a What's New page in Lima. <a href="https://github.com/hosfeldli/lima/releases">Release notes</a> are on GitHub.</span></li>
+      </ul>
+    </section>
 
-      <footer class="foot">
-        <p>Lima is built on <a href="https://zen-browser.app">Zen</a> and Firefox (MPL-2.0). <a href="https://github.com/hosfeldli/lima">Source on GitHub</a> · <a href="https://github.com/hosfeldli/lima/blob/main/docs/PRIVACY.md">Privacy</a> · <a href="/legal">Legal</a> · <a href="/llms.txt">For AI assistants</a></p>
-      </footer>
-    </main>
-  </div>
+    <section class="section" id="faq" aria-labelledby="faq-title">
+      <header class="section-head"><h2 id="faq-title">Questions</h2></header>
+      <div class="faq">
+        <details><summary>Do I need AI to use Lima?</summary><p>No. Skip AI setup and Lima is a complete browser with notes and search. You can connect an agent any time in Settings.</p></details>
+        <details><summary>Do I need to use the terminal?</summary><p>No. If none of Claude Code, Codex or OpenCode is on your Mac, the walkthrough offers to install one and opens its sign-in.</p></details>
+        <details><summary>Can I use my ChatGPT or Claude subscription?</summary><p>Yes, through the agent that provider makes: Codex signs in with a ChatGPT plan, and Claude Code with a Claude subscription. Both also accept an API key. Lima doesn't charge for AI; your provider's plan does.</p></details>
+        <details><summary>Can I bring my bookmarks and passwords?</summary><p>Yes. The walkthrough, or File → Import From Another Browser, brings over bookmarks, history and saved passwords from Chrome, Safari, Edge, Brave and other browsers.</p></details>
+        <details><summary>Do Firefox extensions work?</summary><p>Yes. Lima is built on Firefox, so Firefox add-ons install and run normally.</p></details>
+        <details><summary>Can I keep using my current browser?</summary><p>Yes. Lima doesn't need to be your default browser. Many people try it beside Chrome or Safari first. If you make it your default, Mini Lima keeps links from other apps out of your way.</p></details>
+        <details><summary>Can I use Lima without giving AI my browsing?</summary><p>Yes. Agents only see the pages in their own workspace and what you share with them, never private windows. Companion memory, which sends a daily summary of your activity to your AI provider, can be turned off in Settings.</p></details>
+        <details><summary>What happens if I quit Lima during a task?</summary><p>Agents work while Lima is open. If you quit in the middle of a task, the agent stops; open Lima and tell it to continue. Scheduled reports can keep running with Lima closed if you turn on Run in background in Settings.</p></details>
+        <details><summary>Does it use more battery?</summary><p>Browsing works like the Firefox engine it's built on. Agents add work only while they're running, and the work itself happens in your AI provider's service.</p></details>
+        <details><summary>Is Lima ready for daily use?</summary><p>Lima is updated often and tested before every release, including an install over the previous version. Updates roll out over a day, and a release with a problem can be pulled. You can report anything from Settings → Help &amp; support.</p></details>
+        <details><summary>Which Macs does Lima run on?</summary><p>Macs with Apple Silicon (M1 or later) running macOS 14 Sonoma or later. The download is about 230 MB.</p></details>
+      </div>
+    </section>
+
+    <section class="section closing" aria-labelledby="closing-title">
+      <h2 id="closing-title">Try Lima beside your current browser.</h2>
+      <div class="cta-row">
+        <a class="button primary large" data-download href="/download"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>Download for Mac</a>
+      </div>
+      <p class="cta-meta" data-platform-note><span data-version>Free</span> · Apple Silicon · macOS 14 or later</p>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <p>Lima is built on <a href="https://zen-browser.app">Zen</a> and Firefox (MPL-2.0). Published by Liam Hosfeld.</p>
+    <p><a href="https://github.com/hosfeldli/lima">Source on GitHub</a> · <a href="/legal/privacy">Privacy</a> · <a href="/legal">Legal</a> · <a href="mailto:lima.issues@gmail.com">Contact</a> · <a href="/llms.txt">For AI assistants</a></p>
+  </footer>
 </body>
 </html>

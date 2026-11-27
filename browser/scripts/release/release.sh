@@ -504,7 +504,7 @@ cmd_publish() {
     gcloud storage cp "${cache[@]}" --content-type=text/plain "$work/latest.json.sig" "gs://$LIMA_UPDATE_BUCKET/stable/latest.json.sig"
     gcloud storage cp "${cache[@]}" --content-type=application/json "$work/latest.json" "gs://$LIMA_UPDATE_BUCKET/stable/latest.json"
   fi
-  # lima.liamhosfeld.com/download redirects here: always the newest published DMG.
+  # lima.liamhosfeld.com/download/mac redirects here: always the newest published DMG.
   gcloud storage cp "${cache[@]}" --content-type=application/x-apple-diskimage \
     "gs://$LIMA_UPDATE_BUCKET/stable/$v/Lima-$v.dmg" "gs://$LIMA_UPDATE_BUCKET/stable/Lima.dmg"
   if [[ "$draft" == true ]]; then

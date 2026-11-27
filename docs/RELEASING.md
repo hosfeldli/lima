@@ -163,7 +163,7 @@ runs the smoke test in CI and installs the signed build over the current public 
 
 | Piece | Where |
 |---|---|
-| Download page | https://lima.liamhosfeld.com: Cloud Run service `stem-portfolio-host` in `stem-471602`/`us-east1`, from `site/` (`site/deploy.sh`). `/download` redirects to `stable/Lima.dmg` |
+| Download page | https://lima.liamhosfeld.com: Cloud Run service `stem-portfolio-host` in `stem-471602`/`us-east1`, from `site/` (`site/deploy.sh`). `/download` is the download page and `/download/mac` redirects to `stable/Lima.dmg` |
 | DNS (Wix) | `lima` A `216.239.32.21`, `.34.21`, `.36.21`, `.38.21`. Optional AAAA `2001:4860:4802:32::15`, `:34::15`, `:36::15`, `:38::15`. These are fixed Cloud Run domain-mapping addresses, so no load balancer is involved |
 | Update feed and downloads | `gs://lima-updates-940267100054` (public read, CORS for the site): `stable/latest.json(.sig)`, `stable/Lima.dmg`, `stable/X.Y.Z/` |
 | Private archive | `gs://lima-release-archive-940267100054/releases/vX.Y.Z/` |
