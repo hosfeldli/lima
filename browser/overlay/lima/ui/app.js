@@ -9,6 +9,7 @@ import { renderIndex, renderNote, renderNotesHelp } from "./notes.js";
 import { renderAssistant } from "./assistant.js";
 import { renderWorkspace } from "./workspace.js";
 import { renderChat, renderMedia } from "./chat.js";
+import { renderAttachment } from "./composer.js";
 import { renderStudio } from "./studio.js";
 import { renderWelcome } from "./welcome.js";
 import { renderWhatsNew } from "./whatsnew.js";
@@ -51,6 +52,7 @@ const routes = [
   [() => params.has("tool"), () => renderRun(app, params.get("tool"), params.get("input"))],
   [() => params.get("view") === "schedules", () => renderSchedules(app)],
   [() => params.get("view") === "media", () => renderMedia(app, params.get("chat"), params.get("media"))],
+  [() => params.get("view") === "attachment", () => renderAttachment(app, params.get("chat"), params.get("path"))],
   [() => params.get("view") === "activity", () => renderActivity(app, params.get("tab") ?? "commands")],
   [() => params.get("view") === "context", () => renderActivity(app, "reports", params.get("report"))],
   [() => params.get("view") === "studio", () => renderStudio(app)],

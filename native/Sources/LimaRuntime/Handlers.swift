@@ -149,6 +149,23 @@ extension Runtime {
         return try JSONValue.from(ChatAttachment(name: target.lastPathComponent, path: target.path, size: size + chunk.count, type: type))
     }
 
+    /// One attachment's bytes and type: only a file Lima saved for this conversation.
+    func attachmentContents(id: String, path: String) async throws -> JSONValue {
+        let folder = try await conversations.attachmentDirectory(id).resolvingSymlinksInPath().path + "/"
+        let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+        guard url.path.hasPrefix(folder), !url.lastPathComponent.hasPrefix("."),
+              let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int else {
+            throw BridgeError(.badRequest, "That attachment isn't in this chat any more.")
+        }
+        guard size <= Self.attachmentLimit, let data = try? Data(contentsOf: url) else { throw BridgeError(.badRequest, "That attachment is too large to show.") }
+        let types = ["png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif", "webp": "image/webp", "heic": "image/heic",
+                     "svg": "image/svg+xml", "pdf": "application/pdf", "txt": "text/plain", "md": "text/markdown", "csv": "text/csv",
+                     "json": "application/json", "html": "text/plain", "js": "text/plain", "ts": "text/plain", "py": "text/plain", "swift": "text/plain"]
+        let type = types[url.pathExtension.lowercased()] ?? "application/octet-stream"
+        return .object(["name": .string(url.lastPathComponent), "type": .string(type), "size": .number(Double(size)),
+                        "data": .string(data.base64EncodedString())])
+    }
+
     /// Attachments named in a send: only files Lima saved for this conversation.
     func attachments(_ params: JSONValue?, conversationID: String) async throws -> [ChatAttachment] {
         let listed = params?["attachments"]?.arrayValue ?? []
@@ -226,6 +243,11 @@ extension Runtime {
         register("chat.attach") { [unowned self] params, context in
             guard context.origin == .browser else { throw BridgeError(.notAuthorized, "Only Lima's composer attaches files.") }
             return try await self.receiveAttachment(params)
+        }
+        // A file attached to this chat, to show full size (Glance).
+        register("chat.attachment") { [unowned self] params, context in
+            guard context.origin == .browser else { throw BridgeError(.notAuthorized, "Only Lima's chat shows attachments.") }
+            return try await self.attachmentContents(id: try params.string("id"), path: try params.string("path"))
         }
         register("chat.media") { [unowned self] params, _ in
             let media = try await self.conversations.media(try params.string("id"), id: try params.string("mediaId"))

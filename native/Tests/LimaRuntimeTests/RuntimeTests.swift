@@ -102,6 +102,10 @@ import Testing
     let sent = await call(runtime, "chat.send", ["id": .string(chat), "text": .string("read this"),
                                                  "attachments": .array([.object(["path": .string(path), "type": .string("text/plain")])])])
     #expect(sent.result?["messages"]?.arrayValue?.first?["attachments"]?.arrayValue?.first?["name"]?.stringValue == "-notes.txt")
+    // The chat can show its own attachment full size, and nothing else.
+    let shown = await call(runtime, "chat.attachment", ["id": .string(chat), "path": .string(path)])
+    #expect(shown.result?["type"]?.stringValue == "text/plain" && shown.result?["data"]?.stringValue == Data("hello world".utf8).base64EncodedString())
+    #expect(await call(runtime, "chat.attachment", ["id": .string(chat), "path": .string("/etc/hosts")]).error != nil)
     _ = await call(runtime, "chat.cancel", ["id": .string(chat)])
 }
 

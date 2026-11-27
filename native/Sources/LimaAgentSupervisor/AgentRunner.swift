@@ -171,7 +171,8 @@ public enum AgentProgress: String, Codable, Sendable {
 public enum AgentCommandLine {
     /// The effort levels Claude Code and Codex both accept. OpenCode has no
     /// such setting, so it ignores the choice.
-    public static let efforts = ["low", "medium", "high"]
+    /// Every effort a CLI accepts; the chat offers only those its model lists.
+    public static let efforts = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
     static func effort(_ value: String?) -> String? { value.flatMap { efforts.contains($0) ? $0 : nil } }
 
     public static func arguments(for request: AgentRunRequest) -> [String] {

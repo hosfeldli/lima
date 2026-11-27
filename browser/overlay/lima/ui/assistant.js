@@ -10,8 +10,12 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
   setPage(home ? "Lima" : "Lima Companion", "lima");
   const workspaces = new Map();
   const generationLifetime = new AbortController();
-  const input = el("textarea", { rows: home ? 3 : 2, placeholder: "What would you like Lima to do? Each request becomes its own chat.", "aria-label": "Question or task" });
-  const character = companion(home ? "home" : "status");
+  const input = el("textarea", { rows: home ? 3 : 2, placeholder: "What would you like Lima to do? Pip sets up a workspace for it.", "aria-label": "Question or task" });
+  const character = companion(home ? "home" : "chat-avatar");
+  // Pip speaks for the Companion: what it's doing, in a bubble beside it.
+  const speech = el("p", { class: "pip-speech" });
+  const speechDetail = el("p", { class: "pip-speech-detail", hidden: true });
+  const bubble = el("div", { class: "pip-bubble", "aria-live": "polite" }, speech, speechDetail);
   const send = el("button", { class: "primary", onclick: delegate, disabled: true }, icon("send"), "Send");
   const activity = activityStatus();
   const target = el("strong", { hidden: true });
@@ -63,19 +67,26 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
   const close = () => bridge.browser("closeAssistant", {});
   const head = home
     ? el("header", { class: "handoff-head" }, character, el("h1", { text: "What are we working on?" }))
-    : el("header", { class: "assistant-head" }, character, el("strong", { text: "Pip" }), el("span", { class: "assistant-role", text: "Lima Companion" }), el("span", { class: "spacer" }),
+    : el("header", { class: "assistant-head" }, el("strong", { text: "Pip" }), el("span", { class: "assistant-role", text: "Lima Companion" }), el("span", { class: "spacer" }),
       el("button", { class: "ghost icon-only", title: "Close Companion", "aria-label": "Close Companion", onclick: close }, icon("close")));
+  if (!home) listView.append(el("section", { class: "pip-stage" }, character, bubble));
   listView.append(
     el("div", { class: "handoff-composer composer-box" }, input,
       el("div", { class: "composer-row handoff-controls" }, agent.provider, agent.model, agent.effort,
         el("span", { class: "spacer" }), send)),
     el("p", { class: "ai-disclaimer", text: "AI can make mistakes. Check important details." }),
-    status, overview, prompts.node, scheduleStrip, recent, requestList, home ? null : providerHelp);
+    // No list of past requests here: each one runs in its workspace, and
+    // that's where you follow it.
+    status, overview, prompts.node, scheduleStrip, recent, home ? null : providerHelp);
   app.replaceChildren(el("div", { class: home ? "assistant-page handoff-home" : "assistant-page" },
     head, el("div", { class: "handoff-body" }, listView, threadView)));
 
   input.addEventListener("focus", () => { if (character.dataset.state === "idle") cueCompanion(character, "listen"); });
-  input.addEventListener("input", () => prefs.set(draftKey, input.value));
+  input.addEventListener("input", () => {
+    prefs.set(draftKey, input.value);
+    // Pip listens while you type, and settles when the box is empty again.
+    if (!!input.value.trim() !== (speech.textContent === "I'm listening…")) paintActivity();
+  });
   input.addEventListener("keydown", event => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); delegate(); }
   });
@@ -147,6 +158,11 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     target.textContent = shownWorkspace?.name ?? "";
     activity.update(next);
     setCompanionState(character, next.motion ?? "idle", next.label);
+    const idle = next.state === "idle" && !pending && !requestError;
+    speech.textContent = idle ? (input.value.trim() ? "I'm listening…" : "Hi! Tell me what you need, and I'll get a workspace on it.") : next.label;
+    speechDetail.textContent = idle ? "" : shownWorkspace?.name ? `In ${shownWorkspace.name}` : next.detail ?? "";
+    speechDetail.hidden = !speechDetail.textContent;
+    bubble.dataset.state = next.state;
     recovery.replaceChildren(
       requestError && !ready ? el("button", { class: "ghost", onclick: load }, "Retry") : null,
       isFolderPermissionError(requestError ?? next.detail) ? filesPrivacyButton(reportError) : null);
@@ -449,8 +465,13 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
       }
       task.phase = "tracked";
       paintTracked(task);
-      // The thread stays here; its status keeps updating in the entry.
-      await remember(task.thread, `Handed off to ${destinations.map(workspace => workspace.name).join(", ")}. I'll track it here.`, task.taskIds);
+      await remember(task.thread, `Handed off to ${destinations.map(workspace => workspace.name).join(", ")}.`, task.taskIds);
+      // The work runs in its workspace: open it there, and the Companion
+      // goes back to its prompt.
+      if (destinations[0]) {
+        openWorkspace(destinations[0]);
+        if (openThread === task.thread) showList();
+      }
     } catch (error) {
       paintTask(task, "failed", errorText(error));
       remember(task.thread, `I couldn't hand this off: ${errorText(error)}`);
@@ -542,7 +563,6 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
       icon("chevron", "icon companion-entry-open"));
     thread.parts = { title, state, preview, when };
     threads.set(thread.id, thread);
-    requestList.hidden = false;
     const extra = [...threads.values()].sort((a, b) =>
       (b.conversation.createdAt ?? b.conversation.updatedAt ?? 0) - (a.conversation.createdAt ?? a.conversation.updatedAt ?? 0)).slice(THREAD_LIMIT);
     for (const old of extra) { old.entry.remove(); threads.delete(old.id); }
@@ -637,7 +657,7 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
         }));
     }
     if (message.role === "user" && message.attachments?.length) {
-      return el("div", { class: "companion-msg user" }, sentAttachments(message.attachments), el("div", { class: "bubble", text: message.text }));
+      return el("div", { class: "companion-msg user" }, sentAttachments(message.attachments, openThread?.id), el("div", { class: "bubble", text: message.text }));
     }
     if (message.role === "user") return el("div", { class: "companion-msg user" }, el("div", { class: "bubble", text: message.text }));
     const node = el("div", { class: "companion-msg assistant", "data-status": message.status }, replyAuthor(message));
@@ -798,35 +818,6 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
     return true;
   }
 
-  /** Reopening the Companion lists recent requests with their status. */
-  async function restoreThreads() {
-    const summaries = await call("chat.list", { companion: true }).catch(() => []);
-    summaries.sort((a, b) => (b.createdAt ?? b.updatedAt) - (a.createdAt ?? a.updatedAt));
-    for (const summary of summaries.slice(0, THREAD_LIMIT)) {
-      if (threads.has(summary.id)) continue;
-      const conversation = { ...summary, messages: undefined };
-      const thread = addThread(conversation);
-      // Status for the summary line before the thread is opened.
-      if (summary.running) conversation.messages = [{ role: "assistant", status: "streaming" }];
-      else if (summary.lastStatus === "failed") conversation.messages = [{ role: "assistant", status: "failed" }];
-      if (summary.taskIDs?.length) {
-        const task = { reply: el("div", { class: "companion-task-reply" }), phase: "tracked", taskIds: summary.taskIDs, thread };
-        thread.task = task;
-        tasks.push(task);
-        for (const id of summary.taskIDs) {
-          tracked.set(id, task);
-          const record = await call("task.get", { id }).catch(() => null);
-          if (record) orchestrated.set(id, record);
-        }
-        paintTracked(task);
-      }
-      // Status summaries above aren't real messages; load them on open.
-      if (!summary.running && summary.lastStatus !== "failed") conversation.messages = undefined;
-      else conversation.placeholder = true;
-      paintEntry(thread);
-    }
-  }
-
   function chatEvent(event, data) {
     if (event === "chat.updated" && threads.has(data?.id)) {
       const thread = threads.get(data.id);
@@ -913,7 +904,8 @@ export async function renderAssistant(app, _initialWorkspace, { home = false } =
   }
   await load();
   drawSchedules();
-  await restoreThreads();
+  // Past requests aren't listed here any more (their workspaces hold them);
+  // their tasks still report progress in the status line.
   await agent.ready;
   draw();
 }

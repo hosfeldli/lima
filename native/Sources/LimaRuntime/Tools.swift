@@ -8,14 +8,66 @@ import LimaSearch
 /// Models offered per CLI. Aliases are resolved by the CLI itself; a
 /// "default" entry always exists so a broken catalog never blocks chat.
 enum ModelCatalog {
-    struct Entry: Codable { var id: String; var label: String }
+    /// One model, with the effort levels it accepts (nil: no effort setting)
+    /// and the level its CLI uses when none is chosen.
+    struct Entry: Codable, Equatable {
+        var id: String
+        var label: String
+        var efforts: [Effort]? = nil
+        var defaultEffort: String? = nil
+        var older: Bool? = nil
+    }
+    struct Effort: Codable, Equatable { var id: String; var label: String }
+
+    static let claudeEfforts = ["low", "medium", "high", "xhigh", "max"].map { Effort(id: $0, label: effortLabel($0)) }
+
+    static func effortLabel(_ id: String) -> String {
+        ["minimal": "Minimal", "low": "Low", "medium": "Medium", "high": "High", "xhigh": "Extra high", "max": "Max", "ultra": "Ultra"][id] ?? id.capitalized
+    }
+
+    /// Claude Code's own model list, which it keeps up to date in
+    /// ~/.claude/cache/model-catalog (newest Claude Code catalog wins).
+    static func claudeModels(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> [Entry] {
+        let folder = (ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"].map { URL(fileURLWithPath: $0) } ?? home.appendingPathComponent(".claude"))
+            .appendingPathComponent("cache/model-catalog")
+        let files = ((try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [])
+            .filter { $0.lastPathComponent.hasSuffix("-cc.json") }
+            .sorted { (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? .distantPast) ?? .distantPast
+                > (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? .distantPast) ?? .distantPast }
+        for file in files {
+            guard let data = try? Data(contentsOf: file),
+                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let config = (root["catalog"] as? [String: Any])?["config"] as? [String: Any],
+                  let models = config["models"] as? [[String: Any]], !models.isEmpty else { continue }
+            let entries = models.compactMap { model -> Entry? in
+                guard let id = model["id"] as? String, id.hasPrefix("claude-") else { return nil }
+                let thinking = model["thinking"] as? [String: Any]
+                let options = (thinking?["effort_options"] as? [[String: Any]] ?? []).compactMap { option -> Effort? in
+                    guard let effort = option["id"] as? String else { return nil }
+                    return Effort(id: effort, label: effortLabel(effort))
+                }
+                let runtime = model["runtime"] as? [String: Any]
+                return Entry(id: id, label: model["name"] as? String ?? id, efforts: options,
+                             defaultEffort: runtime?["default_effort"] as? String, older: model["section"] as? String == "overflow" ? true : nil)
+            }
+            if !entries.isEmpty { return entries.filter { $0.older != true } + entries.filter { $0.older == true } }
+        }
+        return [Entry(id: "opus", label: "Opus", efforts: claudeEfforts, defaultEffort: "medium"),
+                Entry(id: "sonnet", label: "Sonnet", efforts: claudeEfforts, defaultEffort: "medium"),
+                Entry(id: "fable", label: "Fable", efforts: claudeEfforts, defaultEffort: "medium"),
+                Entry(id: "haiku", label: "Haiku", efforts: claudeEfforts, defaultEffort: "medium")]
+    }
 
     static func models(for provider: CLIProvider) -> [Entry] {
-        var entries = [Entry(id: "default", label: "CLI default")]
+        var entries: [Entry] = []
         switch provider {
         case .claude:
-            entries += [Entry(id: "sonnet", label: "Sonnet"), Entry(id: "opus", label: "Opus"), Entry(id: "haiku", label: "Haiku")]
+            let models = claudeModels()
+            // The CLI's default model takes the efforts of its newest main model.
+            entries.append(Entry(id: "default", label: "CLI default", efforts: models.first?.efforts ?? claudeEfforts, defaultEffort: models.first?.defaultEffort))
+            entries += models
         case .codex:
+            entries.append(Entry(id: "default", label: "CLI default"))
             let location = ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0) }
                 ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
             let config = location.appendingPathComponent("config.toml")
@@ -29,10 +81,22 @@ enum ModelCatalog {
                let models = cache["models"] as? [[String: Any]] {
                 entries += models.compactMap { model in
                     guard let id = model["slug"] as? String, model["visibility"] as? String != "hide" else { return nil }
-                    return Entry(id: id, label: model["display_name"] as? String ?? id)
+                    let levels = (model["supported_reasoning_levels"] as? [[String: Any]] ?? []).compactMap { $0["effort"] as? String }
+                    return Entry(id: id, label: model["display_name"] as? String ?? id,
+                                 efforts: levels.isEmpty ? nil : levels.map { Effort(id: $0, label: effortLabel($0)) },
+                                 defaultEffort: model["default_reasoning_level"] as? String)
+                }
+                // The CLI default and a configured model take the efforts their model lists.
+                for index in entries.indices where entries[index].efforts == nil {
+                    let slug = entries[index].id == "default" ? (entries.first { $0.label.hasSuffix("(config)") }?.id ?? entries.dropFirst().first?.id) : entries[index].id
+                    if let match = entries.first(where: { $0.id == slug && $0.efforts != nil }) {
+                        entries[index].efforts = match.efforts
+                        entries[index].defaultEffort = match.defaultEffort
+                    }
                 }
             }
         case .opencode:
+            entries.append(Entry(id: "default", label: "CLI default"))
             if let path = CLIDiscovery().locate(.opencode) {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: path)

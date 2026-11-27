@@ -37,7 +37,7 @@ enum SecurityPolicy {
         add(["companionMemory.get", "companionMemory.update", "companionMemory.run"], "read or change what the Companion remembers about you")
         add(["context.deleteAll", "context.settings.set"], "change or delete your activity history", "system")
         add(["context.settings.get"], "read your activity-tracking settings")
-        add(["chat.list", "chat.get", "chat.create", "chat.record", "chat.configure", "chat.mascot", "chat.send", "chat.attach", "chat.media",
+        add(["chat.list", "chat.get", "chat.create", "chat.record", "chat.configure", "chat.mascot", "chat.send", "chat.attach", "chat.attachment", "chat.media",
              "chat.interrupt", "chat.unqueue", "chat.retry", "chat.edit", "chat.cancel", "chat.delete", "chat.resources"],
             "read or change your AI chats")
         add(["quickAsk"], "ask your AI provider a question on your account")

@@ -457,7 +457,7 @@ async function initializeChat(app, chatId, compact, signal) {
         }));
     }
     if (message.role === "user") {
-      return el("div", { class: "msg user" }, sentAttachments(message.attachments), el("div", { class: "bubble", text: message.text }),
+      return el("div", { class: "msg user" }, sentAttachments(message.attachments, chatId), el("div", { class: "bubble", text: message.text }),
         el("button", { class: "ghost edit", title: "Edit and resend", onclick: e => edit(message, e.currentTarget.parentElement) }, "Edit"));
     }
     const node = el("div", { class: "msg assistant" }, replyAuthor(message));

@@ -151,3 +151,18 @@ func openRuntime() async throws -> (Runtime, URL) {
     #expect(!LinkPreviews.allowed(URL(string: "http://example.com")!))
     #expect(!LinkPreviews.allowed(URL(string: "file:///etc/passwd")!))
 }
+
+@Test func claudeModelsAndTheirEffortsComeFromClaudeCodesCatalog() throws {
+    let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let folder = home.appendingPathComponent(".claude/cache/model-catalog")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: home) }
+    // Before Claude Code has written a catalog: the aliases, with its efforts.
+    #expect(ModelCatalog.claudeModels(home: home).map(\.id) == ["opus", "sonnet", "fable", "haiku"])
+    let catalog = #"{"catalog":{"config":{"models":[{"id":"claude-old-1","name":"Old 1","section":"overflow","thinking":{"effort_options":[{"id":"low"},{"id":"high"}]},"runtime":{"default_effort":"high"}},{"id":"claude-new-2","name":"New 2","section":"main","thinking":{"effort_options":[{"id":"low"},{"id":"medium"},{"id":"xhigh"},{"id":"max"}]},"runtime":{"default_effort":"medium"}},{"id":"claude-plain","name":"Plain","section":"overflow"}]}}}"#
+    try Data(catalog.utf8).write(to: folder.appendingPathComponent("account-cc.json"))
+    let models = ModelCatalog.claudeModels(home: home)
+    #expect(models.map(\.id) == ["claude-new-2", "claude-old-1", "claude-plain"], "current models first, older ones after")
+    #expect(models[0].efforts?.map(\.id) == ["low", "medium", "xhigh", "max"] && models[0].defaultEffort == "medium")
+    #expect(models[0].efforts?[2].label == "Extra high" && models[2].efforts == [])
+}

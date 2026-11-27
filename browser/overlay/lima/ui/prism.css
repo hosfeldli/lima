@@ -209,11 +209,18 @@ details.tools div { padding: 2px 0 0 15px; font-size: var(--t-xs); white-space: 
 .composer { padding: var(--s2) var(--s4) var(--s3); }
 .agent-now { display: flex; align-items: center; gap: 6px; font-size: var(--t-sm); color: var(--ink-2); padding: 0 0 6px; }
 .composer-box { border: 1px solid var(--line-2); border-radius: var(--r-2); background: var(--panel); padding: 6px 6px 6px 10px; }
-.composer-box:focus-within { border-color: var(--ink); }
+/* Focus shows as a soft ring on the box, not a dark outline round the text. */
+.composer-box:focus-within { border-color: color-mix(in srgb, var(--ink) 28%, var(--line-2)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 6%, transparent); }
+.composer-box textarea:focus-visible { outline: none; }
 .composer-box textarea { width: 100%; border: 0; background: transparent; resize: none; padding: 2px 0 4px; font-size: var(--t-md); line-height: 1.5; }
 .composer-box textarea:focus { border: 0; }
-.composer-row select { border-color: transparent; background: transparent; }
-.composer-row select:is(:hover, :focus) { background: var(--panel-2); }
+/* The composer's menus are drawn flat, so their hover and focus stay inside
+   the box (the Mac's own pop-up style spilled over the composer's border). */
+.composer-row select { appearance: none; -moz-appearance: none; height: 26px; padding: 0 22px 0 8px; border: 0; border-radius: 7px;
+  background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23888' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 8px center / 9px 6px;
+  text-overflow: ellipsis; }
+.composer-row select:is(:hover, :focus) { background-color: var(--panel-2); }
+.composer-row select:focus-visible { outline: 2px solid var(--action); outline-offset: -2px; }
 .composer-row { display: flex; align-items: center; gap: 4px; }
 button.send { height: 28px; padding: 0 12px; background: var(--action); border-color: var(--action); color: var(--action-contrast); }
 button.send:hover { background: var(--action-hover); }
@@ -1244,7 +1251,15 @@ button.send-now { white-space: nowrap; }
 .tab-size-readout { min-width: 44px; }
 
 /* Composer attachments: chips with thumbnails and upload progress. */
-.attachment-tray { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 6px 0; }
+.attachment-tray { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0 8px; }
+.attachment-tray[hidden] { display: none; }
+button.attachment-chip { font: inherit; color: inherit; text-align: start; cursor: pointer; }
+button.attachment-chip:hover { border-color: var(--line-2); background: var(--panel); }
+.attachment-page { display: grid; gap: 12px; justify-items: center; padding: 20px; }
+.attachment-title { margin: 0; font-size: var(--t-md); font-weight: 600; }
+.attachment-frame { width: min(100%, 1100px); height: calc(100vh - 90px); border: 1px solid var(--line); border-radius: var(--r-2); background: var(--paper); }
+.attachment-text-view { width: min(100%, 1000px); max-height: calc(100vh - 90px); overflow: auto; margin: 0; padding: 14px 16px; border: 1px solid var(--line);
+  border-radius: var(--r-2); background: var(--paper); font: 12.5px/1.5 var(--mono, ui-monospace, monospace); white-space: pre-wrap; overflow-wrap: anywhere; }
 .attachment-tray.sent { justify-content: flex-end; padding: 0 0 4px; }
 .attachment-chip { position: relative; display: inline-flex; align-items: center; gap: 7px; max-width: 240px; padding: 4px 26px 4px 4px;
   border: 1px solid var(--line); border-radius: 9px; background: var(--paper); overflow: hidden; }
@@ -1705,3 +1720,15 @@ button.story-thing:hover { background: var(--panel); }
 .mini-input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--ink); font: 500 17px/1.2 var(--font); outline: none; }
 .mini-hint { margin: 0; text-align: center; font-size: var(--t-xs); }
 .mini-hint kbd { padding: 1px 5px; border: 1px solid var(--line); border-radius: 4px; font: 600 11px/1.4 var(--font); }
+
+/* The Companion's Pip: in the panel, beside a speech bubble saying what it's
+   doing (mascot states drive its pose; the bubble carries the words). */
+.pip-stage { display: flex; align-items: center; gap: 12px; padding: 2px 2px 14px; }
+.pip-stage .companion { flex: none; width: 64px; height: 58px; }
+.pip-bubble { position: relative; flex: 1; min-width: 0; padding: 9px 12px; border: 1px solid var(--line); border-radius: 14px;
+  background: var(--panel); font-size: var(--t-sm); line-height: 1.4; }
+.pip-bubble::before { content: ""; position: absolute; left: -6px; top: 50%; width: 10px; height: 10px; background: inherit;
+  border-left: 1px solid var(--line); border-bottom: 1px solid var(--line); transform: translateY(-50%) rotate(45deg); }
+.pip-bubble[data-state="blocked"], .pip-bubble[data-state="failed"] { border-color: color-mix(in srgb, var(--danger) 45%, var(--line)); }
+.pip-speech { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.pip-speech-detail { margin: 2px 0 0; color: var(--ink-2); overflow-wrap: anywhere; }

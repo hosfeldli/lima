@@ -43,10 +43,28 @@ export async function preferredAgent() {
 export function agentControls({ onChange, onError } = {}) {
   const provider = el("select", { "aria-label": "Provider" }, el("option", { text: "Checking providers…" }));
   const model = el("select", { "aria-label": "Model" });
-  // How hard the model thinks on each turn. OpenCode has no such setting.
-  const EFFORTS = [["default", "Effort: default"], ["low", "Effort: low"], ["medium", "Effort: medium"], ["high", "Effort: high"]];
+  // How hard the model thinks on each turn: the levels the chosen model
+  // accepts, as its CLI lists them (none for a model without the setting).
   const effort = el("select", { "aria-label": "Effort", title: "How hard the model thinks: higher is slower and more thorough" },
-    EFFORTS.map(([value, text]) => el("option", { value, text })));
+    el("option", { value: "default", text: "Effort: default" }));
+  let catalog = [];
+  const sameOptions = (select, items) => select.options.length === items.length
+    && items.every((item, index) => select.options[index].value === item.value && select.options[index].text === item.text);
+  /** Replaces a menu's choices only when they changed, so an open menu keeps its list. */
+  function setOptions(select, items, value) {
+    if (!sameOptions(select, items)) select.replaceChildren(...items.map(item => el("option", item)));
+    select.value = value;
+  }
+  function paintEfforts() {
+    const entry = catalog.find(item => item.id === selected.model) ?? catalog.find(item => item.id === "default");
+    const levels = entry?.efforts ?? [];
+    if (selected.effort !== "default" && !levels.some(level => level.id === selected.effort)) selected.effort = "default";
+    const fallback = levels.find(level => level.id === entry?.defaultEffort);
+    setOptions(effort, [{ value: "default", text: "Effort: default" },
+      ...levels.map(level => ({ value: level.id, text: `Effort: ${level.label}` }))], selected.effort);
+    effort.title = `How hard the model thinks: higher is slower and more thorough.${fallback ? ` This model's default is ${fallback.label}.` : ""}`;
+    effort.hidden = !levels.length;
+  }
   let generation = 0;
   let selected = { provider: "", model: "default", effort: prefs.get("effort", "default") };
   let memory = {};
@@ -66,22 +84,26 @@ export function agentControls({ onChange, onError } = {}) {
     const choice = connected.includes(next.provider) ? next.provider : fallback ? connected[0] : "";
     selected = { provider: choice ?? "", model: choice === next.provider ? next.model ?? "default" : memory[choice] ?? "default",
       effort: next.effort ?? (Object.hasOwn(next, "messages") ? "default" : selected.effort ?? "default") };
-    effort.value = selected.effort;
-    effort.hidden = selected.provider === "opencode";
     provider.replaceChildren(
       ...(!choice ? [el("option", { value: "", disabled: true, text: connected.length ? "Choose a provider" : "No connected providers" })] : []),
       ...connected.map(value => el("option", { value, text: PROVIDERS[value] })));
     provider.disabled = !connected.length;
     provider.value = selected.provider;
     model.disabled = !choice;
-    model.replaceChildren(el("option", { value: selected.model, text: selected.model === "default" ? "CLI default" : selected.model }));
-    if (!choice) return false;
+    // Until the list arrives, the current choice stands alone (only if the
+    // menu has nothing yet: an open menu keeps the list it's showing).
+    const placeholder = { value: selected.model, text: selected.model === "default" ? "CLI default" : selected.model };
+    if (!model.options.length || model.dataset.provider !== selected.provider) setOptions(model, [placeholder], selected.model);
+    if (!choice) { paintEfforts(); return false; }
     const available = await call("agents.models", { provider: selected.provider }).catch(() => []);
     if (turn !== generation) return false;
-    const models = [...available];
-    if (!models.some(item => item.id === selected.model)) models.push({ id: selected.model, label: selected.model === "default" ? "CLI default" : selected.model });
-    model.replaceChildren(...models.map(item => el("option", { value: item.id, text: item.label })));
-    model.value = selected.model;
+    catalog = [...available];
+    if (!catalog.some(item => item.id === selected.model)) catalog.push({ id: selected.model, label: placeholder.text });
+    const current = catalog.filter(item => !item.older);
+    const older = catalog.filter(item => item.older);
+    setOptions(model, [...current, ...older].map(item => ({ value: item.id, text: item.older ? `${item.label} (older)` : item.label })), selected.model);
+    model.dataset.provider = selected.provider;
+    paintEfforts();
     return true;
   }
 
@@ -106,6 +128,9 @@ export function agentControls({ onChange, onError } = {}) {
   });
   model.addEventListener("change", () => {
     selected.model = model.value;
+    const before = selected.effort;
+    paintEfforts();
+    if (before !== selected.effort) prefs.set("effort", selected.effort);
     commit();
   });
   effort.addEventListener("change", () => {
@@ -132,7 +157,7 @@ export function agentControls({ onChange, onError } = {}) {
     const current = settings();
     refresh(current.provider ? current : undefined, !current.provider).catch?.(() => {});
   };
-  for (const control of [provider, model]) control.addEventListener("mousedown", freshen);
+  // Not when a menu opens: swapping its list as it opens left only one choice.
   addEventListener("focus", freshen);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) freshen(); });
   return { provider, model, effort, show, settings, ready, refresh, settled: () => changes };
@@ -353,10 +378,62 @@ export function attachmentTray({ conversation, input, onChange = () => {} }) {
   };
 }
 
-/** Attachment chips on a sent message. */
-export function sentAttachments(list) {
+/** A chat's attachment, full size in Glance over the current tab. */
+export function openAttachment(chatId, path) {
+  const url = `about:lima?view=attachment&chat=${encodeURIComponent(chatId)}&path=${encodeURIComponent(path)}`;
+  return bridge.browser("openGlance", { url }).catch(() => bridge.openTab(url));
+}
+
+const attachmentCache = new Map();
+/** An attachment's contents as a data URL (cached per chat and file). */
+export function attachmentURL(chatId, path) {
+  const key = `${chatId}\n${path}`;
+  if (!attachmentCache.has(key)) {
+    attachmentCache.set(key, call("chat.attachment", { id: chatId, path })
+      .then(file => ({ ...file, url: `data:${file.type};base64,${file.data}` }))
+      .catch(error => { attachmentCache.delete(key); throw error; }));
+  }
+  return attachmentCache.get(key);
+}
+
+/** Attachment chips on a sent message: images show a thumbnail, and any
+ * chip opens the file in Glance. */
+export function sentAttachments(list, chatId) {
   if (!list?.length) return null;
-  return el("div", { class: "attachment-tray sent" }, list.map(item => el("span", { class: "attachment-chip", "data-state": "ready", title: item.path },
-    el("span", { class: "attachment-thumb file" }, icon(item.type?.startsWith("image/") ? "image" : item.type?.startsWith("text/") ? "paragraph" : "file")),
-    el("span", { class: "attachment-text" }, el("strong", { text: item.name }), el("small", { text: formatSize(item.size ?? 0) })))));
+  return el("div", { class: "attachment-tray sent" }, list.map(item => {
+    const image = item.type?.startsWith("image/");
+    const thumb = el("span", { class: "attachment-thumb file" }, icon(image ? "image" : item.type?.startsWith("text/") ? "paragraph" : "file"));
+    if (image && chatId && (item.size ?? 0) <= 12e6) {
+      attachmentURL(chatId, item.path).then(file => {
+        thumb.replaceWith(el("img", { class: "attachment-thumb", alt: "", src: file.url }));
+      }).catch(() => {});
+    }
+    const text = el("span", { class: "attachment-text" }, el("strong", { text: item.name }), el("small", { text: formatSize(item.size ?? 0) }));
+    return chatId
+      ? el("button", { type: "button", class: "attachment-chip", "data-state": "ready", title: `Open ${item.name}`,
+        onclick: event => { event.stopPropagation(); openAttachment(chatId, item.path); } }, thumb, text)
+      : el("span", { class: "attachment-chip", "data-state": "ready", title: item.path }, thumb, text);
+  }));
+}
+
+/** about:lima?view=attachment: one file from a chat, full size (in Glance). */
+export async function renderAttachment(app, chatId, path) {
+  const name = path.split("/").pop();
+  document.title = name;
+  const status = el("p", { class: "muted", text: "Loading…" });
+  const page = el("div", { class: "media-page attachment-page" }, status);
+  app.replaceChildren(page);
+  try {
+    const file = await attachmentURL(chatId, path);
+    let view;
+    if (file.type.startsWith("image/")) view = el("img", { class: "media-full", alt: file.name, src: file.url });
+    else if (file.type === "application/pdf") {
+      const bytes = Uint8Array.from(atob(file.data), char => char.charCodeAt(0));
+      view = el("iframe", { class: "attachment-frame", title: file.name, src: URL.createObjectURL(new Blob([bytes], { type: file.type })) });
+    } else if (file.type.startsWith("text/") || file.type === "application/json") {
+      const text = new TextDecoder().decode(Uint8Array.from(atob(file.data), char => char.charCodeAt(0)));
+      view = el("pre", { class: "attachment-text-view", text: text.slice(0, 400000) });
+    } else view = el("p", { class: "muted", text: `${file.name} · ${formatSize(file.size)} · Lima can't show this kind of file here.` });
+    page.replaceChildren(el("h1", { class: "attachment-title", text: file.name }), view);
+  } catch (error) { status.textContent = errorText(error); }
 }
