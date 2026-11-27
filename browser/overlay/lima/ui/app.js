@@ -12,6 +12,7 @@ import { renderChat, renderMedia } from "./chat.js";
 import { renderStudio } from "./studio.js";
 import { renderWelcome } from "./welcome.js";
 import { renderWhatsNew } from "./whatsnew.js";
+import { renderMini } from "./mini.js";
 import { renderAsk, renderAudio, renderIntegrations } from "./views.js";
 import { renderImageStudio } from "./image-studio.js";
 import { renderSchedules } from "./schedules.js";
@@ -29,6 +30,7 @@ function renderStart(root) {
 const routes = [
   [() => params.get("view") === "welcome", () => renderWelcome(app)],
   [() => params.get("view") === "whats-new", () => renderWhatsNew(app)],
+  [() => params.get("view") === "mini", () => renderMini(app)],
   [() => params.get("view") === "notes-help", () => renderNotesHelp(app)],
   [() => params.get("view") === "image", () => {
     const workspace = params.get("imageWorkspace");

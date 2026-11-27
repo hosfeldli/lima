@@ -341,6 +341,29 @@ return Boolean(document.querySelector(".calc-editor")?.textContent.includes("For
 """
 
 
+MINI = """
+const done = arguments[arguments.length - 1];
+(async () => {
+  const windows = () => [...Services.wm.getEnumerator("navigator:browser")];
+  const main = windows().find(win => !win.limaMini);
+  const before = main.gBrowser.tabs.length;
+  main.browserDOMWindow.openURI(Services.io.newURI("https://example.com/from-mail"), null, Ci.nsIBrowserDOMWindow.OPEN_NEWTAB,
+    Ci.nsIBrowserDOMWindow.OPEN_EXTERNAL, Services.scriptSecurityManager.getSystemPrincipal());
+  let mini;
+  for (let i = 0; i < 60 && !(mini = windows().find(win => win.limaMini && win.document.getElementById("lima-mini-bar"))); i++) {
+    await new Promise(resolve => main.setTimeout(resolve, 100));
+  }
+  if (!mini) return { opened: false };
+  const result = { opened: true, sidebarHidden: mini.getComputedStyle(mini.document.getElementById("navigator-toolbox")).display === "none",
+    mainUntouched: main.gBrowser.tabs.length === before };
+  for (let i = 0; i < 40 && mini.document.querySelector(".lima-mini-button.primary").disabled; i++) await new Promise(r => main.setTimeout(r, 100));
+  mini.document.querySelector(".lima-mini-button.primary").click();
+  for (let i = 0; i < 40 && !mini.closed; i++) await new Promise(resolve => main.setTimeout(resolve, 100));
+  result.moved = mini.closed && main.gBrowser.tabs.length === before + 1;
+  return Object.values(result).every(Boolean) || result;
+})().then(done, error => done({ error: String(error) }));
+"""
+
 A11Y = """
 const problems = [];
 const visible = node => node.getClientRects().length > 0 && getComputedStyle(node).visibility !== "hidden";
@@ -391,6 +414,8 @@ def verify_browser(connection, compiled):
         checks[f"{kind}A11y"] = not problems
         if problems:
             print(f"{kind} accessibility: {problems}", file=sys.stderr)
+    # Mini Lima: a link from another app opens in a small window, and Open in Lima moves it home.
+    checks["miniLima"] = run_script(send, "chrome", MINI)
     run_script(send, "chrome", """
       const done = arguments[arguments.length - 1];
       const { LimaBridge } = ChromeUtils.importESModule("resource://lima/LimaBridge.sys.mjs");

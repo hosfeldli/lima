@@ -1323,3 +1323,33 @@ zen-folder:is([lima-agents], [lima-tabs], [lima-images])[collapsed] > .tab-group
 /* Apps and files in search show their own macOS icon, full size, without a tile. */
 .lima-s-icon:is([data-kind="app"], [data-kind="file"]):has(.lima-s-favicon) { background: none; box-shadow: none; }
 .lima-s-icon:is([data-kind="app"], [data-kind="file"]) .lima-s-favicon { width: 24px; height: 24px; border-radius: 0; }
+
+/* MARK: Mini Lima. A small window with no sidebar: a slim bar names the
+   site, with Copy link and Open in Lima; the page fills the rest. */
+:root[lima-mini] #navigator-toolbox,
+:root[lima-mini] #zen-sidebar-splitter,
+:root[lima-mini] #lima-dock,
+:root[lima-mini] #lima-assistant-button,
+:root[lima-mini] .lima-companion-float { display: none !important; }
+:root[lima-mini] #tabbrowser-tabbox { margin: 40px 6px 6px !important; }
+#lima-mini-bar {
+  position: fixed; inset: 0 0 auto 0; z-index: 10;
+  display: flex; align-items: center; gap: 12px; height: 40px; padding: 0 8px 0 80px;
+  -moz-window-dragging: drag; color: var(--lima-ink, currentColor); font: 13px/1.2 system-ui;
+}
+.lima-mini-site { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+.lima-mini-favicon { width: 16px; height: 16px; flex: none; border-radius: 3px; }
+.lima-mini-favicon[hidden] { display: none; }
+.lima-mini-text { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.lima-mini-host { font-weight: 650; white-space: nowrap; }
+.lima-mini-title { color: var(--lima-ink-2, GrayText); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lima-mini-actions { display: flex; gap: 6px; flex: none; -moz-window-dragging: no-drag; }
+.lima-mini-button {
+  appearance: none; height: 26px; padding: 0 11px; border: 1px solid color-mix(in srgb, currentColor 16%, transparent); border-radius: 7px;
+  background: transparent; color: inherit; font: 600 12px/1 system-ui; cursor: default;
+}
+.lima-mini-button:hover:not(:disabled) { background: color-mix(in srgb, currentColor 8%, transparent); }
+.lima-mini-button.primary { background: var(--lima-ink, #222); border-color: transparent; color: var(--lima-bg, #fff); }
+.lima-mini-button.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--lima-ink, #222) 86%, transparent); }
+.lima-mini-button:disabled { opacity: .45; }
+.lima-mini-button:focus-visible { outline: 2px solid var(--lima-ink, currentColor); outline-offset: 1px; }

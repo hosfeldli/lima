@@ -1693,3 +1693,12 @@ button.story-thing:hover { background: var(--panel); }
 .welcome-first-task .story-beats { margin: 4px 0 6px; }
 .welcome-first-task[data-started] .story-dot { border-color: var(--ink); color: var(--ink); }
 .welcome-first-task[data-started] .story-beat:first-child .story-dot { animation: story-pulse 1.6s ease-in-out infinite; }
+
+/* Mini Lima's quick search page. */
+.mini { display: grid; place-content: center; gap: 12px; min-height: 80vh; padding: 24px; }
+.mini-box { display: flex; align-items: center; gap: 10px; width: min(560px, 86vw); height: 50px; padding: 0 16px; border: 1px solid var(--line);
+  border-radius: 14px; background: var(--paper); box-shadow: var(--shadow-1); }
+.mini-box .icon { width: 18px; height: 18px; color: var(--ink-3); }
+.mini-input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--ink); font: 500 17px/1.2 var(--font); outline: none; }
+.mini-hint { margin: 0; text-align: center; font-size: var(--t-xs); }
+.mini-hint kbd { padding: 1px 5px; border: 1px solid var(--line); border-radius: 4px; font: 600 11px/1.4 var(--font); }

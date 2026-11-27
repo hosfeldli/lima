@@ -265,6 +265,25 @@ export class LimaParent extends JSWindowActorParent {
         }
         return lazy.LimaAppearance.theme();
       }
+      // Mini Lima: links from other apps in a small window (Settings), and its quick search.
+      case "miniLinksChanged": {
+        if (!lazy.PrivateBrowsingUtils.isWindowPrivate(win)) Services.prefs.setBoolPref("lima.mini.externalLinks", payload?.value === true);
+        return null;
+      }
+      case "miniSearch": {
+        if (!browser?.currentURI?.spec.startsWith("about:lima?view=mini")) throw new Error("Search from Mini Lima.");
+        const { LimaMini } = ChromeUtils.importESModule("resource://lima/LimaMini.sys.mjs");
+        const text = String(payload?.text ?? "").slice(0, 2000);
+        let target = LimaMini.destination(text);
+        if (!target && text.trim()) {
+          const { SearchService } = ChromeUtils.importESModule("moz-src:///toolkit/components/search/SearchService.sys.mjs");
+          const engine = await SearchService.getDefault();
+          target = engine.getSubmission(text.trim()).uri.spec;
+        }
+        if (!target) return null;
+        browser.fixupAndLoadURIString(target, { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal() });
+        return null;
+      }
       case "browserActionOverlayChanged": {
         if (!lazy.PrivateBrowsingUtils.isWindowPrivate(win)) {
           Services.prefs.setBoolPref("lima.browser.actionOverlay", payload?.value === true);
@@ -277,6 +296,7 @@ export class LimaParent extends JSWindowActorParent {
           provider: Services.prefs.getStringPref("lima.agent.provider", "claude"),
           models: Object.fromEntries(providers.map(provider => [provider, Services.prefs.getStringPref("lima.agent.model." + provider, "default")])),
           personality: Services.prefs.getStringPref("lima.personality", "full"),
+          miniLinks: Services.prefs.getBoolPref("lima.mini.externalLinks", true),
           mascotTheme: Services.prefs.getStringPref("lima.mascotTheme", "graphite"),
           theme: lazy.LimaAppearance.theme(),
           themeSetting: Services.prefs.getStringPref("lima.theme", "system"),

@@ -8,6 +8,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
   LimaAppearance: "resource://lima/LimaAppearance.sys.mjs",
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
   LimaSidebar: "resource://lima/LimaSidebar.sys.mjs",
+  LimaMini: "resource://lima/LimaMini.sys.mjs",
   installSidebarRows: "resource://lima/LimaSidebarRows.sys.mjs",
   LimaTabs: "resource://lima/LimaTabs.sys.mjs",
   LimaWorkspaces: "resource://lima/LimaWorkspaces.sys.mjs",
@@ -34,9 +35,23 @@ function attachContextRecorder(win) {
 }
 
 export const LimaWindow = {
-  attach(win) {
+  /** A Mini Lima window: Lima's look and the slim bar, no sidebar. */
+  attachMini(win) {
     if (win.limaAttached) return;
     win.limaAttached = true;
+    const root = win.document.documentElement;
+    root.setAttribute("lima-window", "true");
+    root.setAttribute("lima-theme", lazy.LimaAppearance.theme());
+    const unwatch = lazy.LimaAppearance.subscribe(theme => root.setAttribute("lima-theme", theme));
+    win.addEventListener("unload", unwatch, { once: true });
+    lazy.LimaMini.setup(win);
+  },
+
+  attach(win) {
+    if (win.limaMini) return this.attachMini(win);
+    if (win.limaAttached) return;
+    win.limaAttached = true;
+    lazy.LimaMini.installInMainWindow(win);
     win.document.documentElement.setAttribute("lima-window", "true");
     win.document.documentElement.style.setProperty("--lima-motion-settle", SETTLE);
     lazy.LimaSidebar.attach(win);

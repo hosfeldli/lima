@@ -202,6 +202,7 @@ export async function renderIntegrations(app, section) {
         el("p", { class: "muted", text: "Pip is Lima’s companion, and each workspace gets a Pip of its own. Graphite keeps them in Lima's greys; Pastel gives each its own soft colour. Off keeps them still, and Lima respects macOS Reduce Motion." }),
         el("label", { class: "row appearance-checkbox" }, overlay, "Show agent click and typing markers on webpages")),
       card("Tabs", tabSizeSettings()),
+      card("Mini Lima", miniSettings()),
     ]],
     ["search", "Search", "search address bar ai overview answers copilot sponsored ads google bing duckduckgo yahoo brave results youtube shorts ranking index", searchSettings()],
     ["sidebar", "Sidebar", "dock shortcuts edit order spotify music calendar mail dictation", [card("Sidebar shortcuts", sidebarSettings())]],
@@ -376,6 +377,16 @@ function policyLinks(items) {
 }
 
 /** Standard notices that hold for every user, with links to the full texts. */
+/* Mini Lima: links from other apps open in a small window of their own. */
+function miniSettings() {
+  const toggle = el("input", { type: "checkbox", checked: true, onchange: () => bridge.browser("miniLinksChanged", { value: toggle.checked }).catch(() => {}) });
+  bridge.browser("agentPreferences", {}).then(data => { if (typeof data?.miniLinks === "boolean") toggle.checked = data.miniLinks; }).catch(() => {});
+  return el("div", {},
+    el("label", { class: "row appearance-checkbox" }, toggle, "Open links from other apps in Mini Lima"),
+    el("p", { class: "muted" }, "A link you click in Mail, Messages or Slack opens in a small window instead of your sidebar. Read it and close it, or press ",
+      el("kbd", { text: "⌘O" }), " to move it into Lima. ", el("kbd", { text: "⌥⌘N" }), " opens Mini Lima for a quick search anytime."));
+}
+
 /* How far one agent run may go before Lima stops it and says so. */
 function limitSettings() {
   const steps = el("input", { type: "number", min: "10", max: "2000", step: "10", "aria-label": "Most steps in one run" });

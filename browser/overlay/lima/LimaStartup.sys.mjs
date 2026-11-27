@@ -104,6 +104,7 @@ export const LimaStartup = {
     Services.obs.addObserver(win => {
       try {
         lazy.LimaWindow.attach(win);
+        if (win.limaMini) return; // Mini Lima has no sidebar to set up
         if (!lazy.PrivateBrowsingUtils.isWindowPrivate(win)) {
           lazy.flattenSidebar(win)
             .catch(error => log(`Sidebar setup failed: ${error}`))
