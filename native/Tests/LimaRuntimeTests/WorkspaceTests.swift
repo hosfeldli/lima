@@ -412,3 +412,17 @@ private func archivedText(_ archive: URL, _ entry: String) throws -> String {
     _ = try workspace.arrange(folders: [], tabs: [.object(["url": .string("https://a.example/"), "folder": .string("Later")])])
     #expect(workspace.tabFolderStyles?.map(\.path) == ["Food"], "a folder holding a tab needs no entry; the named empty one stays")
 }
+
+@Test func aFolderAnArrangeEmptiesGoesAway() throws {
+    var workspace = Workspace(id: "w", name: "W", directory: "/tmp", hue: 0, provider: .claude,
+                              tabs: [.init(url: "https://a.example/", title: "A"), .init(url: "https://b.example/", title: "B")],
+                              bookmarks: [], createdAt: 0, token: "")
+    _ = try workspace.arrange(folders: [.object(["path": .string("Bread"), "icon": .string("🍞")]), .object(["path": .string("Keep")])],
+                              tabs: [.object(["url": .string("https://a.example/"), "folder": .string("Bread")]),
+                                     .object(["url": .string("https://b.example/"), "folder": .string("Keep")])])
+    // Bread's tab moves to Recipes/Bread: the old Bread goes; Keep is named again, so it stays though empty.
+    _ = try workspace.arrange(folders: [.object(["path": .string("Keep")])],
+                              tabs: [.object(["url": .string("https://a.example/"), "folder": .string("Recipes/Bread")]),
+                                     .object(["url": .string("https://b.example/"), "folder": .string("Recipes/Bread")])])
+    #expect(workspace.tabFolderStyles?.map(\.path) == ["Keep"])
+}

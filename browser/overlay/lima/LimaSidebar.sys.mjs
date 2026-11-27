@@ -1153,6 +1153,21 @@ function attachFolderBehaviour(win) {
     const folder = event.target;
     if (folder.hasAttribute?.("lima-workspace")) lazy.LimaWorkspaces.onFolderRenamed(folder);
   });
+
+  // The tab list only scrolls up and down. Revealing a deeply nested tab
+  // could scroll it sideways too, cutting off the start of every row.
+  const pinned = new WeakSet();
+  const pinHorizontalScroll = () => {
+    for (const host of doc.querySelectorAll("#tabbrowser-arrowscrollbox, .workspace-arrowscrollbox")) {
+      const box = host.scrollbox;
+      if (!box || pinned.has(box)) continue;
+      pinned.add(box);
+      box.addEventListener("scroll", () => { if (box.scrollLeft) box.scrollLeft = 0; }, { passive: true });
+      if (box.scrollLeft) box.scrollLeft = 0;
+    }
+  };
+  win.gZenStartup?.promiseInitialized?.then(pinHorizontalScroll, () => {});
+  win.addEventListener("ZenWorkspacesUIUpdate", pinHorizontalScroll);
 }
 
 // MARK: Keys

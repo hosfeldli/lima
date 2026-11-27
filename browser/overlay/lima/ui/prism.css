@@ -459,6 +459,9 @@ button.change-row:hover { background: var(--panel-2); }
 .assistant-head .companion.status { width: 52px; height: 48px; }
 .companion.agent-avatar { width: 32px; height: 30px; }
 .companion.workspace-avatar, .companion.workspace-chat-avatar { width: 76px; height: 68px; }
+/* In the chat's 40px header the Pip fits inside it; at its overview size it
+   spilled over the chat tabs above. */
+.chat-head .companion:is(.chat-avatar, .workspace-chat-avatar) { width: 40px; height: 36px; }
 .term-bar .companion.workspace-avatar { width: 42px; height: 36px; }
 .workspace-prompts { max-height: min(52vh, 460px); overflow: auto; padding-inline: 2px; }
 .workspace-prompts article {

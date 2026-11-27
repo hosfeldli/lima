@@ -9,7 +9,8 @@ import { releaseSections, sectionArt, TOPICS } from "./whatsnew-art.sys.mjs";
 export async function renderWhatsNew(app) {
   setPage("What’s New", "spark");
   document.body.classList.add("whats-new-page");
-  const dark = () => matchMedia("(prefers-color-scheme: dark)").matches || document.documentElement.dataset.theme === "dark";
+  // Lima's own theme, which may differ from the Mac's appearance.
+  const dark = () => document.documentElement.getAttribute("lima-theme") === "dark";
   let data;
   try { data = await bridge.browser("whatsNew", {}); }
   catch (error) { app.replaceChildren(el("main", { class: "whats-new" }, el("p", { class: "muted", text: errorText(error) }))); return; }

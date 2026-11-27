@@ -134,6 +134,9 @@ extension Workspace {
                 if let collapsed = item["collapsed"]?.boolValue { entry.collapsed = collapsed }
             }
         }
+        // Folders that hold tabs now, so ones this call empties can go.
+        let named = Set(folders.compactMap { Self.tabFolder($0["renameTo"]?.stringValue ?? $0["path"]?.stringValue) })
+        let filled = Set(styles.map(\.path).filter { path in tabs.contains { Self.within($0.folder, path) } })
         var missing: [String] = []
         var ordered: [String] = []
         for move in moves {
@@ -158,7 +161,12 @@ extension Workspace {
             tabs = tabs.map { rank[$0.url] != nil ? slots.next()! : $0 }
             tabOrder = (tabOrder ?? 0) + 1
         }
-        // A folder the agent named stays (even empty) until it removes it.
+        // A folder the agent named stays (even empty) until it removes it,
+        // unless this call moved every tab out of it: reorganizing "Bread"
+        // into "Recipes/Bread" leaves no empty "Bread" behind.
+        styles.removeAll { style in
+            filled.contains(style.path) && !named.contains(style.path) && !tabs.contains { Self.within($0.folder, style.path) }
+        }
         tabFolderStyles = styles.isEmpty ? nil : styles
         return missing
     }

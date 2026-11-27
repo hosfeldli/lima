@@ -392,7 +392,8 @@ extension MCPServer {
             set the order of tabs (tabs listed together are placed in the listed order inside their folders); give a tab an \
             icon and a short name that stays when the page changes its title; and give folders an icon, open or collapse them, \
             rename them (renameTo moves everything inside) or remove them (their tabs move up a level). An empty folder you \
-            name in folders is kept for work to come. Icons are an emoji ("🍳") or one of Lima's icons: \
+            name in folders is kept for work to come; a folder you move every tab out of goes away, so reorganizing \
+            leaves no empty folders behind. Keep nesting to two or three levels. Icons are an emoji ("🍳") or one of Lima's icons: \
             \(Workspace.tabIconNames.sorted().joined(separator: ", ")). Use "" to clear an icon or name. Group related tabs \
             whenever a workspace has more than a few, mark the important ones, and collapse folders you're finished with. \
             Returns the layout (also available from workspace_layout).

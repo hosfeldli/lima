@@ -151,8 +151,10 @@ zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon
 }
 /* End of sidebar rows. */
 
-/* Native tab and folder elements share a row footprint and focus treatment. */
-#navigator-toolbox :is(.tabbrowser-tab, zen-folder > .tab-group-label-container) {
+/* Native tab and folder elements share a row footprint and focus treatment.
+   Not for rows Zen has shrunk away: a folder collapsed around its open tab
+   hides the others at height 0, and a minimum here left a gap per row. */
+#navigator-toolbox :is(.tabbrowser-tab, zen-folder > .tab-group-label-container):not([style*="height: 0"]) {
   min-block-size: var(--lima-row-height);
 }
 #navigator-toolbox :is(.tabbrowser-tab, .tab-group-label-container):focus-visible {
