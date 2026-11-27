@@ -52,9 +52,18 @@ const SHORTS = [
   "ytm-shorts-lockup-view-model", "ytm-shorts-lockup-view-model-v2", "grid-shelf-view-model:has(ytm-shorts-lockup-view-model)",
   "ytd-reel-video-renderer", "ytd-video-renderer:has(a[href^='/shorts/'])", "ytd-grid-video-renderer:has(a[href^='/shorts/'])",
   "ytd-rich-item-renderer:has(a[href^='/shorts/'])", "ytd-compact-video-renderer:has(a[href^='/shorts/'])",
-  "ytd-guide-entry-renderer:has(a[title='Shorts'])", "ytd-mini-guide-entry-renderer[aria-label='Shorts']",
   "yt-tab-shape[tab-title='Shorts']", "tp-yt-paper-tab:has(> .tab-content[title='Shorts'])", "yt-chip-cloud-chip-renderer:has([title='Shorts'])",
 ];
+
+// YouTube's menu keeps its Shorts entry, shown locked: dimmed, unclickable,
+// with a padlock where its icon was, so it's clear Lima turned it off.
+const SHORTS_MENU = ":is(ytd-guide-entry-renderer, ytd-mini-guide-entry-renderer, ytm-pivot-bar-item-renderer)"
+  + ":is([aria-label='Shorts'], :has(a[title='Shorts'], a[href='/shorts'], a[href='/shorts/']))";
+const LOCK = `url("data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M7 10V7.5a5 5 0 0 1 10 0V10" fill="none" stroke="black" stroke-width="2"/><rect x="4.5" y="10" width="15" height="11" rx="2.5"/></svg>')}")`;
+const SHORTS_LOCKED = `${SHORTS_MENU} { pointer-events: none !important; opacity: .45 !important; }
+${SHORTS_MENU} yt-icon > *, ${SHORTS_MENU} .guide-icon > * { visibility: hidden !important; }
+${SHORTS_MENU} :is(yt-icon, .guide-icon) { background: currentColor !important; mask: ${LOCK} center / 20px no-repeat !important; }
+`;
 
 /** The watch page for a Shorts URL, or null. */
 export function shortsWatchURL(url) {
@@ -102,8 +111,19 @@ export function safeToHide(element) {
   return element.querySelectorAll(ORGANIC).length <= 1;
 }
 
+/** The whole block an AI answer occupies, starting from its heading (or a
+ * marked part of it): the widest wrapper that still holds no results of its
+ * own, so its heading and empty frame go too, never a real result. */
+export function aiBlock(start, container) {
+  let block = start.closest(container) ?? start;
+  const organic = node => node.querySelectorAll(ORGANIC).length;
+  while (block.parentElement && !block.parentElement.matches(RESULTS) && safeToHide(block.parentElement)
+    && organic(block.parentElement) === organic(block)) block = block.parentElement;
+  return safeToHide(block) ? block : null;
+}
+
 export function stylesheet(engine, { ai, ads, shorts }) {
-  if (engine === "youtube") return shorts ? `${SHORTS.join(",\n")} { display: none !important; }\n` : "";
+  if (engine === "youtube") return shorts ? `${SHORTS.join(",\n")} { display: none !important; }\n${SHORTS_LOCKED}` : "";
   const rules = RULES[engine];
   // Hidden before first paint, except anything that holds the results.
   const guard = `:not(:has(${RESULTS}))`;
@@ -136,6 +156,8 @@ export class LimaSearchCleanChild extends JSWindowActorChild {
     const redirect = () => {
       const watch = shortsWatchURL(win.location.href);
       if (watch) win.location.replace(watch);
+      // The Shorts feed itself is off: back to YouTube's home page.
+      else if (/^\/shorts\/?$/.test(win.location.pathname)) win.location.replace("/");
     };
     if (event.type === "DOMDocElementInserted") {
       redirect();
@@ -150,12 +172,13 @@ export class LimaSearchCleanChild extends JSWindowActorChild {
       doc.addEventListener("yt-navigate-finish", redirect, true, true);
       win.addEventListener("popstate", redirect);
       doc.addEventListener("click", clicked => {
-        const link = clicked.target?.closest?.("a[href^='/shorts/']");
-        const watch = link && shortsWatchURL(new URL(link.getAttribute("href"), win.location.href).href);
-        if (!watch) return;
+        const link = clicked.target?.closest?.("a[href^='/shorts']");
+        if (!link) return;
+        const watch = shortsWatchURL(new URL(link.getAttribute("href"), win.location.href).href);
+        // A single Short plays as a normal video; the Shorts feed stays closed.
         clicked.preventDefault();
         clicked.stopImmediatePropagation();
-        win.location.assign(watch);
+        if (watch) win.location.assign(watch);
       }, true);
     }
   }
@@ -165,15 +188,22 @@ export class LimaSearchCleanChild extends JSWindowActorChild {
    * Mode" tab), and only a block that holds no real results is hidden. */
   watchHeadings(engine) {
     const doc = this.document;
-    const { aiHeadings, container } = RULES[engine];
+    const { aiHeadings, container, ai } = RULES[engine];
+    const hide = start => {
+      const block = aiBlock(start, container);
+      if (block && !block.hasAttribute("data-lima-hidden")) block.setAttribute("data-lima-hidden", "ai");
+    };
     const sweep = () => {
-      for (const heading of doc.querySelectorAll("h1, h2, h3, [role='heading']")) {
+      // Headings, including the plain labels Google now uses for them.
+      for (const heading of doc.querySelectorAll("h1, h2, h3, h4, [role='heading'], div:not(:has(div)), span:not(:has(span, div))")) {
+        if (heading.closest("[data-lima-hidden]")) continue;
         const text = heading.textContent?.trim();
         if (!text || text.length > 60 || !aiHeadings.some(pattern => pattern.test(text))) continue;
-        if (heading.closest("a, nav, [role='navigation'], [role='tablist'], header")) continue;
-        const block = heading.closest(container);
-        if (block && !block.hasAttribute("data-lima-hidden") && safeToHide(block)) block.setAttribute("data-lima-hidden", "ai");
+        if (heading.closest("a, nav, [role='navigation'], [role='tablist'], header, button, [role='button']")) continue;
+        hide(heading);
       }
+      // A marked AI block hidden by the stylesheet can leave its frame behind.
+      for (const marked of doc.querySelectorAll(ai.join(","))) if (!marked.closest("[data-lima-hidden]")) hide(marked);
     };
     sweep();
     let pending = false;
@@ -183,7 +213,7 @@ export class LimaSearchCleanChild extends JSWindowActorChild {
       this.contentWindow.requestAnimationFrame(() => { pending = false; sweep(); });
     });
     observer.observe(doc.body ?? doc.documentElement, { childList: true, subtree: true });
-    // Results settle within seconds; stop watching after that.
-    this.contentWindow.setTimeout(() => observer.disconnect(), 15000);
+    // AI answers can stream in late; stop watching once the page has settled.
+    this.contentWindow.setTimeout(() => observer.disconnect(), 60000);
   }
 }
