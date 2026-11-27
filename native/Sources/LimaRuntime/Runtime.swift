@@ -8,7 +8,7 @@ import LimaSearch
 import LimaStorage
 import LimaTerminal
 
-public let limaRuntimeVersion = "5.0.11"
+public let limaRuntimeVersion = "5.0.12"
 
 public struct RuntimePaths: Sendable {
     public var data: URL
