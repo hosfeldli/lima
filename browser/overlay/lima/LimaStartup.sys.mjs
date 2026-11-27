@@ -3,6 +3,7 @@
 const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, { PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs" });
 ChromeUtils.defineESModuleGetters(lazy, {
+  setTimeout: "resource://gre/modules/Timer.sys.mjs",
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
   flattenSidebar: "resource://lima/LimaSidebarLayout.sys.mjs",
   disableSpaceRouting: "resource://lima/LimaSidebarLayout.sys.mjs",
@@ -120,6 +121,14 @@ export const LimaStartup = {
     Services.obs.addObserver(async function onFirstWindow(win) {
       Services.obs.removeObserver(onFirstWindow, "browser-delayed-startup-finished");
       step("urlbar", () => log(`urlbar provider ${lazy.LimaUrlbar.register() ? "registered" : "not registered"}`));
+      // Apple Passwords, on by default (once; if you turn it off it stays
+      // off). Not in headless test runs, which shouldn't download add-ons.
+      if (!Services.env.get("MOZ_HEADLESS")) {
+        lazy.setTimeout(() => {
+          ChromeUtils.importESModule("resource://lima/LimaPasswords.sys.mjs").LimaPasswords.installByDefault()
+            .catch(error => log(`Apple Passwords: ${error}`));
+        }, 8000);
+      }
       // Lima's preferred search engine: Google, set once on a new install.
       // An existing profile (or anyone who picked another engine) is never changed.
       (async () => {

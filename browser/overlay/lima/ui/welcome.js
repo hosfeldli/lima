@@ -13,6 +13,7 @@ const STEPS = [
   { id: "meet", eyebrow: "Welcome to Lima", title: "Hi, I’m Pip.", mood: null },
   { id: "about", eyebrow: "About you", title: "Nice to meet you.", mood: "write" },
   { id: "import", eyebrow: "Move in", title: "Bring your browser with you.", mood: "tabs" },
+  { id: "passwords", eyebrow: "Passwords", title: "Your passwords, already here.", mood: "tabs" },
   { id: "default", eyebrow: "Links", title: "Open every link in Lima.", mood: "read" },
   { id: "ai", eyebrow: "Your AI", title: "Connect an AI.", mood: "think" },
   { id: "search", eyebrow: "⌘T", title: "One search for everything.", mood: "read" },
@@ -178,6 +179,7 @@ export function renderWelcome(app) {
         if (result?.imported) celebrate("All moved in!", ticket);
         else if (result?.waited) status.textContent = "Nothing was imported. You can do it later from File → Import From Another Browser.";
       }, "primary")));
+    if (id === "passwords") showPasswords(ticket);
     if (id === "default") showDefault(ticket);
     if (id === "ai") detect(ticket);
     if (id === "search") content.replaceChildren(
@@ -289,6 +291,42 @@ export function renderWelcome(app) {
         if (!completed.has(index)) next.disabled = false;
       }
     };
+  }
+
+  /** Apple Passwords: on by default where macOS has its Passwords helper.
+   * Shown as on (with a way to turn it off), or offered when it isn't yet. */
+  function showPasswords(ticket) {
+    const toggle = button("Use Apple Passwords", async () => {
+      toggle.disabled = true;
+      const turningOn = !state?.installed;
+      status.textContent = turningOn ? "Installing Apple's add-on…" : "Turning off…";
+      try {
+        paint(await bridge.browser("applePasswords", { action: turningOn ? "enable" : "disable" }));
+        status.textContent = "";
+        if (turningOn) celebrate("Passwords are ready!", ticket);
+      } catch (error) {
+        status.textContent = errorText(error);
+        toggle.disabled = false;
+      }
+    }, "primary");
+    let state = null;
+    const note = paragraph("");
+    function paint(next) {
+      if (ticket !== generation) return;
+      state = next;
+      toggle.disabled = !next.available;
+      toggle.textContent = next.installed ? "Turn off" : "Use Apple Passwords";
+      toggle.className = next.installed ? "ghost" : "primary";
+      note.textContent = !next.available
+        ? "Apple Passwords needs macOS 14 or later, so it isn't available on this Mac. Passwords you import from your old browser still work."
+        : next.installed
+          ? "It’s on. Click a password field, or the key in the toolbar, and pick a login. The first time, macOS shows a code to connect it."
+          : "Turn it on to fill the passwords and passkeys you’ve saved in Safari or the Passwords app.";
+    }
+    content.replaceChildren(
+      paragraph("The passwords and passkeys you save with Apple, in Safari, the Passwords app or on your iPhone, fill in Lima too, through Apple’s own iCloud Passwords add-on."),
+      note, el("div", { class: "row" }, toggle));
+    bridge.browser("applePasswords", { action: "status" }).then(paint).catch(() => paint({ available: false, installed: false }));
   }
 
   function showDefault(ticket) {
@@ -493,6 +531,14 @@ const SCENES = {
       windowFrame("Your old browser", el("div", { class: "scene-lines" }, el("i"), el("i"), el("i"))),
       el("div", { class: "scene-flight" }, items.map(([name, label], position) => chip(name, label, position * 0.55))),
       windowFrame("Lima", el("div", { class: "scene-shelf" }, el("i"), el("i"), el("i"), el("i"))));
+  },
+
+  passwords() {
+    const items = [["key", "Passwords"], ["key", "Passkeys"], ["check", ""], ["key", ""]];
+    return el("div", { class: "scene scene-import scene-passwords" },
+      windowFrame("Passwords", el("div", { class: "scene-shelf" }, el("i"), el("i"), el("i"), el("i"))),
+      el("div", { class: "scene-flight" }, items.map(([name, label], position) => chip(name, label, position * 0.6))),
+      windowFrame("Lima", el("div", { class: "scene-lines" }, el("i"), el("i"), el("i"))));
   },
 
   default() {

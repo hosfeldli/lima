@@ -20,6 +20,7 @@ Problem reports stay on your Mac too. When you create one in Settings, Lima writ
 | Websites | What any browser sends | When you visit them; link previews and note images are fetched once, without cookies, when you add them |
 | Google (Gmail and Calendar) | Read-only access you grant | Only if you connect them; counts, meetings and mail previews stay on your Mac |
 | Apple | Audio if you choose Apple Speech dictation; location requests through Location Services | Only when you use those features; default dictation runs on your Mac |
+| Mozilla's add-ons site, then Apple Passwords | A download request for Apple's iCloud Passwords add-on. Once installed, the add-on fills and saves passwords through the Passwords helper on your Mac (iCloud Keychain), under Apple's terms | Once, when Lima first starts on a Mac with Apple's Passwords helper (macOS 14 or later); turn it off in Settings → General → Passwords and it stays off |
 | Firefox safety services | Standard browser safety checks such as Safe Browsing | As in Firefox; Firefox telemetry is turned off |
 
 Shared note links carry the note itself after the "#" of a lima.liamhosfeld.com/n link. Browsers don't send that part to our server, so nothing is uploaded; anyone with the link can read the note.

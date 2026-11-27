@@ -195,7 +195,7 @@ export async function renderIntegrations(app, section) {
     bridge.browser("browserActionOverlayChanged", { value: event.target.checked }).catch(() => {}) });
   bridge.browser("agentPreferences", {}).then(data => { overlay.checked = data?.browserActionOverlay === true; }).catch(() => {});
   const groups = [
-    ["general", "General", "appearance theme dark light mode animation preferences tabs size height compact large", [
+    ["general", "General", "appearance theme dark light mode animation preferences tabs size height compact large passwords icloud keychain apple autofill", [
       card("Appearance", el("label", { class: "row" }, "Theme", theme),
         el("label", { class: "row" }, "Pip’s animations", personality),
         el("label", { class: "row" }, "Pip’s style", mascotStyle),
@@ -203,6 +203,7 @@ export async function renderIntegrations(app, section) {
         el("label", { class: "row appearance-checkbox" }, overlay, "Show agent click and typing markers on webpages")),
       card("Tabs", tabSizeSettings()),
       card("Mini Lima", miniSettings()),
+      card("Passwords", passwordSettings()),
     ]],
     ["search", "Search", "search address bar ai overview answers copilot sponsored ads google bing duckduckgo yahoo brave results youtube shorts ranking index", searchSettings()],
     ["sidebar", "Sidebar", "dock shortcuts edit order spotify music calendar mail dictation", [card("Sidebar shortcuts", sidebarSettings())]],
@@ -385,6 +386,32 @@ function miniSettings() {
     el("label", { class: "row appearance-checkbox" }, toggle, "Open links from other apps in Mini Lima"),
     el("p", { class: "muted" }, "A link you click in Mail, Messages or Slack opens in a small window instead of your sidebar. Read it and close it, or press ",
       el("kbd", { text: "⌘O" }), " to move it into Lima. ", el("kbd", { text: "⌥⌘N" }), " opens Mini Lima for a quick search anytime."));
+}
+
+/* Apple Passwords: the passwords and passkeys saved on this Mac (iCloud
+ * Keychain) fill in Lima through Apple's own iCloud Passwords add-on, which
+ * talks to macOS's Passwords helper on this Mac. */
+function passwordSettings() {
+  const status = el("p", { class: "muted", role: "status" });
+  const button = el("button", { class: "primary" });
+  let state = null;
+  const paint = next => {
+    state = next;
+    button.disabled = !next.available;
+    button.textContent = next.installed ? "Turn off Apple Passwords" : "Use Apple Passwords";
+    button.className = next.installed ? "ghost" : "primary";
+    status.textContent = !next.available ? "This Mac's Passwords helper wasn't found. Apple Passwords needs macOS 14 or later."
+      : next.installed ? "On. Click the key icon in the toolbar, or a password field, to fill from Passwords. The first time, enter the code macOS shows to connect it."
+      : "Off. Turn it on to fill passwords and passkeys you've saved in Safari or the Passwords app, through Apple's iCloud Passwords add-on (from Mozilla's add-ons site).";
+  };
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    status.textContent = state?.installed ? "Turning off…" : "Installing Apple's add-on…";
+    try { paint(await bridge.browser("applePasswords", { action: state?.installed ? "disable" : "enable" })); }
+    catch (error) { status.textContent = errorText(error); button.disabled = false; }
+  });
+  bridge.browser("applePasswords", { action: "status" }).then(paint).catch(error => { status.textContent = errorText(error); });
+  return el("div", {}, el("div", { class: "row" }, button), status);
 }
 
 /* How far one agent run may go before Lima stops it and says so. */

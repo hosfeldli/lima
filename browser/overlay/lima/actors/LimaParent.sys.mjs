@@ -227,10 +227,13 @@ export class LimaParent extends JSWindowActorParent {
         }
         return null;
       }
-      // An agent step's image, full size in Glance over the current tab.
+      // An agent step's image or a chat's attachment, full size in Glance
+      // over the current tab.
       case "openGlance": {
         const url = String(payload?.url ?? "");
-        if (!/^about:lima\?view=media&chat=[\w%-]+&media=[\w%.-]+$/.test(url)) throw new Error("Only Lima media opens in Glance.");
+        if (!/^about:lima\?view=(?:media&chat=[\w%-]+&media=[\w%.-]+|attachment&chat=[\w%-]+&path=[^&#\s]+)$/.test(url)) {
+          throw new Error("Only Lima media opens in Glance.");
+        }
         const principal = Services.scriptSecurityManager.getSystemPrincipal();
         if (win.gZenGlanceManager?.openGlance) {
           const rect = win.gBrowser.selectedBrowser.getBoundingClientRect();
@@ -264,6 +267,17 @@ export class LimaParent extends JSWindowActorParent {
           Services.prefs.setStringPref("lima.theme", payload.value);
         }
         return lazy.LimaAppearance.theme();
+      }
+      // Apple Passwords (LimaPasswords): on by default; Settings and the
+      // walkthrough turn it on or off.
+      case "applePasswords": {
+        if (payload?.action !== "status" && (!(isSettingsPage(browser) || isWelcomePage(browser)) || lazy.PrivateBrowsingUtils.isWindowPrivate(win))) {
+          throw new Error("Turn Apple Passwords on or off in Lima Settings.");
+        }
+        const { LimaPasswords } = ChromeUtils.importESModule("resource://lima/LimaPasswords.sys.mjs");
+        if (payload?.action === "enable") return LimaPasswords.enable();
+        if (payload?.action === "disable") return LimaPasswords.disable();
+        return LimaPasswords.status();
       }
       // Mini Lima: links from other apps in a small window (Settings), and its quick search.
       case "miniLinksChanged": {
