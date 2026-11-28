@@ -58,16 +58,52 @@ function glyph(doc, name) {
 // Results and failures of sidebar actions appear in a small notice above
 // the dock, never only in a log. Failures stay until dismissed or retried.
 
-export function showSidebarNotice(win, { title, detail = "", tone = "ok", actions = [] }) {
+function noticeNode(win) {
   const doc = win.document;
   let notice = doc.getElementById("lima-action-notice");
   if (!notice) {
     notice = el(doc, "div", { id: "lima-action-notice", role: "status", hidden: true });
     const host = doc.getElementById("lima-dock-main") ?? doc.getElementById("lima-dock");
-    if (!host) { log(`${title}: ${detail}`); return; }
+    if (!host) return null;
     host.prepend(notice);
   }
   win.clearTimeout(notice.limaTimer);
+  // A multi-step card (sidebarCard) learns when something else takes its place.
+  const replaced = notice.limaReplaced;
+  notice.limaReplaced = null;
+  replaced?.();
+  return notice;
+}
+
+/** The sidebar's card for a prompt that changes as it goes (confirm, then
+ * working, then done), drawn where every other sidebar notice appears.
+ * `paint(children)` fills it; `close()` sinks it away; `closed` resolves once
+ * it's gone, whether dismissed, closed or replaced by another notice. */
+export function sidebarCard(win, { tone = "ask", label = "" } = {}) {
+  const notice = noticeNode(win);
+  if (!notice) return null;
+  let settle;
+  const closed = new Promise(resolve => { settle = resolve; });
+  const finish = () => { win.removeEventListener("unload", finish); notice.limaReplaced = null; settle(); };
+  const close = () => { if (notice.limaReplaced !== finish) return; finish(); sinkAway(notice, { flow: true, done: () => notice.replaceChildren() }); };
+  notice.limaReplaced = finish;
+  win.addEventListener("unload", finish, { once: true });
+  notice.dataset.tone = tone;
+  notice.setAttribute("role", "dialog");
+  notice.setAttribute("aria-label", label);
+  const paint = (...children) => {
+    notice.replaceChildren(el(win.document, "div", { class: "lima-action-copy" }, ...children),
+      el(win.document, "button", { class: "lima-action-close", title: "Dismiss", "aria-label": "Dismiss", onclick: () => notice.limaCloseRequest?.() ?? close() }, glyph(win.document, "close")));
+  };
+  return { notice, paint, close, closed, popIn: () => popIn(notice, { flow: true }) };
+}
+
+export function showSidebarNotice(win, { title, detail = "", tone = "ok", actions = [] }) {
+  const doc = win.document;
+  const notice = noticeNode(win);
+  if (!notice) { log(`${title}: ${detail}`); return; }
+  notice.limaCloseRequest = null;
+  notice.removeAttribute("aria-label");
   const hide = () => sinkAway(notice, { flow: true, done: () => notice.replaceChildren() });
   notice.dataset.tone = tone;
   notice.setAttribute("role", tone === "bad" ? "alert" : "status");

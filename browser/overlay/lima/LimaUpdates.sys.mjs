@@ -16,6 +16,7 @@ const lazy = {};
 ChromeUtils.defineESModuleGetters(lazy, {
   LimaBridge: "resource://lima/LimaBridge.sys.mjs",
   LimaTabs: "resource://lima/LimaTabs.sys.mjs",
+  isMiniWindow: "resource://lima/LimaTabs.sys.mjs",
 });
 
 const FIRST_CHECK_MS = 20 * 1000;
@@ -37,7 +38,9 @@ let installing = false;
 const aboutWindows = new Set();
 
 function windows() {
-  return [...Services.wm.getEnumerator("navigator:browser")].filter(win => !win.closed && win.gNotificationBox);
+  // Full Lima windows only: Mini Lima never shows update cards or pages.
+  return [...Services.wm.getEnumerator("navigator:browser")]
+    .filter(win => !win.closed && win.gNotificationBox && !lazy.isMiniWindow(win));
 }
 
 function profilePath() {

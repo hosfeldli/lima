@@ -29,7 +29,7 @@ left: the engine binary name, helper names and `AppConstants`.
    Then it checks that `Zen.app` satisfies `anchor apple generic and certificate leaf[subject.OU] = "9V5K9TP787"`
    and that `spctl` reports *Notarized Developer ID*. A release build fails if notarization can't be
    confirmed; a dev build only warns, for offline work.
-2. **Vendored files.** Every third-party file Lima copies in (`whisper-cli`, xterm) must match
+2. **Vendored files.** Every third-party file Lima copies in (`whisper-cli`) must match
    `browser/vendor-assets.json`.
 3. **Entitlement capture.** Records the entitlements of all 25 Zen binaries (`lima_codesign.py capture`),
    so a Zen bump carries Zen's own entitlement changes forward.

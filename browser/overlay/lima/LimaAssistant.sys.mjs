@@ -113,6 +113,8 @@ export const LimaAssistant = {
     surface.append(outside, panel);
 
     let browser;
+    let release = null;
+    const RELEASE_MS = 10 * 60_000;
     let open = false;
     let pendingDraft = "";
     let needsHandoff = false;
@@ -139,7 +141,13 @@ export const LimaAssistant = {
         browser?.browsingContext?.currentWindowGlobal?.getActor("Lima")?.sendAsyncMessage("event",
           { event: "ui.companionVisible", data: open });
       } catch {}
-      if (!open) { if (returnFocus) button.focus(); return; }
+      win.clearTimeout(release);
+      if (!open) {
+        if (returnFocus) button.focus();
+        // Closed for a while: let its page go (it reloads on the next open).
+        release = win.setTimeout(() => { if (!open && browser) { browser.remove(); browser = null; } }, RELEASE_MS);
+        return;
+      }
       if (!browser) {
         browser = doc.createXULElement("browser");
         browser.setAttribute("type", "content");

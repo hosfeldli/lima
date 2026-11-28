@@ -115,6 +115,46 @@ enum MessagesStore {
         }
     }
 
+    /// Asks Messages for the signed-in iMessage (or SMS) account. This is
+    /// the same Automation permission sending needs, so it raises macOS's
+    /// prompt during a check instead of during an agent's first text.
+    static func sendingAccount() throws -> String {
+        let script = """
+        tell application "Messages"
+          try
+            return description of (1st account whose service type = iMessage)
+          on error
+            return description of (1st account whose service type = SMS)
+          end try
+        end tell
+        """
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script]
+        let output = Pipe(), errors = Pipe()
+        process.standardOutput = output
+        process.standardError = errors
+        try process.run()
+        // macOS's permission prompt waits for you; give up after two minutes.
+        let deadline = Date().addingTimeInterval(120)
+        while process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.1) }
+        if process.isRunning {
+            process.terminate()
+            throw BridgeError(.deadlineExceeded, "Messages didn't answer. Open Messages once, then check again.")
+        }
+        let detail = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        guard process.terminationStatus == 0 else {
+            if detail.contains("-1743") || detail.lowercased().contains("not allowed") {
+                throw BridgeError(.notAuthorized, "macOS didn't let Lima use Messages. Allow it in System Settings → Privacy & Security → Automation → Lima.")
+            }
+            throw BridgeError(.internalError, "Messages isn't signed in to iMessage or SMS on this Mac. Sign in from Messages → Settings.")
+        }
+        let account = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !account.isEmpty else { throw BridgeError(.internalError, "Messages isn't signed in on this Mac.") }
+        return account
+    }
+
     /// A phone number or email address, nothing else.
     static func validRecipient(_ value: String) -> String? {
         let text = value.trimmingCharacters(in: .whitespaces)
@@ -138,6 +178,30 @@ extension Runtime {
             let readable = FileManager.default.isReadableFile(atPath: MessagesStore.database.path)
                 && ((try? MessagesStore.recent(limit: 1)) != nil)
             return .object(["enabled": .bool(await self.messagesEnabled()), "fullDiskAccess": .bool(readable)])
+        }
+        // The settings card's check: can Lima read texts, and can it send one?
+        register("messages.verify") { params, context in
+            try Self.requireLocalSettings(context)
+            var read: [String: JSONValue] = ["ok": .bool(false)]
+            do {
+                let latest = try MessagesStore.recent(limit: 1).first
+                read = ["ok": .bool(true), "latest": latest.map { .string(ISO8601DateFormatter().string(from: $0.date)) } ?? .null]
+            } catch MessagesStore.Failure.noAccess {
+                read["detail"] = .string("Allow Lima in System Settings → Privacy & Security → Full Disk Access, then check again.")
+            } catch {
+                read["detail"] = .string("Lima couldn't read Messages: \(error.localizedDescription)")
+            }
+            var send: [String: JSONValue] = ["ok": .bool(false)]
+            do {
+                // Waits on osascript (and possibly a macOS prompt) off the runtime's threads.
+                let account = try await Task.detached { try MessagesStore.sendingAccount() }.value
+                send = ["ok": .bool(true), "account": .string(account)]
+            } catch let error as BridgeError {
+                send["detail"] = .string(error.message)
+            } catch {
+                send["detail"] = .string("Lima couldn't reach Messages: \(error.localizedDescription)")
+            }
+            return .object(["read": .object(read), "send": .object(send)])
         }
         register("messages.recent") { [unowned self] params, context in
             guard await self.messagesEnabled() else {

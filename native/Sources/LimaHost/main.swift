@@ -15,6 +15,14 @@ case "--stdio":
     StdioRelay.run()
 case "mcp":
     MCPServer.run()
+case "sandbox-profile":
+    // Diagnostics: the sandbox a workspace agent in <folder> runs in.
+    guard arguments.count == 2 else { print("usage: lima-host sandbox-profile <folder>"); exit(64) }
+    let paths = RuntimePaths.resolve()
+    print(AgentSandbox.workspace(directory: URL(fileURLWithPath: arguments[1]), runtimeData: paths.data, socket: paths.socket).profile)
+case "guard":
+    // Workspace agents' PreToolUse hook: risky shell commands ask in Lima.
+    ShellGuard.run()
 case "chunk-manifest":
     // Release tooling: lima-host chunk-manifest <Lima.app> <out-directory>
     guard arguments.count == 3 else { print("usage: lima-host chunk-manifest <app> <out>"); exit(64) }
@@ -82,6 +90,7 @@ default:
       daemon      run the Lima runtime (normally started automatically or by launchd)
       --stdio     browser bridge relay (used by Lima Browser)
       mcp         MCP server over stdio for external agents
+      guard       workspace agents' command hook (asks before risky commands)
       discover    print installed AI CLIs
       call        call a runtime method (development)
 

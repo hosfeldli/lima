@@ -56,8 +56,13 @@ export function locationSettings() {
   } });
   const check = el("button", { class: "ghost", disabled: true, onclick: async () => {
     check.disabled = allowed.disabled = true;
-    status.textContent = "Checking location access…";
-    try { await bridge.browser("locationCheck", {}); status.textContent = "Lima can read your approximate location."; }
+    status.textContent = "Checking location access… macOS may ask you to allow Lima.";
+    try {
+      const place = await bridge.browser("locationCheck", {});
+      status.textContent = place?.latitude != null
+        ? `Working. Lima sees an approximate location near ${place.latitude.toFixed(1)}, ${place.longitude.toFixed(1)}.`
+        : "Lima can read your approximate location.";
+    }
     catch (error) { status.textContent = errorText(error); }
     finally { check.disabled = allowed.disabled = false; }
   } }, "Check access");

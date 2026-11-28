@@ -11,7 +11,6 @@ Lima includes the open-source components below. Each is used under its own licen
 | Firefox / Gecko | The web engine inside Zen | MPL-2.0 |
 | whisper.cpp | On-device dictation | MIT |
 | Whisper small.en model | Speech model for dictation (installed separately) | MIT |
-| xterm.js and @xterm/addon-fit | Terminal display | MIT |
 | Unicode emoji data | Emoji names in search | Unicode License v3 |
 
 ## Mozilla Public License 2.0

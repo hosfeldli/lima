@@ -9,8 +9,44 @@ const labelOf = folder => folder?.querySelector(":scope > .tab-group-label-conta
 const folderKey = folder => folder.getAttribute("lima-workspace") ??
   (folder.id ? `folder:${folder.id}` : null);
 
+/** A tab row's two buttons: the line unloads the page (the tab stays where
+ * it is, ready to reload when you click it) and the × deletes the tab, or
+ * a saved (pinned) tab, for good. Zen's line instead reset a saved tab to
+ * its first address and tucked it away, which read as closing it. */
+export async function unloadTabs(win, tabs) {
+  const gBrowser = win.gBrowser;
+  tabs = tabs.filter(tab => !tab.closing && !tab.hasAttribute("pending"));
+  if (!tabs.length) return false;
+  // The page you're on can't unload while you're on it, so Lima moves you
+  // to the tab you'd land on after closing it, as the line always has.
+  if (tabs.includes(gBrowser.selectedTab)) {
+    const next = gBrowser._findTabToBlurTo(gBrowser.selectedTab, tabs);
+    if (next) gBrowser.selectedTab = next;
+  }
+  if (typeof gBrowser.explicitUnloadTabs === "function") return gBrowser.explicitUnloadTabs(tabs);
+  for (const tab of tabs) gBrowser.discardBrowser(tab, true);
+  return true;
+}
+
+function installTabButtons(win) {
+  const gBrowser = win.gBrowser;
+  const root = gBrowser.tabContainer;
+  root.addEventListener("click", event => {
+    const line = event.target.closest?.(".tab-reset-button");
+    // ⌘-click keeps Zen's "reset to its saved address".
+    if (!line || event.button !== 0 || event.getModifierState("Accel")) return;
+    const tab = line.closest(".tabbrowser-tab");
+    if (!tab) return;
+    event.stopPropagation();
+    event.preventDefault();
+    root._blockDblClick = true;
+    unloadTabs(win, tab.multiselected ? gBrowser.selectedTabs : [tab]).catch(error => failed(win, "Couldn’t unload the tab", error));
+  }, true);
+}
+
 export function installSidebarRows(win, { privateWindow = false } = {}) {
   const root = win.gBrowser.tabContainer;
+  installTabButtons(win);
   const { SessionStore } = ChromeUtils.importESModule("moz-src:///browser/components/sessionstore/SessionStore.sys.mjs");
   const restored = new WeakSet();
   let ready = false;

@@ -813,14 +813,49 @@ function messagesSettings() {
       : state.fullDiskAccess ? "On. An agent asks before it reads your texts (once per task) and before it sends each one."
       : "On, but Lima can't read Messages yet: allow Lima in System Settings → Privacy & Security → Full Disk Access. Sending works once macOS asks about Messages.";
   };
-  toggle.addEventListener("change", () => call("messages.settings", { enabled: toggle.checked }).then(paint).catch(error => { access.textContent = errorText(error); }));
-  const check = () => call("messages.settings", {}).then(paint).catch(error => { access.textContent = errorText(error); });
+  // Check access: reads the newest text and asks Messages for your account,
+  // so both permissions are settled (and shown) before an agent needs them.
+  const results = el("ul", { class: "messages-checks", hidden: true });
+  const verify = el("button", { class: "ghost", hidden: true }, "Check access");
+  const test = el("button", { class: "ghost", hidden: true }, "Send yourself a test text");
+  let account = "";
+  const line = (ok, title, detail) => el("li", { class: ok ? "ok" : "fail" },
+    el("strong", { text: `${ok ? "✓" : "✕"} ${title}` }), detail ? el("span", { class: "muted", text: ` ${detail}` }) : "");
+  verify.addEventListener("click", async () => {
+    verify.disabled = test.disabled = true;
+    results.hidden = false;
+    results.replaceChildren(el("li", { class: "muted", text: "Checking… macOS may ask whether Lima can use Messages." }));
+    try {
+      const { read, send } = await call("messages.verify", {});
+      account = send.ok ? send.account : "";
+      results.replaceChildren(
+        line(read.ok, read.ok ? "Lima can read your texts." : "Lima can't read your texts yet.",
+          read.ok ? (read.latest ? `Newest: ${new Date(read.latest).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}.` : "No texts yet.") : read.detail),
+        line(send.ok, send.ok ? "Lima can send texts." : "Lima can't send texts yet.", send.ok ? `From ${send.account}.` : send.detail));
+      test.hidden = !send.ok;
+      check();
+    } catch (error) {
+      results.replaceChildren(line(false, "The check didn't finish.", errorText(error)));
+    } finally { verify.disabled = test.disabled = false; }
+  });
+  test.addEventListener("click", async () => {
+    if (!account || !confirm(`Send “Lima test ✓” to yourself (${account})?`)) return;
+    test.disabled = true;
+    try {
+      await call("messages.send", { to: account, text: "Lima test ✓" });
+      results.append(line(true, "Test text sent.", "It should appear in Messages in a moment."));
+    } catch (error) { results.append(line(false, "The test text didn't send.", errorText(error))); }
+    finally { test.disabled = false; }
+  });
+  const repaint = state => { paint(state); verify.hidden = !state.enabled; if (!state.enabled) { results.hidden = test.hidden = true; } };
+  toggle.addEventListener("change", () => call("messages.settings", { enabled: toggle.checked }).then(repaint).catch(error => { access.textContent = errorText(error); }));
+  const check = () => call("messages.settings", {}).then(repaint).catch(error => { access.textContent = errorText(error); });
   check();
   addEventListener("focus", check);
   return el("div", { class: "messages-settings" },
     el("label", { class: "row appearance-checkbox" }, toggle, "Let agents read and send texts"),
     el("p", { class: "muted", text: "Lets an agent check a conversation (“did the restaurant text back?”) or send a text for you. Texts an agent reads go to your AI provider for that task." }),
-    access, el("div", { class: "row" }, allow));
+    access, el("div", { class: "row" }, verify, test, allow), results);
 }
 
 function googleSettings() {

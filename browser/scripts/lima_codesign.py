@@ -24,6 +24,16 @@ import tempfile
 
 # Entitlements only Zen's Apple-issued provisioning profile can grant.
 RESTRICTED_PREFIXES = ("com.apple.application-identifier", "com.apple.developer.", "keychain-access-groups")
+# Granted only through Lima's own provisioning profile (Contents/
+# embedded.provisionprofile, from browser/signing/Lima.provisionprofile):
+# macOS lets a browser use iCloud Keychain and phone passkeys only with the
+# web-browser credential entitlement, which needs the App ID beside it.
+PROFILE = "Contents/embedded.provisionprofile"
+PROFILE_KEYS = (
+    "com.apple.application-identifier",
+    "com.apple.developer.team-identifier",
+    "com.apple.developer.web-browser.public-key-credential",
+)
 # Never shipped: these let other processes inject into or debug Lima.
 FORBIDDEN = (
     "com.apple.security.get-task-allow",
@@ -150,6 +160,23 @@ def policy(relative, upstream, executable, compiled=False):
     return granted
 
 
+def profile_grants(app):
+    """The passkey entitlements Lima's embedded profile allows, or {}."""
+    path = os.path.join(app, PROFILE)
+    if not os.path.exists(path):
+        return {}
+    decoded = run("security", "cms", "-D", "-i", path).stdout.encode()
+    allowed = plistlib.loads(decoded).get("Entitlements", {})
+    if not allowed.get("com.apple.developer.web-browser.public-key-credential"):
+        sys.exit("error: the provisioning profile doesn't include Web Browser Public Key Credential Requests")
+    with open(os.path.join(app, "Contents", "Info.plist"), "rb") as handle:
+        bundle_id = plistlib.load(handle)["CFBundleIdentifier"]
+    app_id = allowed.get("com.apple.application-identifier", "")
+    if not app_id.endswith("." + bundle_id):
+        sys.exit(f"error: the provisioning profile is for {app_id}, not {bundle_id}")
+    return {key: allowed[key] for key in PROFILE_KEYS if key in allowed}
+
+
 def capture(zen_app, output):
     records = {}
     for relative in walk_machos(zen_app):
@@ -179,6 +206,12 @@ def expected(app, captured):
         upstream = record["entitlements"] if record else {}
         executable = record["executable"] if record else is_executable_image(os.path.join(app, relative))
         plan[relative] = policy(relative, upstream, executable, compiled=record is not None)
+    # The engine asks macOS for passkeys; the launcher is the bundle's main
+    # executable, which the profile is checked against.
+    grants = profile_grants(app)
+    for relative in ENGINE_PATHS:
+        if grants and relative in plan:
+            plan[relative].update(grants)
     return plan
 
 
@@ -249,7 +282,8 @@ def verify(app, capture_path, certificate):
         actual = entitlements_of(path)
         if actual != wanted:
             failures.append(f"{relative}: entitlements {sorted(actual)} != policy {sorted(wanted)}")
-        if any(key in actual for key in FORBIDDEN) or any(key.startswith(RESTRICTED_PREFIXES) for key in actual):
+        granted = profile_grants(app) if relative in ENGINE_PATHS else {}
+        if any(key in actual for key in FORBIDDEN) or any(key.startswith(RESTRICTED_PREFIXES) and key not in granted for key in actual):
             failures.append(f"{relative}: carries a forbidden entitlement")
         if certificate:
             fingerprint = leaf_sha256(path)

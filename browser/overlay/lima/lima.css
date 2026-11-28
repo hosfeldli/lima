@@ -40,6 +40,15 @@
   --zen-toolbar-element-bg: var(--lima-elevated) !important;
   --zen-urlbar-background: var(--lima-bg) !important;
   --toolbox-textcolor: var(--lima-fg) !important;
+  /* The top toolbar sits outside the sidebar, so its icons and fields need
+     Lima's colors too (Zen otherwise picks dark ink for a light gradient). */
+  --toolbar-color: var(--lima-fg) !important;
+  --toolbarbutton-icon-fill: var(--lima-secondary) !important;
+  --toolbarbutton-icon-fill-attention: var(--lima-accent) !important;
+  --toolbar-field-color: var(--lima-fg) !important;
+  --toolbar-field-focus-color: var(--lima-fg) !important;
+  --urlbar-box-text-color: var(--lima-secondary) !important;
+  --urlbarView-text-color: var(--lima-fg) !important;
   --toolbar-color-scheme: var(--lima-scheme) !important;
   --toolbar-field-background-color: var(--lima-bg) !important;
   --toolbar-field-focus-background-color: var(--lima-bg) !important;
@@ -52,6 +61,10 @@
   --lima-scheme: dark;
 }
 
+:root[lima-window]:not([zen-private-window="true"]) :is(#nav-bar, #zen-appcontent-navbar-container, #PersonalToolbar) {
+  color-scheme: var(--lima-scheme) !important;
+  color: var(--lima-fg) !important;
+}
 :root[lima-window]:not([zen-private-window="true"]) #navigator-toolbox {
   color-scheme: var(--lima-scheme) !important;
   color: var(--lima-fg) !important;
@@ -173,12 +186,19 @@ zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon
 }
 #navigator-toolbox .tab-group-label-container[lima-drop-target] > .tab-group-label { opacity: .65; }
 .lima-s-sub mark { background: transparent; color: inherit; font-weight: 750; text-decoration: underline; }
-/* A workspace's Pip is a quarter larger than a row icon, and nudged down so
-   it stands centred on the row from the top of its head to its feet. */
-#navigator-toolbox zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon::after {
-  width: calc(var(--lima-row-icon-size) * 1.25);
-  height: calc(var(--lima-row-icon-size) * 1.25);
-  translate: 0 var(--lima-pip-drop, 2px);
+/* A workspace's Pip gets its own slot, 1.5× a row icon and never taller
+   than the row allows, so it doesn't overhang its space. Its art is cropped
+   to Pip's outline (LimaWorkspaces), so Pip fills the slot head to toe. */
+#navigator-toolbox zen-folder[lima-workspace] {
+  --lima-pip-size: min(calc(var(--lima-row-icon-size) * 1.5), calc(var(--lima-row-height) - 6px));
+}
+#navigator-toolbox zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon {
+  width: var(--lima-pip-size) !important; height: var(--lima-pip-size) !important;
+  min-width: var(--lima-pip-size) !important; flex: none !important; overflow: hidden !important;
+}
+#navigator-toolbox zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon::after,
+#navigator-toolbox zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon > svg.lima-sidebar-pip {
+  width: var(--lima-pip-size); height: var(--lima-pip-size); margin: 0; translate: none;
 }
 #navigator-toolbox .bookmark-item { padding-block: 2px; }
 /* The shared icon set is drawn in graphite (#383838) for use as favicons,
@@ -968,56 +988,6 @@ zen-folder[lima-workspace] > .tab-group-label-container[lima-offscreen] > .tab-g
 @media (prefers-reduced-motion: reduce) {
   zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon::after { animation: none !important; }
 }
-:root[lima-window] .lima-archive-panel {
-  --panel-background: var(--lima-bg);
-  --panel-color: var(--lima-fg);
-  --panel-border-color: var(--lima-border);
-}
-.lima-archive-content { width: min(350px, 80vw); padding: 16px; font: message-box; }
-.lima-archive-header { display: flex; align-items: center; gap: 10px; }
-.lima-archive-summary { min-width: 0; display: grid; gap: 3px; }
-.lima-archive-heading { font-size: 15px; line-height: 1.2; }
-.lima-archive-title { color: var(--lima-secondary); overflow-wrap: anywhere; }
-.lima-archive-mark {
-  display: grid;
-  place-items: center;
-  flex: 0 0 34px;
-  height: 34px;
-  border: 1px solid var(--lima-line);
-  border-radius: 9px;
-  background: var(--lima-panel);
-  color: var(--lima-ink-2);
-}
-.lima-archive-mark::after {
-  content: "";
-  width: 18px;
-  height: 18px;
-  background: currentColor;
-  mask: url("resource://lima-ui/icons/folder.svg") center / contain no-repeat;
-}
-.lima-archive-panel[data-phase="complete"] .lima-archive-mark::after { mask-image: url("resource://lima-ui/icons/check.svg"); }
-.lima-archive-panel[data-phase="failed"] .lima-archive-status { color: var(--lima-error); }
-.lima-archive-content p { margin: 10px 0; line-height: 1.4; overflow-wrap: anywhere; }
-.lima-archive-content p:empty { display: none; }
-.lima-archive-description, .lima-archive-path { color: var(--lima-secondary); }
-.lima-archive-location { display: grid; gap: 4px; padding: 8px 10px; border: 1px solid var(--lima-line); border-radius: 7px; }
-.lima-archive-location[hidden] { display: none; }
-.lima-archive-location > span { font-size: 11px; font-weight: 600; }
-.lima-archive-path { font: 11px/1.35 ui-monospace, monospace; overflow-wrap: anywhere; }
-.lima-archive-actions { display: flex; justify-content: end; gap: 8px; margin-block-start: 16px; }
-.lima-archive-actions button {
-  padding: 5px 12px;
-  border: 1px solid var(--lima-border);
-  border-radius: var(--lima-radius);
-  background: var(--lima-bg);
-  color: var(--lima-fg);
-  cursor: pointer;
-}
-.lima-archive-actions button:hover { background: var(--lima-hover); }
-.lima-archive-actions .lima-archive-action { background: var(--lima-accent); color: var(--lima-accent-contrast); }
-.lima-archive-actions .lima-archive-action:hover { filter: brightness(.9); }
-.lima-archive-actions button:focus-visible { outline: 2px solid var(--lima-accent); outline-offset: 2px; }
-.lima-archive-actions button:disabled { opacity: .55; cursor: wait; }
 
 :root[data-lima-personality]:not([data-lima-personality="full"]) zen-folder[lima-workspace] > .tab-group-label-container > .tab-group-folder-icon::after {
   animation: none;
@@ -1046,14 +1016,19 @@ zen-folder[lima-workspace][lima-chat-selected] > .tab-group-label-container {
   color: var(--lima-ink-2);
 }
 .lima-workspace-disclosure:hover { background: var(--lima-hover); }
+/* The same arrow folders draw: same box (border included), same weight,
+   centred in its button rather than sitting on the text baseline. */
+.lima-workspace-disclosure { display: grid !important; place-items: center; }
 .lima-workspace-disclosure::before {
   content: "";
-  display: inline-block;
+  display: block;
+  box-sizing: border-box;
   width: var(--lima-row-chevron, 5px);
   height: var(--lima-row-chevron, 5px);
-  border: solid currentColor;
+  border: solid var(--lima-row-chevron-ink, currentColor);
   border-width: 0 1.5px 1.5px 0;
-  transform: translateY(-2px) rotate(45deg);
+  transform: translateY(-1px) rotate(45deg);
+  transition: transform 160ms var(--lima-motion-settle, ease);
 }
 zen-folder[collapsed] > .tab-group-label-container > .lima-workspace-disclosure::before { transform: rotate(-45deg); }
 zen-folder:is([lima-agents], [lima-tabs], [lima-images]) > .tab-group-label-container > .tab-group-folder-icon > svg {
@@ -1071,59 +1046,69 @@ zen-folder:is([lima-agents], [lima-tabs], [lima-images])[collapsed] > .tab-group
   mask-image: url("resource://lima-ui/icons/folder.svg");
 }
 
+/* The agent's cursor: stays on the tab an agent is working in while you
+   watch, glides to each action, and says what it's doing. */
 #lima-agent-pointer {
   position: fixed;
   z-index: 2147482990;
+  width: 0;
+  height: 0;
   pointer-events: none;
-  color: #252525;
+  transition: left 420ms cubic-bezier(.25, .9, .3, 1), top 420ms cubic-bezier(.25, .9, .3, 1);
+  animation: lima-agent-arrive 220ms ease-out both;
 }
-#lima-agent-pointer[data-action="click"]::before {
-  content: "";
-  display: block;
-  width: 20px;
-  height: 20px;
-  border-radius: 100%;
-  border: 2px solid #7761a2;
-  box-shadow: 0 0 0 1px #ffffff;
-  transform: translate(-50%, -50%);
-  animation: lima-agent-click 700ms ease-out both;
-}
-#lima-agent-pointer[data-action="click"]::after {
-  content: "";
+#lima-agent-pointer .lima-agent-arrow {
   position: absolute;
-  top: 1px;
-  left: 1px;
-  width: 14px;
-  height: 20px;
-  background: #53406e;
-  clip-path: polygon(0 0, 100% 57%, 59% 65%, 80% 92%, 60% 100%, 35% 70%, 0 91%);
+  top: -2px;
+  left: -2px;
+  width: 16px;
+  height: 22px;
+  background: var(--lima-fg, #222428);
+  clip-path: polygon(0 0, 100% 62%, 56% 68%, 78% 96%, 60% 100%, 38% 73%, 0 96%);
+  filter: drop-shadow(0 0 1px var(--lima-bg, #fff)) drop-shadow(0 1px 2px rgba(0, 0, 0, .3));
 }
-#lima-agent-pointer[data-action="type"] {
-  transform: translate(-50%, calc(-100% - 9px));
-  background: #fff;
-  border: 1px solid #d5ccde;
-  border-radius: 7px;
-  padding: 4px 8px;
-  font: 600 11px system-ui;
-  box-shadow: 0 2px 4px #0002;
+#lima-agent-pointer .lima-agent-label {
+  position: absolute;
+  top: 20px;
+  left: 14px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--lima-fg, #222428);
+  color: var(--lima-bg, #fff);
+  font: 600 11px/1.3 -apple-system, system-ui, sans-serif;
+  white-space: nowrap;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .18);
 }
-#lima-agent-pointer[data-action="type"]::after {
+#lima-agent-pointer[data-action="type"] .lima-agent-label::after {
   content: "";
   display: inline-block;
-  vertical-align: -2px;
-  width: 2px;
-  height: 11px;
+  vertical-align: -1px;
+  width: 1.5px;
+  height: 10px;
   margin-inline-start: 4px;
-  background: #7761a2;
+  background: currentColor;
   animation: lima-agent-typing 650ms steps(2, start) infinite;
 }
+#lima-agent-pointer .lima-agent-ring {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--lima-focus, #6586a6);
+  transform: translate(-50%, -50%) scale(.5);
+  opacity: 0;
+}
+#lima-agent-pointer[data-pulse] .lima-agent-ring { animation: lima-agent-click 640ms ease-out both; }
+@keyframes lima-agent-arrive { from { opacity: 0; } }
 @keyframes lima-agent-click {
-  from { transform: translate(-50%, -50%) scale(.68); }
-  to { transform: translate(-50%, -50%) scale(1.65); opacity: .15; }
+  from { transform: translate(-50%, -50%) scale(.5); opacity: .9; }
+  to { transform: translate(-50%, -50%) scale(1.7); opacity: 0; }
 }
 @keyframes lima-agent-typing { to { opacity: .25; } }
 @media (prefers-reduced-motion: reduce) {
-  #lima-agent-pointer::before, #lima-agent-pointer::after { animation: none !important; }
+  #lima-agent-pointer { transition: none; animation: none; }
+  #lima-agent-pointer .lima-agent-ring, #lima-agent-pointer .lima-agent-label::after { animation: none !important; }
+}
 }
 
 #lima-assistant-toggle { flex-basis: 36px; width: 36px; height: 36px; background: var(--lima-bg); border: 1px solid var(--lima-line); }
@@ -1291,18 +1276,6 @@ zen-folder:is([lima-agents], [lima-tabs], [lima-images])[collapsed] > .tab-group
 
 /* The archive confirmation, compact: name, one line, two buttons. The folder
    path appears only once the ZIP is saved. */
-.lima-archive-content { width: min(272px, 80vw); padding: 11px 12px 10px; }
-.lima-archive-header { gap: 8px; }
-.lima-archive-heading { font-size: 13px; }
-.lima-archive-title { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.lima-archive-mark { flex-basis: 26px; height: 26px; border-radius: 7px; }
-.lima-archive-mark::after { width: 14px; height: 14px; }
-.lima-archive-content p { margin: 7px 0; font-size: 12px; }
-.lima-archive-panel[data-phase="confirm"] .lima-archive-location,
-.lima-archive-panel[data-phase="working"] .lima-archive-location { display: none; }
-.lima-archive-location { padding: 6px 8px; }
-.lima-archive-actions { margin-block-start: 10px; gap: 6px; }
-.lima-archive-actions button { padding-block: 3px; font-size: 12px; }
 
 /* Spotify's logo (in its green) marks a Spotify source in the music bar. */
 #lima-dock .lima-music-source .lima-spotify-mark, #lima-dock .lima-music-alt-icon .lima-spotify-mark {
@@ -1339,7 +1312,6 @@ zen-folder:is([lima-agents], [lima-tabs], [lima-images])[collapsed] > .tab-group
 /* MARK: Mini Lima. A compact floating window: a 44-point toolbar (back,
    forward, reload, the site, share, pin, Open in Lima, more), a tab strip
    only when there's more than one page, and the page. */
-:root[lima-mini] #navigator-toolbox,
 :root[lima-mini] #zen-appcontent-navbar-wrapper,
 :root[lima-mini] #zen-appcontent-navbar-container,
 :root[lima-mini] #nav-bar,
@@ -1347,6 +1319,25 @@ zen-folder:is([lima-agents], [lima-tabs], [lima-images])[collapsed] > .tab-group
 :root[lima-mini] #lima-dock,
 :root[lima-mini] #lima-assistant-button,
 :root[lima-mini] .lima-companion-float { display: none !important; }
+/* macOS draws the close, minimize and zoom buttons where Zen's button box
+   sits, at the top of the sidebar. Mini keeps just that corner: the rest of
+   the sidebar stays hidden, and the box lands in the toolbar's left inset. */
+:root[lima-mini] #navigator-toolbox {
+  display: flex !important; position: fixed !important; inset: 0 auto auto 0 !important; z-index: 11 !important;
+  width: 78px !important; min-width: 0 !important; max-width: none !important; height: 44px !important;
+  margin: 0 !important; padding: 0 !important; overflow: hidden !important; transform: none !important; opacity: 1 !important;
+  background: var(--lima-bg) !important; box-shadow: none !important; border: 0 !important;
+}
+:root[lima-mini][lima-window]:not([zen-private-window="true"]) #navigator-toolbox { background-color: var(--lima-bg) !important; }
+:root[lima-mini] #navigator-toolbox::before,
+:root[lima-mini] #navigator-toolbox::after,
+:root[lima-mini] #navigator-toolbox > :not(#zen-sidebar-top-buttons),
+:root[lima-mini] #zen-sidebar-top-buttons > :not(.titlebar-buttonbox-container) { display: none !important; }
+:root[lima-mini] #zen-sidebar-top-buttons {
+  display: flex !important; align-items: center !important; height: 44px !important; min-height: 0 !important; margin: 0 !important; padding: 0 0 0 14px !important;
+  background: transparent !important; border: 0 !important;
+}
+:root[lima-mini] #zen-sidebar-top-buttons > .titlebar-buttonbox-container { display: flex !important; visibility: visible !important; margin: 0 !important; }
 :root[lima-mini] #tabbrowser-tabbox { margin: 44px 6px 6px !important; }
 :root[lima-mini][lima-mini-tabs] #tabbrowser-tabbox { margin-top: 78px !important; }
 #lima-mini-bar {
@@ -1512,3 +1503,58 @@ zen-folder[lima-workspace][lima-scheduled] > .tab-group-label-container > .tab-g
 :root[lima-theme="dark"] zen-folder[lima-workspace][lima-scheduled] > .tab-group-label-container > .tab-group-folder-icon {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Ccircle cx='6' cy='6' r='5' fill='%23222' stroke='%23ccc' stroke-width='1.2'/%3E%3Cpath d='M6 3.4V6l1.8 1.1' fill='none' stroke='%23ccc' stroke-width='1.2' stroke-linecap='round'/%3E%3C/svg%3E") !important;
 }
+
+/* MARK: The top toolbar melts into the page: a short blurred fade hangs
+   over the page's top edge, so the bar keeps its row but has no hard line. */
+:root[lima-window]:not([lima-mini]):not([inDOMFullscreen="true"]) #zen-appcontent-navbar-wrapper {
+  position: relative !important;
+  z-index: 3 !important;
+}
+:root[lima-window]:not([lima-mini]):not([inDOMFullscreen="true"]) #zen-appcontent-navbar-wrapper::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  top: 100%;
+  height: 14px;
+  pointer-events: none;
+  background: linear-gradient(to bottom, color-mix(in srgb, var(--lima-bg) 72%, transparent), transparent);
+  backdrop-filter: blur(6px);
+  mask-image: linear-gradient(to bottom, #000 0%, rgba(0, 0, 0, .55) 45%, transparent 100%);
+}
+:root[lima-window]:not([lima-mini])[zen-private-window="true"] #zen-appcontent-navbar-wrapper::after { display: none; }
+
+/* MARK: Picture-in-Picture. Close and Back to Tab stay softly in view, not
+   only on hover, so a video that followed you is easy to dismiss or return. */
+:root[windowtype="Toolkit:PictureInPicture"] #controls:not([showing], [keying]) :is(#close, #unpip) {
+  opacity: .62 !important;
+  visibility: visible !important;
+}
+:root[windowtype="Toolkit:PictureInPicture"] #controls :is(#close, #unpip):hover { opacity: 1 !important; }
+
+/* MARK: Tab row buttons. Saved (pinned) tabs and tabs in folders show two
+   buttons on hover: the line unloads the page, the × deletes the tab. The
+   line hides on a tab that's already unloaded. Essentials stay icon-only. */
+#navigator-toolbox .tabbrowser-tab[pinned]:not([zen-essential]):is(:hover, [multiselected][selected]) > .tab-stack > .tab-content > .tab-close-button {
+  display: block !important;
+  visibility: visible !important;
+}
+#navigator-toolbox .tabbrowser-tab[pinned]:not([zen-essential]) > .tab-stack > .tab-content > .tab-reset-button { order: 98; }
+#navigator-toolbox .tabbrowser-tab[pinned]:not([zen-essential]) > .tab-stack > .tab-content > .tab-close-button {
+  order: 99;
+  margin-inline-start: 2px;
+}
+#navigator-toolbox .tabbrowser-tab[pending] > .tab-stack > .tab-content > .tab-reset-button { display: none !important; }
+
+/* The archive prompt, in the sidebar card (LimaWorkspaces #archivePanel). */
+#lima-action-notice[role="dialog"] { flex-wrap: nowrap; }
+#lima-action-notice[data-tone="ok"][role="dialog"] { border-color: color-mix(in srgb, var(--lima-success) 55%, var(--lima-line)); }
+#lima-action-notice .lima-archive-location { display: grid; gap: 2px; margin-block: 3px 2px; max-inline-size: 100%; }
+#lima-action-notice .lima-archive-location > span { font-size: 10.5px; font-weight: 600; color: var(--lima-ink-2); }
+#lima-action-notice .lima-archive-location > code { font: 10.5px/1.35 ui-monospace, monospace; color: var(--lima-ink-2); overflow-wrap: anywhere; }
+#lima-dock .lima-action-buttons { margin-block-start: 4px; }
+#lima-dock .lima-action-buttons button.lima-action-primary { text-decoration: none; padding: 2px 9px; border-radius: 6px; background: var(--lima-ink); color: var(--lima-bg); }
+#lima-dock .lima-action-buttons button.lima-action-primary:hover { background: color-mix(in srgb, var(--lima-ink) 86%, transparent); }
+
+/* A workspace's Tabs folder shows only while it holds a page: an agent that
+   files its pages into its own folders leaves no empty "Tabs" behind. */
+#navigator-toolbox zen-folder[lima-tabs]:not(:has(.tabbrowser-tab:not([zen-empty-tab]))) { display: none !important; }

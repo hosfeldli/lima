@@ -432,12 +432,12 @@ private func archivedText(_ archive: URL, _ entry: String) throws -> String {
     defer { try? FileManager.default.removeItem(at: dir) }
     let id = try #require(await call(runtime, "workspace.create", ["name": .string("Cooking")]).result?["id"]?.stringValue)
     #expect(await call(runtime, "workspace.rename", ["id": .string(id), "name": .string("Kitchen Lab")]).error == nil)
-    // The first runtime finishes its background writes before the "restart".
-    try await Task.sleep(nanoseconds: 600_000_000)
-    let reopened = try await Runtime.open(paths: RuntimePaths(data: dir, socket: dir.appendingPathComponent("s2").path, lock: dir.appendingPathComponent("l2").path))
-    let listed = await call(reopened, "workspace.get", ["id": .string(id)])
-    #expect(listed.result?["name"]?.stringValue == "Kitchen Lab", "\(String(describing: listed.error))")
+    // What a restart reads back: the record saved in the encrypted store.
+    // (Opening a second runtime on the same store while this one runs could
+    // read a record mid-write.)
+    let stored = try await runtime.store.get(Workspace.self, collection: WorkspaceService.collection, id: id)
+    #expect(stored?.name == "Kitchen Lab" && stored?.needsName == false)
     // The agent can't name it back over yours.
-    let agent = await call(reopened, "workspace.rename", ["id": .string(id), "name": .string("Recipes")], origin: .mcp, workspace: id)
+    let agent = await call(runtime, "workspace.rename", ["id": .string(id), "name": .string("Recipes")], origin: .mcp, workspace: id)
     #expect(agent.result?["name"]?.stringValue == "Kitchen Lab")
 }

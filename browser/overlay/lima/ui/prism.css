@@ -622,9 +622,10 @@ button.change-row:hover { background: var(--panel-2); }
 }
 .activity-status:is([data-activity="failed"], [data-activity="blocked"]) .activity-indicator:empty::before { border-radius: 2px; transform: rotate(45deg); }
 .activity-status[data-activity="complete"] .activity-indicator:empty::before { width: 9px; height: 6px; border: solid currentColor; border-width: 0 0 2px 2px; border-radius: 0; box-shadow: none; transform: rotate(-45deg); }
-.activity-copy { display: flex; flex: 1; flex-wrap: wrap; align-items: baseline; column-gap: 7px; min-width: 0; }
+.activity-copy { display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: baseline; column-gap: 7px; min-width: min(14ch, 100%); }
+.activity-label { white-space: nowrap; }
 .activity-label { color: var(--ink); font-weight: 650; }
-.activity-detail { overflow-wrap: anywhere; }
+.activity-detail { overflow-wrap: break-word; min-width: 0; }
 .handoff .activity-status { padding: 0; margin: 0; background: transparent; }
 .activity-time { flex: none; font: var(--t-xs) var(--mono); font-variant-numeric: tabular-nums; color: var(--ink-3); white-space: nowrap; }
 .term-main > .activity-status { min-height: 31px; margin: 4px 6px; }
@@ -767,6 +768,9 @@ button.change-row:hover { background: var(--panel-2); }
 .messages-settings { display: grid; gap: 8px; }
 .messages-settings label { display: grid; gap: 3px; }
 .messages-settings button { justify-self: start; }
+.messages-checks { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 13px; }
+.messages-checks li.ok strong { color: var(--lima-success); }
+.messages-checks li.fail strong { color: var(--danger); }
 
 .update-settings { display: grid; gap: 12px; }
 .update-summary { display: flex; align-items: center; gap: 12px; }
@@ -1587,7 +1591,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible, [contentedita
   :focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline-color: Highlight; }
 }
 
-.activity-last { color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-size: var(--t-xs); }
+.activity-last { flex: 0 1 40%; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-size: var(--t-xs); }
 .activity-last:not([hidden]) { display: block; }
 
 /* The @ picker's form for a new value block. */

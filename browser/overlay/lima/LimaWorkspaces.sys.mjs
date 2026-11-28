@@ -23,11 +23,27 @@ ChromeUtils.defineESModuleGetters(lazy, {
   PlacesUtils: "resource://gre/modules/PlacesUtils.sys.mjs",
   SessionStore: "moz-src:///browser/components/sessionstore/SessionStore.sys.mjs",
   broadcastToLimaPages: "resource://lima/actors/LimaParent.sys.mjs",
+  mainWindow: "resource://lima/LimaTabs.sys.mjs",
+  sidebarCard: "resource://lima/LimaSidebar.sys.mjs",
 });
 
 import { LimaVisualActivity } from "resource://lima/LimaVisualActivity.sys.mjs";
 import { preserveFolderDisclosure } from "resource://lima/LimaFolderDisclosure.sys.mjs";
-import { setTimeout } from "resource://gre/modules/Timer.sys.mjs";
+import { clearTimeout, setTimeout } from "resource://gre/modules/Timer.sys.mjs";
+
+/** Each costume's outline in Pip's 102 × 100 art, as a square viewBox:
+ * ears from y 18, feet at 88, the chef's hat from 3, the artist's beret from
+ * 8, and the traveler's bag out to x 97. */
+const PIP_CROPS = {
+  classic: "12 14 78 78", builder: "12 14 78 78", explorer: "12 14 78 78", analyst: "12 14 78 78",
+  chef: "6.5 1 89 89", artist: "9 6 84 84", traveler: "12 9.5 87 87",
+};
+
+/** What the agent's cursor says it's doing. */
+const PRESENCE_LABELS = {
+  click: "Clicking", type: "Typing", select: "Choosing", hover: "Pointing", scroll: "Scrolling", press: "Pressing keys",
+  inspect: "Looking", screenshot: "Looking", read: "Reading", navigate: "Opening", wait: "Waiting", upload: "Attaching",
+};
 
 const MAP_PREF = "lima.workspaces.sidebar";
 const BOOKMARK_ROOT_PREF = "lima.workspaces.bookmarkRoot";
@@ -74,15 +90,22 @@ export function approximateLocation(win) {
     }
     const service = win.navigator.geolocation;
     if (!service) { reject(new Error("Location Services are unavailable.")); return; }
+    // Gecko's own timeout only starts once macOS answers; when macOS never
+    // does (Location Services off, or Lima not yet allowed), stop waiting.
+    let settled = false;
+    const finish = (fn, value) => { if (settled) return; settled = true; clearTimeout(limit); fn(value); };
+    const limit = setTimeout(() => finish(reject, new Error(
+      "macOS didn’t share a location. Turn on Location Services and allow Lima in System Settings → Privacy & Security → Location Services, then try again.")), 20000);
     service.getCurrentPosition(({ coords }) => {
+      if (settled) return;
       if (!Services.prefs.getBoolPref("lima.location.enabled", false)) {
-        reject(new Error("Location access was turned off."));
+        finish(reject, new Error("Location access was turned off."));
         return;
       }
       const round = value => Math.round(value * 100) / 100;
-      resolve({ latitude: round(coords.latitude), longitude: round(coords.longitude),
+      finish(resolve, { latitude: round(coords.latitude), longitude: round(coords.longitude),
         accuracyMeters: Math.max(1500, Math.ceil(coords.accuracy / 100) * 100) });
-    }, failure => reject(new Error(failure.code === 1 ? "Allow Lima under macOS Location Services, then try again." : "Lima couldn’t get a location estimate.")),
+    }, failure => finish(reject, new Error(failure.code === 1 ? "Allow Lima under macOS Location Services, then try again." : "Lima couldn’t get a location estimate.")),
     { enableHighAccuracy: false, maximumAge: 0, timeout: 16000 });
   });
 }
@@ -103,6 +126,9 @@ class Workspaces {
   #mascots = new Map();
   #seenWorkspaceNotes = new Set();
   #finishedHelpers = new Set();
+  /** Workspace ID → where its agent's cursor is: { tab, point, action }. */
+  #presence = new Map();
+  #presenceWindows = new WeakSet();
   /** Workspace ID → its scheduled tasks (id → next run, ms) still to come. */
   #schedules = new Map();
 
@@ -167,7 +193,7 @@ class Workspaces {
             const win = this.#win();
             const folder = this.folderFor(data.id, "folder", win);
             const tab = folder && this.#allTabs(folder).find(item => this.workspaceForTab(item) === data.id && sameURL(tabURL(item), data.url));
-            if (tab) win.gBrowser.removeTab(tab, { animate: true });
+            if (tab) this.#closeQuietly(win, tab);
           });
           break;
         case "workspace.browserRequest":
@@ -227,7 +253,7 @@ class Workspaces {
   }
 
   #win() {
-    const win = lazy.BrowserWindowTracker.getTopWindow({ private: false });
+    const win = lazy.mainWindow();
     return win?.gZenFolders ? win : null;
   }
 
@@ -295,6 +321,22 @@ class Workspaces {
       while (root.parentID && this.#workspaces.has(root.parentID)) root = this.#workspaces.get(root.parentID);
       if (!root.parentID) await this.#reconcileBookmarks({ ...workspace, name: root.name, id: root.id, bookmarks: [] });
     }
+  }
+
+  /** Closes a tab an agent is done with. If you're looking at it, it stays
+   * until you switch away, so Lima never picks another tab for you. */
+  #closeQuietly(win, tab, { animate = true } = {}) {
+    if (!tab || tab.closing) return;
+    if (!tab.selected) { win.gBrowser.removeTab(tab, { animate }); return; }
+    if (tab.hasAttribute("lima-close-when-left")) return;
+    tab.setAttribute("lima-close-when-left", "true");
+    const container = win.gBrowser.tabContainer;
+    const leave = () => {
+      if (tab.selected) return;
+      container.removeEventListener("TabSelect", leave);
+      if (!tab.closing && tab.isConnected) win.gBrowser.removeTab(tab, { animate: false });
+    };
+    container.addEventListener("TabSelect", leave);
   }
 
   #makeTab(win, workspace, entry) {
@@ -434,7 +476,7 @@ class Workspaces {
             loadFlags: Ci.nsIWebNavigation.LOAD_FLAGS_REPLACE_HISTORY });
           continue;
         }
-        win.gBrowser.removeTab(tab, { animate: false });
+        this.#closeQuietly(win, tab, { animate: false });
       }
     }
     const allTabs = () => this.#allTabs(folder).filter(tab => this.workspaceForTab(tab) === workspace.id);
@@ -732,8 +774,10 @@ class Workspaces {
         target.limaIconAs = icon;
         this.setFolderIcon(win, target, this.iconURL(icon));
       }
+      // An agent sets how a folder starts out; after that, opening and
+      // closing it is yours, so an arrange never moves your sidebar.
       const collapsed = style.collapsed ?? null;
-      if (target.limaCollapsedAs !== collapsed) {
+      if (target.limaCollapsedAs === undefined) {
         target.limaCollapsedAs = collapsed;
         if (collapsed !== null && target.collapsed !== collapsed) target.collapsed = collapsed;
       }
@@ -829,6 +873,14 @@ class Workspaces {
           if (child.parentElement.closest("zen-folder[lima-workspace]") !== folder) continue;
           folder.before(child);
         }
+        // A helper's folder goes away when its agent is done. If you're on
+        // one of its pages, that page stays (outside the folder) until you
+        // switch away, instead of Lima switching tabs under you.
+        const viewing = win.gBrowser.selectedTab;
+        if (parentID && folder.contains(viewing)) {
+          try { win.gBrowser.ungroupTab(viewing); } catch {}
+          this.#closeQuietly(win, viewing);
+        }
         win.gBrowser.tabContainer._invalidateCachedTabs();
         await folder.delete();
       }
@@ -840,7 +892,8 @@ class Workspaces {
         const current = tab.linkedBrowser?.currentURI?.spec;
         const url = current && current !== "about:blank" ? current : tabURL(tab);
         if (urls.has(url) || imageWorkspaceForURL(url) === id || (owner === id && /^about:lima\?(workspace|chat|terminal)=/.test(url))) {
-          win.gBrowser.removeTab(tab, { animate: true });
+          if (parentID) this.#closeQuietly(win, tab);
+          else win.gBrowser.removeTab(tab, { animate: true });
         }
       }
       if (parentID) {
@@ -895,90 +948,67 @@ class Workspaces {
     }
   }
 
-  #archivePanel(win, workspace, folder, perform) {
+  /** Archive (or dismiss an agent) from a card in the sidebar, like Lima's
+   * other sidebar prompts: confirm, then progress, then the result. */
+  async #archivePanel(win, workspace, folder, perform) {
     const doc = win.document;
-    const panel = doc.createXULElement("panel");
-    panel.className = "lima-archive-panel";
-    panel.setAttribute("type", "arrow");
-    panel.setAttribute("noautohide", "true");
-    panel.setAttribute("role", "dialog");
-    panel.setAttribute("aria-label", workspace.parentID ? "Dismiss agent" : "Archive workspace");
-    panel.dataset.phase = "confirm";
-    const element = (tag, className, text) => {
+    const agent = !!workspace.parentID;
+    const card = lazy.sidebarCard(win, { tone: "ask", label: agent ? "Dismiss agent" : "Archive workspace" });
+    if (!card) return;
+    const html = (tag, props = {}, ...children) => {
       const node = doc.createElementNS("http://www.w3.org/1999/xhtml", tag);
-      node.className = className;
-      if (text) node.textContent = text;
+      for (const [key, value] of Object.entries(props)) {
+        if (key === "text") node.textContent = value;
+        else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+        else node.setAttribute(key, value);
+      }
+      node.append(...children.filter(Boolean));
       return node;
     };
-    const mark = element("span", "lima-archive-mark");
-    mark.setAttribute("aria-hidden", "true");
-    const heading = element("strong", "lima-archive-heading", workspace.parentID ? "Dismiss agent" : "Archive workspace");
-    const title = element("div", "lima-archive-title", workspace.name);
-    const summary = element("div", "lima-archive-summary");
-    summary.append(heading, title);
-    const header = element("header", "lima-archive-header");
-    header.append(mark, summary);
-    const description = element("p", "lima-archive-description", workspace.parentID
-      ? "Close this agent and its tabs."
-      : "Closes it and saves its folder as a verified ZIP.");
-    const path = element("code", "lima-archive-path", workspace.parentID ? "" : workspace.directory);
-    const source = element("div", "lima-archive-location");
-    const pathLabel = element("span", "", "Project folder");
-    source.append(pathLabel, path);
-    source.hidden = !path.textContent;
-    const status = element("p", "lima-archive-status");
-    status.setAttribute("role", "status");
-    const cancel = element("button", "", "Cancel");
-    const action = element("button", "lima-archive-action", workspace.parentID ? "Dismiss agent" : "Archive workspace");
-    const controls = element("div", "lima-archive-actions");
-    controls.append(cancel, action);
-    const content = element("div", "lima-archive-content");
-    content.append(header, description, source, status, controls);
-    panel.append(content);
-    (doc.getElementById("mainPopupSet") ?? doc.documentElement).append(panel);
     let busy = false;
-    cancel.onclick = () => panel.hidePopup();
-    panel.addEventListener("keydown", event => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        if (!busy) panel.hidePopup();
-      }
+    const button = (label, onclick, primary = false) => html("button", { type: "button", class: primary ? "lima-action-primary" : "", onclick }, label);
+    const where = (label, path) => path ? html("div", { class: "lima-archive-location" }, html("span", { text: label }), html("code", { text: path })) : null;
+    card.notice.limaCloseRequest = () => { if (!busy) card.close(); };
+    card.notice.addEventListener("keydown", event => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (!busy) card.close();
     });
-    action.onclick = async () => {
-      if (busy) return;
-      busy = action.disabled = cancel.disabled = true;
-      panel.dataset.phase = "working";
-      status.textContent = workspace.parentID ? "Dismissing agent…" : "Creating and verifying the ZIP…";
+    const run = async () => {
+      busy = true;
+      card.notice.dataset.tone = "ask";
+      card.paint(html("strong", { text: `${agent ? "Dismissing" : "Archiving"} ${workspace.name}…` }),
+        html("span", { role: "status", text: agent ? "Closing the agent and its tabs." : "Creating and verifying the ZIP…" }));
       try {
         const result = await perform();
-        panel.dataset.phase = "complete";
-        heading.textContent = workspace.parentID ? "Agent dismissed" : "Workspace archived";
-        description.textContent = result?.recoveryPath ? `A recovery copy remains at ${result.recoveryPath}` : "The sidebar has been updated.";
-        pathLabel.textContent = "Verified ZIP";
-        path.textContent = result?.archivePath ?? "";
-        source.hidden = !path.textContent;
-        status.textContent = result?.directoryKept && !workspace.parentID ? "The original folder is still available." : "";
-        action.hidden = true;
-        cancel.textContent = "Done";
+        busy = false;
+        card.notice.dataset.tone = "ok";
+        const done = button("Done", () => card.close(), true);
+        card.paint(html("strong", { text: agent ? "Agent dismissed" : `${workspace.name} archived` }),
+          html("span", { text: result?.recoveryPath ? `A recovery copy remains at ${result.recoveryPath}.`
+            : result?.directoryKept && !agent ? "The original folder is still where it was." : "The sidebar has been updated." }),
+          where("Verified ZIP", result?.archivePath),
+          html("div", { class: "lima-action-buttons" }, done));
+        done.focus();
       } catch (error) {
-        panel.dataset.phase = "failed";
-        status.textContent = error.message;
-        action.textContent = "Retry";
-      } finally {
-        busy = action.disabled = cancel.disabled = false;
-        (action.hidden ? cancel : action).focus();
+        busy = false;
+        card.notice.dataset.tone = "bad";
+        const retry = button("Retry", run, true);
+        card.paint(html("strong", { text: agent ? "Couldn’t dismiss the agent" : "Couldn’t archive the workspace" }),
+          html("span", { role: "alert", text: error.message ?? String(error) }),
+          html("div", { class: "lima-action-buttons" }, button("Cancel", () => card.close()), retry));
+        retry.focus();
       }
     };
-    return new Promise(resolve => {
-      const finish = () => { win.removeEventListener("unload", finish); panel.remove(); resolve(); };
-      panel.addEventListener("popuphidden", finish, { once: true });
-      win.addEventListener("unload", finish, { once: true });
-      panel.addEventListener("popupshown", () => cancel.focus(), { once: true });
-      // Use a stable toolbar anchor so closing the folder doesn't close the confirmation.
-      const anchor = doc.getElementById("lima-settings-button") ?? folder ?? doc.getElementById("navigator-toolbox");
-      panel.openPopup(anchor, "before_start");
-    });
+    const confirm = button(agent ? "Dismiss agent" : "Archive", run, true);
+    card.paint(html("strong", { text: agent ? `Dismiss ${workspace.name}?` : `Archive ${workspace.name}?` }),
+      html("span", { text: agent ? "Closes this agent and its tabs." : "Closes it and saves its folder as a verified ZIP." }),
+      agent ? null : where("Project folder", workspace.directory),
+      html("div", { class: "lima-action-buttons" }, button("Cancel", () => card.close()), confirm));
+    card.popIn();
+    confirm.focus();
+    await card.closed;
   }
 
   #animateTab(tab) {
@@ -1152,6 +1182,8 @@ class Workspaces {
     this.#observeMascot(win, folder);
     const moving = ["working", "starting"].includes(activity?.state);
     if (moving) folder.setAttribute("lima-ai", "working"); else folder.removeAttribute("lima-ai");
+    // The agent's cursor leaves when the agent is done.
+    if (!moving && this.#presence.delete(id)) this.#renderPresence(win);
     const attention = activity?.attention || ["blocked", "failed"].includes(activity?.state);
     folder.toggleAttribute("lima-attention", attention);
     // One status at a glance: needs approval (amber), failed (red), or
@@ -1213,6 +1245,8 @@ class Workspaces {
       }
       art = template.cloneNode(true);
       art.classList.add("lima-sidebar-pip");
+      // Crop to this Pip's outline (hats included) so it fills its slot.
+      art.setAttribute("viewBox", PIP_CROPS[variant] ?? PIP_CROPS.classic);
       art.dataset.look = key;
       const { ears, eyes, marking, extra, tilt, ...other } = generateMascot(id);
       for (const [part, value] of Object.entries({ ears, eyes, marking, extra })) {
@@ -1350,30 +1384,81 @@ class Workspaces {
       }
       result = await live.getActor("LimaPage").sendQuery("action", data);
     }
-    if (result.pointer) this.#showAction(win, browser, result.pointer, request.action);
+    this.#watchPresence(win);
+    this.#presenceFor(win, request.workspaceId, tab, result?.pointer, request.action);
     return result;
   }
 
-  #showAction(win, browser, pointer, action) {
-    if (!Services.prefs.getBoolPref("lima.browser.actionOverlay", false) ||
-        !["click", "type"].includes(action) || win.gBrowser.selectedBrowser !== browser) return;
-    const { x, y } = pointer;
-    const bounds = browser.getBoundingClientRect();
-    const zoom = browser.fullZoom || 1;
-    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x * zoom > bounds.width || y * zoom > bounds.height) return;
+  /** The agent's cursor: it stays on the tab an agent is working in, moving
+   * to each action with a short label, until the agent finishes or works in
+   * another tab. It shows only while you're looking at that tab, and never
+   * moves your focus or selection. */
+  #presenceFor(win, id, tab, pointer, action) {
+    if (!Services.prefs.getBoolPref("lima.browser.actionOverlay", true) || !tab || !id) return;
+    const last = this.#presence.get(id);
+    const point = pointer && Number.isFinite(pointer.x) && Number.isFinite(pointer.y) ? { x: pointer.x, y: pointer.y }
+      : last?.tab === tab ? last.point : null;
+    this.#presence.set(id, { tab, point, action });
+    this.#renderPresence(win, { pulse: !!pointer && ["click", "type", "select"].includes(action) });
+  }
+
+  #renderPresence(win, { pulse = false } = {}) {
+    if (!win || win.closed || !win.gBrowser) return;
     const doc = win.document;
-    doc.getElementById("lima-agent-pointer")?.remove();
-    const marker = doc.createElementNS("http://www.w3.org/1999/xhtml", "span");
-    marker.id = "lima-agent-pointer";
-    marker.dataset.action = action;
-    marker.setAttribute("aria-hidden", "true");
-    marker.style.left = `${bounds.left + x * zoom}px`;
-    marker.style.top = `${bounds.top + y * zoom}px`;
-    marker.textContent = action === "type" ? "Typing" : "";
-    (doc.getElementById("browser") ?? doc.documentElement).append(marker);
-    const clear = () => { marker.remove(); win.gBrowser.tabContainer.removeEventListener("TabSelect", clear); };
-    win.gBrowser.tabContainer.addEventListener("TabSelect", clear, { once: true });
-    win.setTimeout(clear, action === "type" ? 1450 : 760);
+    const tab = win.gBrowser.selectedTab;
+    let entry = null;
+    for (const [id, item] of this.#presence) {
+      if (item.tab.closing || !item.tab.isConnected) { this.#presence.delete(id); continue; }
+      const state = this.#visuals[id]?.state;
+      if (item.tab === tab && (!state || ["working", "starting"].includes(state))) entry = item;
+    }
+    let cursor = doc.getElementById("lima-agent-pointer");
+    if (!entry || !Services.prefs.getBoolPref("lima.browser.actionOverlay", true)) { cursor?.remove(); return; }
+    const browser = tab.linkedBrowser;
+    const bounds = browser.getBoundingClientRect();
+    if (!bounds.width || !bounds.height) { cursor?.remove(); return; }
+    const zoom = browser.fullZoom || 1;
+    const x = entry.point ? Math.min(Math.max(entry.point.x * zoom, 8), bounds.width - 8) : bounds.width * .5;
+    const y = entry.point ? Math.min(Math.max(entry.point.y * zoom, 8), bounds.height - 8) : bounds.height * .38;
+    if (!cursor) {
+      const html = name => doc.createElementNS("http://www.w3.org/1999/xhtml", name);
+      cursor = html("span");
+      cursor.id = "lima-agent-pointer";
+      cursor.setAttribute("aria-hidden", "true");
+      const ring = html("span");
+      ring.className = "lima-agent-ring";
+      const arrow = html("span");
+      arrow.className = "lima-agent-arrow";
+      const label = html("span");
+      label.className = "lima-agent-label";
+      cursor.append(ring, arrow, label);
+      cursor.style.left = `${bounds.left + x}px`;
+      cursor.style.top = `${bounds.top + y}px`;
+      (doc.getElementById("browser") ?? doc.documentElement).append(cursor);
+      cursor.getBoundingClientRect(); // placed before it starts gliding
+    }
+    cursor.style.left = `${bounds.left + x}px`;
+    cursor.style.top = `${bounds.top + y}px`;
+    cursor.dataset.action = entry.action;
+    cursor.querySelector(".lima-agent-label").textContent = PRESENCE_LABELS[entry.action] ?? "Working";
+    if (pulse) {
+      cursor.removeAttribute("data-pulse");
+      cursor.getBoundingClientRect(); // restarts the ring
+      cursor.setAttribute("data-pulse", "");
+    }
+  }
+
+  /** Window hooks for the agent's cursor: tab switches and resizes. */
+  #watchPresence(win) {
+    if (this.#presenceWindows.has(win)) return;
+    this.#presenceWindows.add(win);
+    const render = () => this.#renderPresence(win);
+    win.gBrowser.tabContainer.addEventListener("TabSelect", render);
+    win.addEventListener("resize", render);
+    win.addEventListener("unload", () => {
+      win.gBrowser?.tabContainer.removeEventListener("TabSelect", render);
+      win.removeEventListener("resize", render);
+    }, { once: true });
   }
 
   async #read(win, id, url) {
@@ -1387,6 +1472,8 @@ class Workspaces {
       if (!tab) throw new Error("the tab couldn't be opened");
     }
     const browser = await this.#loaded(win, tab, url);
+    this.#watchPresence(win);
+    this.#presenceFor(win, id, tab, null, "read");
     // Firefox's own extractor (also reads PDFs); runs only when asked.
     const actor = browser.browsingContext?.currentWindowGlobal?.getActor("PageExtractor");
     const page = await actor?.getText();

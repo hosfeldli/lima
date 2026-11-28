@@ -137,6 +137,9 @@ public struct AgentRunRequest: Sendable {
     /// before positional arguments.
     public var extraArguments: [String] = []
     public var extraEnvironment: [String: String] = [:]
+    /// The sandbox the CLI (and everything it starts) runs in; workspace
+    /// agents always have one.
+    public var sandbox: AgentSandbox?
 
     public init(provider: CLIProvider, prompt: String, model: String? = nil, cliSessionID: String? = nil, workingDirectory: URL, mode: AgentMode) {
         self.provider = provider
@@ -464,8 +467,14 @@ public final class AgentRun: @unchecked Sendable {
         events = AsyncStream { continuation = $0 }
         let stream = continuation!
 
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = AgentCommandLine.arguments(for: request)
+        let arguments = AgentCommandLine.arguments(for: request)
+        if let sandbox = request.sandbox, let wrapped = sandbox.command(executable: executable, arguments: arguments) {
+            process.executableURL = URL(fileURLWithPath: wrapped.executable)
+            process.arguments = wrapped.arguments
+        } else {
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = arguments
+        }
         process.currentDirectoryURL = request.workingDirectory
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = searchPath.joined(separator: ":")

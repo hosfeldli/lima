@@ -253,6 +253,49 @@ const compiled = COMPILED;
       gBrowser.removeTab(idle);
       return (before && !selected && !playing && unloaded) || { before, selected, playing, unloaded, installed: !!window.limaMemorySweep };
     })(),
+    // The top toolbar's icons follow Lima's theme (they sit outside the
+    // sidebar, so Zen's own colours used to keep them dark in dark mode).
+    toolbarFollowsTheme: await (async () => {
+      const icon = document.querySelector("#back-button .toolbarbutton-icon");
+      if (!icon) return "no back button";
+      const prefs = Services.prefs, before = prefs.getStringPref("lima.theme", "system");
+      const read = async theme => { prefs.setStringPref("lima.theme", theme); await new Promise(r => setTimeout(r, 400)); return getComputedStyle(icon).color; };
+      const light = await read("light"), dark = await read("dark");
+      prefs.setStringPref("lima.theme", before);
+      return light !== dark || { light, dark };
+    })(),
+    // A saved tab's line unloads it in place; it doesn't close or reset it.
+    lineUnloads: await (async () => {
+      const page = gBrowser.addTab("data:text/html,<title>Saved</title>saved", { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(), inBackground: true });
+      gBrowser.pinTab(page);
+      for (let i = 0; i < 50 && (page.linkedBrowser.currentURI.spec === "about:blank" || page.hasAttribute("busy")); i++) await new Promise(r => setTimeout(r, 100));
+      const line = page.querySelector(".tab-reset-button");
+      line?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }));
+      for (let i = 0; i < 30 && !page.hasAttribute("pending"); i++) await new Promise(r => setTimeout(r, 100));
+      const result = { line: !!line, kept: page.isConnected && !page.closing, unloaded: page.hasAttribute("pending") };
+      gBrowser.removeTab(page);
+      return Object.values(result).every(Boolean) || result;
+    })(),
+    autoPictureInPicture: Services.prefs.getBoolPref("media.videocontrols.picture-in-picture.enable-when-switching-tabs.enabled", false),
+    // Settings and What's New reopen in a working tab even after Lima
+    // unloaded the shared one for memory.
+    utilityAfterUnload: await (async () => {
+      const { LimaTabs, isMiniWindow } = ChromeUtils.importESModule("resource://lima/LimaTabs.sys.mjs");
+      const previous = gBrowser.selectedTab;
+      const first = LimaTabs.openOrFocus(window, "about:lima?view=help", { background: true });
+      for (let i = 0; i < 50 && (first.linkedBrowser.currentURI.spec === "about:blank" || first.hasAttribute("busy")); i++) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      gBrowser.discardBrowser(first, true);
+      const discarded = first.hasAttribute("pending") || !first.linkedPanel;
+      const tab = LimaTabs.openOrFocus(window, "about:lima?view=whats-new");
+      const state = { panel: !!tab.linkedPanel, pending: tab.hasAttribute("pending"), selected: gBrowser.selectedTab === tab,
+        replaced: !gBrowser.tabs.includes(first) || first.closing };
+      const live = state.panel && !state.pending && state.selected && state.replaced;
+      gBrowser.selectedTab = previous;
+      gBrowser.removeTab(tab);
+      return (discarded && live && !isMiniWindow(window)) || { discarded, ...state };
+    })(),
     // Right-click menus: a short sidebar menu (with New Folder), and the tab
     // menu grouped with the rest under More.
     menus: (() => {
@@ -393,7 +436,11 @@ const done = arguments[arguments.length - 1];
   for (let i = 0; i < 60 && !(mini = windows().find(win => win.limaMini && win.document.getElementById("lima-mini-bar"))); i++) await wait(100);
   if (!mini) return { opened: false };
   const doc = mini.document;
-  const result = { opened: true, sidebarHidden: mini.getComputedStyle(doc.getElementById("navigator-toolbox")).display === "none",
+  // Only the sidebar's corner with the close, minimize and zoom buttons shows.
+  const buttons = doc.querySelector(".titlebar-buttonbox-container")?.getBoundingClientRect();
+  const result = { opened: true, sidebarHidden: doc.getElementById("navigator-toolbox").getBoundingClientRect().width <= 80
+      && !doc.getElementById("tabbrowser-arrowscrollbox")?.getClientRects().length,
+    windowButtons: !!buttons && buttons.width > 0 && buttons.height > 0,
     mainUntouched: main.gBrowser.tabs.length === before, toolbar: doc.getElementById("lima-mini-bar").getBoundingClientRect().height <= 48,
     compact: mini.outerWidth <= 980 && mini.outerHeight <= 740 };
   for (let i = 0; i < 40 && doc.querySelector(".lima-mini-host").textContent !== "example.com"; i++) await wait(100);

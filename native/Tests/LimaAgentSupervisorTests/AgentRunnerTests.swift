@@ -78,7 +78,7 @@ func waitIdle(_ service: ConversationService, _ id: String) async throws -> Conv
     echo '{"type":"thread.started","thread_id":"LIVE"}'
     echo '{"type":"turn.started"}'
     echo '{"type":"item.completed","item":{"type":"agent_message","text":"First reply"}}'
-    for try in 1 2 3 4 5; do
+    for try in 1 2 3 4 5 6 7 8 9 10 11 12; do
       [ -f "$(dirname "$0")/finish" ] && break
       sleep 1
     done
@@ -91,7 +91,8 @@ func waitIdle(_ service: ConversationService, _ id: String) async throws -> Conv
     }
     let conversation = try await service.create(provider: .codex, model: nil, workingDirectory: nil)
     _ = try await service.send(conversation.id, text: "hello")
-    for _ in 0..<50 {
+    // Generous under a loaded test run; the fake CLI waits up to 12 s.
+    for _ in 0..<200 {
         if try await service.get(conversation.id).messages.last?.text == "First reply" { break }
         try await Task.sleep(for: .milliseconds(40))
     }

@@ -124,7 +124,8 @@ export function activityStatus() {
     detail.hidden = !description;
     const resultText = lastResult ? `Last result: ${lastResult}` : "";
     if (last.textContent !== resultText) last.textContent = last.title = resultText;
-    last.hidden = !resultText;
+    // The last result is stale once new work starts; it shows only at rest.
+    last.hidden = !resultText || ["working", "starting"].includes(state);
     elapsed.hidden = !startedAt;
     if (startedAt !== since) {
       clearInterval(timer);

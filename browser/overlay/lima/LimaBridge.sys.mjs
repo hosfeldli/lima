@@ -68,7 +68,9 @@ class Bridge {
           reject(new Error(`lima-host: ${method} timed out`));
         },
         ["workspace.delete", "assistant.plan", "assistant.delegate"].includes(method) ? 600000
-          : STUDIO_RENDER_METHODS.has(method) ? STUDIO_RENDER_TIMEOUT_MS : method === "integrations.google.refresh" ? 30000 : REQUEST_TIMEOUT_MS,
+          : STUDIO_RENDER_METHODS.has(method) ? STUDIO_RENDER_TIMEOUT_MS : method === "integrations.google.refresh" ? 30000
+          // Waits while macOS asks you to let Lima use Messages.
+          : method === "messages.verify" ? 130000 : REQUEST_TIMEOUT_MS,
         Ci.nsITimer.TYPE_ONE_SHOT
       );
       this.#pending.set(id, handle);

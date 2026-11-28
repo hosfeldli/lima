@@ -856,3 +856,75 @@ h3 { font: 650 18px/1.3 var(--display); letter-spacing: -.01em; margin: 0 0 8px;
   .flight em { opacity: 1; }
   .flight { grid-auto-flow: row; }
 }
+
+/* ── Slides (2026-11, app.js): the page reads like Lima's walkthrough. One
+   slide at a time between the top bar and a bottom bar with Back, a
+   progress strip and Continue. A slide taller than the window scrolls
+   inside itself; a fresh scroll at its edge flips. Entering slides rise
+   18px and fade in (380ms, --ease, after a 60ms beat); leaving ones fade
+   out quicker (240ms). Reduced Motion swaps instantly. Without JavaScript
+   none of this applies and the page scrolls as before. */
+.deck, .deck body { height: 100%; overflow: hidden; overscroll-behavior: none; }
+.deck .topbar { position: fixed; inset: 0 0 auto 0; }
+.deck main { position: fixed; inset: var(--deck-top, 61px) 0 var(--deck-bottom, 72px) 0; overflow: hidden; }
+.deck .slide { position: absolute; inset: 0; display: flex; flex-direction: column; overflow-y: auto; overscroll-behavior: contain; outline: none; }
+.deck .slide[hidden] { display: none; }
+.deck .slide > :is(.section, .hero) { width: 100%; margin: auto; padding-block: clamp(24px, 6vh, 64px); }
+.deck .slide > .hero { padding-block: clamp(24px, 8vh, 96px); }
+.deck .slide > .foot { flex: none; margin: 0 auto; width: 100%; }
+.deck .slide[data-enter] { animation: deck-in 380ms var(--ease) 60ms both; }
+.deck .slide[data-leave] { animation: deck-out 240ms cubic-bezier(.4, 0, 1, 1) both; pointer-events: none; z-index: 1; }
+.deck .slide[data-enter="next"] { --deck-from: 18px; }
+.deck .slide[data-enter="prev"] { --deck-from: -18px; }
+.deck .slide[data-leave="next"] { --deck-to: -12px; }
+.deck .slide[data-leave="prev"] { --deck-to: 12px; }
+@keyframes deck-in { from { opacity: 0; transform: translateY(var(--deck-from, 18px)); } }
+@keyframes deck-out { to { opacity: 0; transform: translateY(var(--deck-to, -12px)); } }
+
+/* The tour is one slide; Continue steps through its eight scenes. */
+@media (min-width: 861px) {
+  /* The tour fills the slide exactly: its heading, then the scene, sized
+     to the room left, beside the step's words. */
+  .deck .slide > .tour { display: flex; flex-direction: column; height: 100%; min-height: 520px; margin: 0 auto; padding-block: clamp(20px, 4vh, 44px); }
+  .deck .tour .section-head { margin-bottom: 0; }
+  .deck .tour-body { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr); align-items: center; margin-top: clamp(16px, 3vh, 32px); }
+  .deck .tour-body > .tour-stage { position: relative; top: auto; height: 100%; width: auto; max-width: 100%; justify-self: center; aspect-ratio: 1.12; }
+}
+.deck .tour-steps { padding: 0; gap: 0; display: block; }
+.deck .tour-step:not(.is-active) { display: none; }
+.deck .tour-step.is-active { opacity: 1; transform: none; animation: deck-step 420ms var(--ease) both; }
+@keyframes deck-step { from { opacity: 0; transform: translateY(8px); } }
+@media (max-width: 860px) {
+  .deck .tour-stage.inline { max-height: 42dvh; max-width: calc(42dvh * 1.12); margin-inline: auto; }
+}
+
+/* The bottom bar, drawn like the walkthrough's. */
+.deck-nav { display: none; }
+.deck .deck-nav {
+  position: fixed; inset: auto 0 0 0; z-index: 20; display: flex; align-items: center; gap: 16px;
+  min-height: 72px; padding: 0 clamp(16px, 4vw, 32px) env(safe-area-inset-bottom);
+  background: color-mix(in srgb, var(--bg) 95%, transparent);
+  backdrop-filter: saturate(1.4) blur(14px); -webkit-backdrop-filter: saturate(1.4) blur(14px);
+  border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+.deck-nav > .button { min-width: 120px; justify-content: center; }
+.deck-nav > .deck-back:disabled { visibility: hidden; }
+.deck-progress { flex: 1; display: flex; gap: 6px; max-width: 520px; margin: 0 auto; padding: 0; list-style: none; }
+.deck-progress li { flex: 1; }
+.deck-dot { display: grid; align-items: center; width: 100%; height: 24px; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.deck-dot > span { position: relative; display: block; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; transition: height 140ms var(--ease); }
+.deck-dot:hover > span { height: 6px; }
+.deck-dot > span::after { content: ""; position: absolute; inset: 0; background: var(--fg); transform: scaleX(0); transform-origin: left; transition: transform 520ms var(--ease); }
+.deck-progress li[data-state="done"] .deck-dot > span::after { transform: none; }
+.deck-progress li[data-state="current"] .deck-dot > span::after { transform: scaleX(var(--fill, 1)); }
+.deck-live { position: absolute; width: 1px; height: 1px; margin: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.topnav a[aria-current] { color: var(--fg); background: var(--surface); }
+@media (max-width: 640px) {
+  .deck .deck-nav { gap: 10px; min-height: 64px; }
+  .deck-nav > .button { min-width: 0; padding-inline: 14px; }
+  .deck-progress { gap: 3px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .deck .slide[data-enter], .deck .slide[data-leave], .deck .tour-step.is-active { animation: none; }
+  .deck-dot > span::after { transition: none; }
+}

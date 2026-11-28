@@ -185,7 +185,7 @@ public actor ConversationService {
     private var mediaDirectory: URL?
     public func setMediaDirectory(_ url: URL) { mediaDirectory = url }
     /// Supplies per-conversation CLI extras (workspace MCP config, preamble).
-    public typealias RunConfigurator = @Sendable (Conversation) async -> (arguments: [String], environment: [String: String], preamble: String?)
+    public typealias RunConfigurator = @Sendable (Conversation) async -> (arguments: [String], environment: [String: String], preamble: String?, sandbox: AgentSandbox?)
     private var configurator: RunConfigurator?
     /// Picks the provider to continue with when one hits its usage limit:
     /// given the provider that failed and those already tried this turn,
@@ -668,6 +668,7 @@ public actor ConversationService {
             let extras = await configurator(configured)
             request.extraArguments = extras.arguments
             request.extraEnvironment = extras.environment
+            request.sandbox = extras.sandbox
             if let preamble = extras.preamble { request.prompt = preamble + "\n\n" + request.prompt }
         }
         guard activeReply[id] == reply.id, conversations[id] != nil else { return }

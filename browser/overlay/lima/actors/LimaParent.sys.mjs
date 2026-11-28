@@ -116,7 +116,20 @@ export class LimaParent extends JSWindowActorParent {
     actors.delete(this);
   }
 
+  /** Whether this actor's document is an about:lima page, judged here in the
+   * parent. The child checks too, but it runs in the privileged-about
+   * process other about: pages share, so its word alone isn't enough. */
+  #fromLimaPage() {
+    const uri = this.manager?.documentURI;
+    return !!uri && uri.schemeIs("about") && uri.pathQueryRef.split(/[?#]/)[0] === "lima" &&
+      this.browsingContext?.top === this.browsingContext;
+  }
+
   async receiveMessage(message) {
+    if (!this.#fromLimaPage()) {
+      Services.console.logStringMessage(`[lima] refused ${message.name} from ${this.manager?.documentURI?.spec ?? "an unknown page"}`);
+      return message.name === "request" ? { ok: false, code: "not_authorized", message: "Only Lima pages can use Lima." } : null;
+    }
     switch (message.name) {
       case "request": {
         const { method, params } = message.data;
@@ -146,8 +159,17 @@ export class LimaParent extends JSWindowActorParent {
           await LimaWorkspaces.openImageStudio(win, workspace, { url, background });
           return null;
         }
+        // Only Lima's own pages and web addresses: never file:, chrome:,
+        // javascript: or other about: pages. Web pages load without Lima's
+        // privileges, as if you'd followed a link.
+        let parsed;
+        try { parsed = new URL(String(url)); } catch { throw new Error("Not an address Lima can open."); }
+        const own = /^about:lima(\?|$)/.test(parsed.href) || parsed.href === "about:downloads";
+        const web = ["http:", "https:"].includes(parsed.protocol) && !parsed.username && !parsed.password;
+        if (!own && !web) throw new Error("Lima pages can open only Lima pages and web addresses.");
         const { LimaTabs } = ChromeUtils.importESModule("resource://lima/LimaTabs.sys.mjs");
-        LimaTabs.openOrFocus(win, url, { background });
+        LimaTabs.openOrFocus(win, parsed.href, { background,
+          triggeringPrincipal: own ? undefined : Services.scriptSecurityManager.createNullPrincipal({}) });
         return null;
       }
       case "replaceURL": {
@@ -386,7 +408,7 @@ export class LimaParent extends JSWindowActorParent {
           mascotTheme: Services.prefs.getStringPref("lima.mascotTheme", "graphite"),
           theme: lazy.LimaAppearance.theme(),
           themeSetting: Services.prefs.getStringPref("lima.theme", "system"),
-          browserActionOverlay: Services.prefs.getBoolPref("lima.browser.actionOverlay", false),
+          browserActionOverlay: Services.prefs.getBoolPref("lima.browser.actionOverlay", true),
         };
       }
       case "rememberAgent": {

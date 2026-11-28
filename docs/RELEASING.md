@@ -38,6 +38,34 @@ After the switch, macOS treats Lima as a new signer. Users re-approve Privacy & 
 and allow one Keychain prompt for the store key; their data is unchanged. New downloads open without
 Control-click → Open.
 
+## Passkeys (iCloud Keychain and phone)
+
+macOS lets a browser offer iCloud Keychain and phone passkeys only when it is
+signed with the `com.apple.developer.web-browser.public-key-credential`
+entitlement. Apple grants it per App ID through a provisioning profile. Zen's
+grant belongs to Zen's team, so the repack removes it; without Lima's own,
+sites fall back to "touch your security key" (USB keys still work).
+
+To turn passkeys on:
+
+1. In the Apple Developer account (team 575W282638), open Certificates,
+   Identifiers & Profiles → Identifiers and register `dev.lima.browser` if it
+   isn't there.
+2. On that identifier, request the managed capability **Web Browser Public Key
+   Credential Requests** (Capability Requests tab). Apple reviews it; approval
+   arrives by email.
+3. Once approved, enable the capability on the identifier, then create a
+   **Developer ID** provisioning profile for `dev.lima.browser` with the
+   Developer ID Application certificate.
+4. Save it as `browser/signing/Lima.provisionprofile` and commit it. Profiles
+   aren't secret: every signed app ships its own inside.
+
+Release builds then embed it and grant the engine the passkey entitlement
+plus the App ID it requires (`lima_codesign.py` reads both from the profile,
+checks they match `dev.lima.browser`, and verifies them after signing).
+Ad-hoc development builds skip the profile, since it only fits a Developer ID
+signature. `LIMA_PROVISIONING_PROFILE` points at a different file for testing.
+
 ## How a release flows
 
 ```

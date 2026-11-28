@@ -242,6 +242,7 @@ done
 for key in NSLocationUsageDescription NSLocationWhenInUseUsageDescription NSLocationAlwaysAndWhenInUseUsageDescription; do
   plutil -replace "$key" -string "Lima uses location for sites you allow and for one-time Lima requests you approve." "$PLIST"
 done
+plutil -replace NSCameraUsageDescription -string "Only sites you allow in Lima can use the camera." "$PLIST"
 plutil -remove SUFeedURL "$PLIST" 2>/dev/null || true
 # Firefox asks macOS to quarantine every file the app (and anything it
 # launches) writes. Workspace agents build and run code, so their compilers'
@@ -270,6 +271,14 @@ fi
 
 # Zen's provisioning profile and signature belong to Zen's team.
 rm -f "$C/embedded.provisionprofile"
+# Lima's own profile (from Apple, for Lima's App ID) turns on iCloud Keychain
+# and phone passkeys. It only fits a Developer ID signature from that team,
+# so local ad-hoc builds go without it (security keys still work there).
+LIMA_PROFILE="${LIMA_PROVISIONING_PROFILE:-$BROWSER/signing/Lima.provisionprofile}"
+if [[ -f "$LIMA_PROFILE" && "${SIGN_MODE:-}" == developer-id ]]; then
+  cp "$LIMA_PROFILE" "$C/embedded.provisionprofile"
+  echo "    passkeys: signing with $(basename "$LIMA_PROFILE")"
+fi
 
 # 6. Sign inside-out with the hardened runtime, then verify the result.
 step "Signing (${IDENTITY/#-/ad-hoc})"

@@ -6,21 +6,6 @@
       "path": "browser/vendor/whisper/whisper-cli",
       "sha256": "7bc894dd031cdb777a68d07a567ddc37a702b70ccd26adccf20f85e6f6e6cecc",
       "provenance": "whisper.cpp v1.9.1 (f049fff95a089aa9969deb009cdd4892b3e74916), arm64 static CPU build, see browser/vendor/whisper/REVISION"
-    },
-    "xterm.js": {
-      "path": "browser/overlay/lima/ui/vendor/xterm.js",
-      "sha256": "1f991ac3b4b283ebf96e60ae23a00a52765dd3a2e46fa6fdda9f1aab032f7495",
-      "provenance": "@xterm/xterm (MIT), see ui/vendor/LICENSE-xterm"
-    },
-    "xterm.css": {
-      "path": "browser/overlay/lima/ui/vendor/xterm.css",
-      "sha256": "ba8e6985669488981ccf40c0cefe3aba80722cb6c92de7ad628b0bd717faf2b6",
-      "provenance": "@xterm/xterm (MIT)"
-    },
-    "addon-fit.js": {
-      "path": "browser/overlay/lima/ui/vendor/addon-fit.js",
-      "sha256": "bdaefa370b1bfc42ee88d46fe6072400902a4d4b2d45cd93438dda9b23c97089",
-      "provenance": "@xterm/addon-fit (MIT)"
     }
   }
 }

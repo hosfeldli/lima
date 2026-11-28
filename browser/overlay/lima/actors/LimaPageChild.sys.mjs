@@ -8,12 +8,30 @@ const pointFor = node => {
 
 /** Why a click needs the user's OK, or null for an ordinary control. */
 function sensitivity(doc, control, label) {
-  const context = `${doc.title} ${control.closest("form, [role=form]")?.innerText ?? ""}`;
-  if (/\b(play|roll|start|spin|deal)\b/i.test(label) && /\b(casino|wager|stake cash|sportsbook|blackjack|dice|limbo|plinko|slots?)\b/i.test(context) ||
-      /\b(place bet|bet|wager|cash out|deposit|withdraw|purchase|buy now|checkout|place order|pay now|pay|transfer)\b/i.test(label)) {
+  const form = control.closest("form, [role=form]");
+  const context = `${doc.title} ${form?.innerText ?? ""}`;
+  // Judge the control by everything it shows or carries, not just its
+  // accessible name, so a page can't dress a "Buy" button up as "Close".
+  const visible = (control.innerText ?? "").trim();
+  const words = [label, visible, control.value, control.title, control.getAttribute?.("aria-label")].filter(Boolean).join(" ");
+  if (/\b(play|roll|start|spin|deal)\b/i.test(words) && /\b(casino|wager|stake cash|sportsbook|blackjack|dice|limbo|plinko|slots?)\b/i.test(context) ||
+      /\b(place bet|bet|wager|cash out|deposit|withdraw|purchase|buy|checkout|place order|pay now|pay|transfer|subscribe|donate|confirm order|book now|reserve)\b/i.test(words)) {
     return { risk: "money", reason: "This can spend or move money." };
   }
-  if (/\b(delete|remove account|send|publish|unsubscribe|log\s?in|sign\s?in)\b/i.test(label)) {
+  // Anything acting on a form that asks for card or bank details.
+  if (form?.querySelector('[autocomplete^="cc-"], input[name*="card" i], input[name*="cvv" i], input[name*="cvc" i], input[name*="iban" i], input[name*="routing" i]')) {
+    return { risk: "money", reason: "This acts on a form with payment details." };
+  }
+  if (form?.querySelector("input[type=password]") && control !== form.querySelector("input[type=password]")) {
+    return { risk: "account", reason: "This acts on a sign-in form." };
+  }
+  // A control whose name and visible text share no words is disguised.
+  const tokens = text => new Set(text.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []);
+  const named = tokens(label ?? ""), shown = tokens(visible);
+  if (named.size && shown.size && ![...named].some(word => shown.has(word))) {
+    return { risk: "account", reason: "This control's label doesn't match what it shows." };
+  }
+  if (/\b(delete|remove account|send|publish|unsubscribe|log\s?in|sign\s?in)\b/i.test(words)) {
     return { risk: "account", reason: "This changes your account or sends something on your behalf." };
   }
   if (control.matches("iframe, input[type=file], input[type=password], [download]")) {
