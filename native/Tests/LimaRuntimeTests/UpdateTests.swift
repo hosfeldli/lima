@@ -382,8 +382,14 @@ func developerIDAppMatchesOnlyItsOwnTeam() throws {
     let fm = FileManager.default
     let root = fm.temporaryDirectory.appendingPathComponent("chunks-\(UUID())")
     defer { try? fm.removeItem(at: root) }
-    var generator = SystemRandomNumberGenerator()
-    let shared = Data((0..<3_000_000).map { _ in UInt8.random(in: 0...255, using: &generator) })
+    // Fixed-seed bytes, longer than two maximum-size chunks, so the engine
+    // always splits into several chunks and only the last one differs
+    // between the two apps. (3 MB of fresh random bytes could be one chunk.)
+    var state: UInt64 = 0x9E37_79B9_7F4A_7C15
+    let shared = Data((0..<9_000_000).map { _ -> UInt8 in
+        state ^= state << 13; state ^= state >> 7; state ^= state << 17
+        return UInt8(truncatingIfNeeded: state >> 32)
+    })
     func app(_ name: String, body: String) throws -> URL {
         let app = root.appendingPathComponent("\(name)/Lima.app")
         try fm.createDirectory(at: app.appendingPathComponent("Contents/MacOS"), withIntermediateDirectories: true)
