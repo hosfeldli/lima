@@ -26,7 +26,7 @@ func parsesVersions(output: String, expected: String) {
     try "#!/bin/sh\necho 'opencode 0.15.2'\n".write(to: script, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
 
-    let manifest = await CLIDiscovery(searchPaths: [dir.path]).discover(.opencode)
+    let manifest = await CLIDiscovery(searchPaths: [dir.path], probeTimeout: 30).discover(.opencode)
     #expect(manifest.status == .available)
     #expect(manifest.version == "0.15.2")
 }
@@ -64,7 +64,7 @@ func parsesVersions(output: String, expected: String) {
     try fm.createSymbolicLink(at: local.appendingPathComponent("claude"), withDestinationURL: native)
     try fm.createSymbolicLink(at: brew.appendingPathComponent("opencode"), withDestinationURL: cellar)
     let paths = CLIDiscovery.defaultSearchPaths(environment: ["HOME": root.path, "PATH": "\(bun.path):\(local.path):\(brew.path)"])
-    let discovery = CLIDiscovery(searchPaths: paths)
+    let discovery = CLIDiscovery(searchPaths: paths, probeTimeout: 30)
     let codex = await discovery.discover(.codex)
     #expect(codex.executablePath == bun.appendingPathComponent("codex").path)
     #expect(codex.version == "0.190.0")
